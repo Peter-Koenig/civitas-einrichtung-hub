@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+#
+# 02_lib.sh — Hilfsfunktionen
+#
+# Siehe: skriptarchitektur.md (V1), Modul 02
+# Enthält keine Installationslogik und keine Seiteneffekte beim Laden.
+# set -e wird nicht gesetzt — das Modul wird in den euo-Kontext des
+# Entry-Points hinein gesourct.
+
+# ── Logging ──────────────────────────────────────────────────────────────────
+log()        { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
+log_ok()     { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ $*"; }
+log_warn()   { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ⚠ $*" >&2; }
+log_error()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✗ $*" >&2; }
+
+# ── Idempotenz-Hilfsfunktionen ───────────────────────────────────────────────
+is_installed()   { command -v "$1" &>/dev/null; }
+systemd_active() { systemctl is-active --quiet "$1"; }
+k8s_ready()      { kubectl get "$1" "$2" -n "${3:-default}" &>/dev/null; }
+
+# ── Netzwerk ─────────────────────────────────────────────────────────────────
+# Nutzt bash built-in /dev/tcp statt nc (nicht auf allen Systemen vorhanden)
+tcp_reachable() { timeout 5 bash -c "echo >/dev/tcp/${1}/${2}" &>/dev/null; }
+dns_resolves()  { dig +short "$1" | grep -q '.'; }
+
+# ── Warteschleife für Kubernetes-Pods ────────────────────────────────────────
+wait_pods_ready() {
+  local namespace="$1"
+  local timeout="${2:-$TIMEOUT_POD_READY}"
+  kubectl wait --for=condition=Ready pods --all \
+    -n "$namespace" --timeout="${timeout}s"
+}
+
+# ── Fehlercount-Mechanismus (für Phase 3) ────────────────────────────────────
+VERIFY_ERRORS=0
+check() {
+  local description="$1"
+  local result="$2"
+  if [[ "$result" -eq 0 ]]; then
+    log_ok "[VERIFY] ${description} ... OK"
+  else
+    log_error "[VERIFY] ${description} ... FAILED"
+    (( VERIFY_ERRORS++ )) || true
+  fi
+}
+
+# ── Prüfe Exit-Code mit Abbruch ──────────────────────────────────────────────
+assert_success() {
+  local message="$1"
+  local result="$2"
+  if [[ "$result" -ne 0 ]]; then
+    log_error "${message} — Abbruch"
+    exit 1
+  fi
+}
+
+# ── Passwort-Generierung nach Policy ──────────────────────────────────────────
+# Erzeugt ein Passwort das folgende Policy erfüllt:
+#   - mind. 12 Zeichen (konfigurierbar via $1)
+#   - mind. 1 Ziffer
+#   - mind. 1 Großbuchstabe
+#   - mind. 1 Kleinbuchstabe
+#   - mind. 1 Sonderzeichen aus: !@#$%^&*()-_
+#   - KEINE base64-Sonderzeichen (+, /, =)
+gen_policy_password() {
+  local length="${1:-24}"
+  local charset='A-Za-z0-9!@#$%^&*()\-_'
+  local pw
+  while true; do
+    pw="$(tr -dc "${charset}" < /dev/urandom | head -c "${length}" || true)"
+    if echo "${pw}" | grep -qP '(?=.*[0-9])(?=.*[A-Z])(?=.*[a-z])(?=.*[!@#$%^&*()\-_])'; then
+      echo "${pw}"
+      return 0
+    fi
+  done
+}
