@@ -38,6 +38,7 @@ source "${SCRIPT_DIR}/modules_V1/03_preflight.sh"
 source "${SCRIPT_DIR}/modules_V1/04_k3s.sh"
 source "${SCRIPT_DIR}/modules_V1/05_addons.sh"
 
+source "${SCRIPT_DIR}/modules_V1/06a_network_certs.sh"
 source "${SCRIPT_DIR}/modules_V1/06_civitas.sh"
 source "${SCRIPT_DIR}/modules_V1/07_verify.sh"
 
