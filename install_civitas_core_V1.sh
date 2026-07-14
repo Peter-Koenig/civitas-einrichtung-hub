@@ -42,6 +42,7 @@ source "${SCRIPT_DIR}/modules_V1/06a_network_certs.sh"
 source "${SCRIPT_DIR}/modules_V1/06b_idm_provisioning.sh"
 source "${SCRIPT_DIR}/modules_V1/06_civitas.sh"
 source "${SCRIPT_DIR}/modules_V1/07_verify.sh"
+source "${SCRIPT_DIR}/modules_V1/07_login_summary.sh"
 
 # ── Traps (DEAKTIVIERT für Debugging) ──────────────────────────────────────
 # Alle Traps sind auskommentiert, damit temporäre Dateien bei Fehlern
@@ -149,6 +150,7 @@ else
   install_addons
   install_civitas
   run_verification
+  login_summary
 fi
 
 log ""
