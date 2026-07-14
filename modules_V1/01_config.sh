@@ -118,6 +118,12 @@ SSH_PUBKEY_PATH="${HOME}/.ssh/authorized_keys"  # SSH-Public-Key für root-Zugan
 # ── Remote-Ausführung in der VM ─────────────────────────────────────────────
 VM_REMOTE_INSTALL_DIR="/root/civitas-install"   # Zielverzeichnis für scp/SSH in der VM
 
+# ── Credentials-Ausgabe ─────────────────────────────────────────────────────
+CREDENTIALS_OUTPUT_PATH="${CREDENTIALS_OUTPUT_PATH:-/root/civitas-install/credentials.env}"
+# Zielpfad für automatisch generierte Dienst-Passwörter (chmod 600).
+# Darf NICHT im CC_CLI_PLAYBOOK_DIR liegen, da dieses nach cc_cli exec
+# bereinigt wird.
+
 # ROOT_PASSWORD wird aus Umgebungsvariable gelesen — nie hartcoden!
 ROOT_PASSWORD="${ROOT_PASSWORD:?'ROOT_PASSWORD muss als Umgebungsvariable gesetzt sein'}"
 
