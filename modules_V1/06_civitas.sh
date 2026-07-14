@@ -359,6 +359,27 @@ render_inventory() {
   export CONFIG_YAML_PATH
   log_ok "Inventory erzeugt: ${out}"
   log_warn "Inventory enthält Secrets im Klartext – wird nach cc_cli exec gelöscht"
+
+  # ── Credentials-Datei schreiben ───────────────────────────────────────
+  # Enthaelt die automatisch generierten Dienst-Passwoerter (chmod 600).
+  # Darf NICHT im CC_CLI_PLAYBOOK_DIR liegen (wird dort bereinigt).
+  mkdir -p "$(dirname "${CREDENTIALS_OUTPUT_PATH}")"
+  cat > "${CREDENTIALS_OUTPUT_PATH}" << CREDENTIALS_EOF
+# CIVITAS/CORE V1 — Dienst-Credentials
+# Erzeugt durch render_inventory() am $(date '+%Y-%m-%d %H:%M:%S')
+# chmod 600 — nur root lesbar
+PGADMIN_EMAIL="${ADMIN_EMAIL}"
+PGADMIN_PASSWORD="${pw_pgadmin}"
+GEOSERVER_USER="admin"
+GEOSERVER_PASSWORD="${pw_geoserver}"
+SUPERSET_USER="admin"
+SUPERSET_PASSWORD="${pw_superset_admin}"
+GRAFANA_PASSWORD="${pw_grafana}"
+APISIX_DASHBOARD_USER="admin@${DOMAIN}"
+APISIX_DASHBOARD_PASSWORD="${pw_apisix_dashboard_pass}"
+CREDENTIALS_EOF
+  chmod 600 "${CREDENTIALS_OUTPUT_PATH}"
+  log_ok "Credentials gespeichert: ${CREDENTIALS_OUTPUT_PATH}"
 }
 
 
