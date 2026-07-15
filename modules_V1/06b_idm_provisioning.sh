@@ -216,3 +216,72 @@ assign_admin_roles() {
     log_warn "  Manuell nachholen: ${idm_base}/admin/master/console/#/realms/${realm}/users"
   fi
 }
+
+
+# ── pgAdmin-CA-Trust konfigurieren ───────────────────────────────────────────
+# Stellt sicher, dass der pgAdmin-Container die TLS-Zertifikatskette fuer
+# die OIDC-Verbindung zu Keycloak (idm) vertraut.
+#
+# Der ca-importer init-Container im pgAdmin-Pod importiert die CA aus
+# der ConfigMap 'cacert' im operation-stack-Namespace. Diese Funktion
+# aktualisiert die ConfigMap mit der aktuellen Zertifikatskette aus dem
+# idm-TLS-Secret und startet den pgAdmin-Pod neu, damit der ca-importer
+# die neue Chain importiert.
+#
+# Idempotenz: Wenn die ConfigMap bereits aktuell ist, wird kein
+# Pod-Neustart ausgeloest (kubectl apply --dry-run aendert nichts).
+configure_pgadmin_ca_trust() {
+  local pgadmin_ns="${CC_ENVIRONMENT}-operation-stack"
+  local tls_secret="idm.${DOMAIN}-tls"
+  local tls_secret_ns="${CC_ENVIRONMENT}-access-stack"
+  local configmap_name="cacert"
+  local ca_file="/tmp/pgadmin-ca-bundle.pem"
+
+  log "Konfiguriere pgAdmin-CA-Trust …"
+
+  # Pruefen ob pgAdmin-Namespace existiert
+  if ! kubectl get namespace "${pgadmin_ns}" &>/dev/null; then
+    log_warn "Namespace ${pgadmin_ns} nicht gefunden — pgAdmin-CA-Trust uebersprungen"
+    return 0
+  fi
+
+  # Pruefen ob TLS-Secret mit der Zertifikatskette existiert
+  if ! kubectl get secret "${tls_secret}" -n "${tls_secret_ns}" &>/dev/null; then
+    log_warn "TLS-Secret ${tls_secret} in ${tls_secret_ns} nicht gefunden"
+    return 0
+  fi
+
+  # Full Chain aus dem TLS-Secret extrahieren
+  kubectl get secret "${tls_secret}" -n "${tls_secret_ns}" \
+    -o jsonpath='{.data.tls\.crt}' | base64 -d > "${ca_file}"
+
+  # Gesamte Chain (Leaf + Intermediate + Cross-Sign) als CA-Bundle verwenden.
+  # Das Leaf-Zertifikat im Bundle ist harmlos: Python/OpenSSL nutzen nur
+  # die CA-Zertifikate daraus fuer die Chain-Verifikation.
+  local ca_chain="${ca_file}"
+
+  # ConfigMap aktualisieren oder anlegen (idempotent via --dry-run + apply)
+  kubectl create configmap "${configmap_name}" \
+    -n "${pgadmin_ns}" \
+    --from-file="cacert.crt=${ca_chain}" \
+    --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null
+
+  log_ok "ConfigMap ${configmap_name} in ${pgadmin_ns} aktualisiert"
+
+  # pgAdmin-Pod neustarten, damit der ca-importer die neue Chain importiert
+  local pgadmin_pod
+  pgadmin_pod=$(kubectl get pod -n "${pgadmin_ns}" \
+    -l app.kubernetes.io/name=pgadmin4 -o name 2>/dev/null | head -1 || true)
+
+  if [[ -n "${pgadmin_pod}" ]]; then
+    kubectl delete pod -n "${pgadmin_ns}" \
+      -l app.kubernetes.io/name=pgadmin4 2>/dev/null
+    log_ok "pgAdmin-Pod neugestartet — ca-importer importiert aktualisierte CA-Chain"
+  else
+    log_warn "Kein pgAdmin-Pod in ${pgadmin_ns} gefunden — Neustart uebersprungen"
+  fi
+
+  # Aufraeumen
+  rm -f "${ca_file}"
+  log_ok "pgAdmin-CA-Trust konfiguriert"
+}

@@ -77,6 +77,7 @@ install_civitas() {
   else
     switch_certificate_issuer
   fi
+  configure_pgadmin_ca_trust
   log_ok "Phase 2 abgeschlossen – CIVITAS/CORE laeuft in Namespaces: ${K8S_NAMESPACES[*]}"
 }
 
