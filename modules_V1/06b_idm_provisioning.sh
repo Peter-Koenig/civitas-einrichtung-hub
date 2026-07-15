@@ -256,7 +256,7 @@ configure_pgadmin_ca_trust() {
   fi
 
   # Pruefen ob das idm-Certificate READY ist (P1: Race-Condition-Vermeidung)
-  # switch_certificate_issuer() und restore_le_certs() garantieren nicht in
+  # request_fresh_prod_certificates() und restore_backup_and_switch_to_prod() garantieren nicht in
   # jedem Fall, dass cert-manager den Secret-Inhalt bereits propagiert hat.
   if ! kubectl wait --for=condition=Ready \
        certificate/"${cert_name}" -n "${tls_secret_ns}" --timeout=120s 2>/dev/null; then

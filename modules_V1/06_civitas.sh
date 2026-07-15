@@ -8,7 +8,7 @@
 # Repository-, Overlay- und cc_cli-Lifecycle-Funktionen.
 #
 # Netzwerk- und Zertifikatsfunktionen (setup_wireguard, patch_playbook_urls,
-# cleanup_geodata_ingress, restore_le_certs, switch_certificate_issuer)
+# cleanup_geodata_ingress, restore_backup_and_switch_to_prod, request_fresh_prod_certificates)
 # wurden nach 06a_network_certs.sh ausgelagert.
 #
 # IDM-Provisionierungsfunktionen (ensure_keycloak_admin_user) wurden nach
@@ -68,24 +68,19 @@ install_civitas() {
     log_error "  Namespace-Konfiguration in 01_config.sh pruefen"
     exit 1
   fi
-  local restore_rc=0
-  # Beobachtungsmodus (Schritt 2 von 4) — nur Logging, keine Wirkung.
   local resolved_state
   resolved_state=$(resolve_target_state)
-  log "DEBUG[state-machine-preview]: resolve_target_state() ergibt '${resolved_state}'"
-  restore_le_certs || restore_rc=$?
-  ensure_keycloak_admin_user
+  log "Zielzustand fuer Zertifikate: ${resolved_state}"
 
-  if [[ ${restore_rc} -eq 0 ]]; then
-    log_ok "LE-Zertifikate aus Backup wiederhergestellt — switch_certificate_issuer wird uebersprungen"
-  else
-    if [[ "${LE_REQUESTS_BLOCKED}" == "true" ]]; then
-      log_error "LE_REQUESTS_BLOCKED=true – kein neues Zertifikat angefordert."
-      log_error "  LE-CA-Backup oder Konfiguration manuell pruefen."
-      exit 1
-    fi
-    switch_certificate_issuer
+  apply_target_state "${resolved_state}"
+  local apply_rc=$?
+
+  if [[ ${apply_rc} -ne 0 ]]; then
+    log_error "apply_target_state fehlgeschlagen (Zielzustand: ${resolved_state})"
+    exit 1
   fi
+
+  ensure_keycloak_admin_user
   configure_pgadmin_ca_trust || log_warn "pgAdmin-CA-Trust fehlgeschlagen — OIDC-Login ueber Keycloak manuell pruefen"
   log_ok "Phase 2 abgeschlossen – CIVITAS/CORE laeuft in Namespaces: ${K8S_NAMESPACES[*]}"
 }

@@ -164,9 +164,51 @@ cleanup_geodata_ingress() {
 }
 
 
+
+# ── ensure_staging_baseline: Staging-Issuer sicherstellen ─────────────────
+# Zielzustand: keep_staging
+# Stellt sicher, dass alle Ingress-Ressourcen auf dem Staging-Issuer
+# laufen und READY=True sind.
+# Idempotenz: Bereits auf Staging → nichts tun.
+ensure_staging_baseline() {
+    log "=== ensure_staging_baseline: Staging-Issuer aktiv ==="
+    log_ok "Staging ist Default-Zustand nach cc_cli exec – keine Aktion erforderlich"
+}
+
+
+# ── apply_target_state: Zielzustand ausfuehren ──────────────────────────
+# Nimmt das Ergebnis von resolve_target_state() als Argument und ruft
+# GENAU EINE der drei Aktionsfunktionen auf.
+apply_target_state() {
+    local target_state="$1"
+
+    case "${target_state}" in
+        keep_staging)
+            ensure_staging_baseline
+            return $?
+            ;;
+        restore_backup)
+            restore_backup_and_switch_to_prod
+            return $?
+            ;;
+        request_prod)
+            if [[ "${LE_REQUESTS_BLOCKED}" == "true" ]]; then
+                log_error "LE_REQUESTS_BLOCKED=true — request_prod nicht erlaubt."
+                log_error "  LE-CA-Backup oder Konfiguration manuell pruefen."
+                return 1
+            fi
+            request_fresh_prod_certificates
+            return $?
+            ;;
+        *)
+            log_error "apply_target_state: unbekannter Zielzustand '${target_state}'"
+            return 1
+            ;;
+    esac
+}
 # ── LE-Zertifikate aus Backup wiederherstellen ──────────────────────────────
-restore_le_certs() {
-  log "=== restore_le_certs: Wiederherstellung aus Backup ==="
+restore_backup_and_switch_to_prod() {
+  log "=== restore_backup_and_switch_to_prod: Wiederherstellung aus Backup ==="
   local backup_file="${VM_REMOTE_INSTALL_DIR}/le-certs-backup.yaml"
 
   # LE_REQUESTS_BLOCKED Safety-Schalter: gar keine Zertifikatsanforderung
@@ -187,7 +229,7 @@ restore_le_certs() {
   # Backup-Secrets einspielen (VOR Annotation-Aenderung)
   # Reihenfolge ist kritisch: erst Backup einspielen. Schlaegt das fehl
   # (Fall 1.1), wird KEINE Annotation auf prod gesetzt, und der Aufrufer
-  # (install_civitas) entscheidet via switch_certificate_issuer ueber
+  # (install_civitas) entscheidet via request_fresh_prod_certificates ueber
   # den naechsten Schritt (LE_CERT -> prod oder staging).
   log "Spiele LE-Zertifikate aus Backup ein "
   if ! kubectl apply -f "${backup_file}" >/dev/null 2>&1; then
@@ -281,7 +323,7 @@ EOF
 }
 
 
-# ── switch_certificate_issuer: Wechsel zwischen LE-Staging und -Production ──
+# ── request_fresh_prod_certificates: Wechsel zwischen LE-Staging und -Production ──
 # Steuert den Wechsel von Let's-Encrypt-Staging auf -Production fuer alle
 # Ingress-Ressourcen per Annotation cert-manager.io/cluster-issuer.
 # (Siehe Spec: netzwerk-dns-tls.md, Variante E)
@@ -298,14 +340,9 @@ EOF
 #   6. Nur wenn alle Staging bestanden: Annotation auf letsencrypt-prod
 #   7. Production-Zertifikate verifizieren (kein (STAGING) mehr)
 #   8. Report mit Erfolg/Fehler pro Host
-switch_certificate_issuer() {
-  log "=== switch_certificate_issuer: LE-Staging -> Production ==="
+request_fresh_prod_certificates() {
+  log "=== request_fresh_prod_certificates: LE-Staging -> Production ==="
 
-  # LE_REQUESTS_BLOCKED Safety-Schalter: gar keine Zertifikatsanforderung
-  if [[ "${LE_REQUESTS_BLOCKED}" == "true" ]]; then
-    log_error "LE_REQUESTS_BLOCKED=true (switch_certificate_issuer abgebrochen — Backup/Config manuell pruefen)"
-    return 1
-  fi
 
   local le_email="${ADMIN_EMAIL:-admin@${DOMAIN_NAME}}"
 
@@ -513,7 +550,7 @@ EOF
   # ── 5. Report ────────────────────────────────────────────────────────────
   log ""
   log "============================================"
-  log "  REPORT: switch_certificate_issuer"
+  log "  REPORT: request_fresh_prod_certificates"
   log "============================================"
   log "  Ingresses gesamt:       ${total}"
   log "  Staging OK:             ${staging_success}"
