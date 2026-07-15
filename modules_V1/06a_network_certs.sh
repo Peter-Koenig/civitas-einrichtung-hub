@@ -139,6 +139,15 @@ restore_le_certs() {
   log "=== restore_le_certs: Wiederherstellung aus Backup ==="
   local backup_file="${VM_REMOTE_INSTALL_DIR}/le-certs-backup.yaml"
 
+  # NO_NEW_LE_CERT Safety-Schalter: gar keine Zertifikatsanforderung
+  if [[ "${NO_NEW_LE_CERT}" == "true" ]]; then
+    if [[ ! -f "${backup_file}" ]]; then
+      log_error "NO_NEW_LE_CERT=true und kein LE-CA-Backup vorhanden — Abbruch"
+      return 1
+    fi
+    log_warn "NO_NEW_LE_CERT=true (ueberspringe Certificate-Loeschung)"
+  fi
+
   # Pruefe ob Backup existiert (Fall 2: kein Backup)
   if [[ ! -f "${backup_file}" ]]; then
     log "Kein LE-Zertifikats-Backup gefunden (${backup_file})"
@@ -200,17 +209,22 @@ EOF
   # Schritt 3: Certificate-Ressourcen loeschen
   # ingress-shim erzeugt sie sofort neu - jetzt aber korrekt mit issuerRef
   # letsencrypt-prod (weil Schritt 2 die Annotation bereits gesetzt hat).
-  log "Entferne alte Certificate-Ressourcen "
-  local certs=0
-  while IFS=$'	' read -r ns name; do
-    kubectl delete certificate "${name}" -n "${ns}" --ignore-not-found >/dev/null 2>&1 || true
-    (( certs++ )) || true
-  done < <(kubectl get certificate --all-namespaces -o json 2>/dev/null     | jq -r '.items[] | select(.metadata.name != "civitas-core-ca") | "\(.metadata.namespace)	\(.metadata.name)"' 2>/dev/null || true)
-  log_ok "${certs} Certificate-Ressourcen entfernt"
+  # Bei NO_NEW_LE_CERT=true wird dieser Schritt uebersprungen.
+  if [[ "${NO_NEW_LE_CERT}" != "true" ]]; then
+    log "Entferne alte Certificate-Ressourcen "
+    local certs=0
+    while IFS=$'	' read -r ns name; do
+      kubectl delete certificate "${name}" -n "${ns}" --ignore-not-found >/dev/null 2>&1 || true
+      (( certs++ )) || true
+    done < <(kubectl get certificate --all-namespaces -o json 2>/dev/null     | jq -r '.items[] | select(.metadata.name != "civitas-core-ca") | "\(.metadata.namespace)	\(.metadata.name)"' 2>/dev/null || true)
+    log_ok "${certs} Certificate-Ressourcen entfernt"
 
-  # Wartezeit, bis ingress-shim die neuen Certificate-Ressourcen
-  # (mit issuerRef letsencrypt-prod) angelegt hat
-  sleep 5
+    # Wartezeit, bis ingress-shim die neuen Certificate-Ressourcen
+    # (mit issuerRef letsencrypt-prod) angelegt hat
+    sleep 5
+  else
+    log "NO_NEW_LE_CERT=true - Certificate-Loeschung uebersprungen (ingress-shim aktualisiert via Annotation)"
+  fi
 
   # Schritt 4: Verifikation
   # Warten auf Reconcile-Zyklus von cert-manager
@@ -256,6 +270,12 @@ EOF
 #   8. Report mit Erfolg/Fehler pro Host
 switch_certificate_issuer() {
   log "=== switch_certificate_issuer: LE-Staging -> Production ==="
+
+  # NO_NEW_LE_CERT Safety-Schalter: gar keine Zertifikatsanforderung
+  if [[ "${NO_NEW_LE_CERT}" == "true" ]]; then
+    log_error "NO_NEW_LE_CERT=true (switch_certificate_issuer abgebrochen — Backup/Config manuell pruefen)"
+    return 1
+  fi
 
   local le_email="${ADMIN_EMAIL:-admin@${DOMAIN_NAME}}"
 
