@@ -141,14 +141,19 @@ verify_phase1() {
 verify_phase2() {
   log "Phase 2 — CIVITAS/CORE-Plattform ..."
 
-  # Namespace vorhanden
-  if kubectl --kubeconfig="${KUBECONFIG_PATH}" \
-    get namespace "${K8S_NAMESPACE}" &>/dev/null; then
-    log_ok "[PHASE 2] Namespace ${K8S_NAMESPACE} ... OK"
-  else
-    log_error "[PHASE 2] Namespace ${K8S_NAMESPACE} nicht gefunden"
-    (( VERIFY_ERRORS++ )) || true
-    # Restliche Prüfungen abbrechen, wenn Namespace fehlt
+  # Namespaces vorhanden (Array from 01_config.sh)
+  local ns_ok=true
+  for ns in "${K8S_NAMESPACES[@]}"; do
+    if kubectl --kubeconfig="${KUBECONFIG_PATH}" \
+      get namespace "${ns}" &>/dev/null; then
+      log_ok "[PHASE 2] Namespace ${ns} ... OK"
+    else
+      log_error "[PHASE 2] Namespace ${ns} nicht gefunden"
+      (( VERIFY_ERRORS++ )) || true
+      ns_ok=false
+    fi
+  done
+  if [[ "${ns_ok}" == false ]]; then
     return 1
   fi
 
