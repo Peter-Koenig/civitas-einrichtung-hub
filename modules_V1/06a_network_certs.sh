@@ -139,13 +139,13 @@ restore_le_certs() {
   log "=== restore_le_certs: Wiederherstellung aus Backup ==="
   local backup_file="${VM_REMOTE_INSTALL_DIR}/le-certs-backup.yaml"
 
-  # NO_NEW_LE_CERT Safety-Schalter: gar keine Zertifikatsanforderung
-  if [[ "${NO_NEW_LE_CERT}" == "true" ]]; then
+  # LE_REQUESTS_BLOCKED Safety-Schalter: gar keine Zertifikatsanforderung
+  if [[ "${LE_REQUESTS_BLOCKED}" == "true" ]]; then
     if [[ ! -f "${backup_file}" ]]; then
-      log_error "NO_NEW_LE_CERT=true und kein LE-CA-Backup vorhanden — Abbruch"
+      log_error "LE_REQUESTS_BLOCKED=true und kein LE-CA-Backup vorhanden — Abbruch"
       return 1
     fi
-    log_warn "NO_NEW_LE_CERT=true (ueberspringe Certificate-Loeschung)"
+    log_warn "LE_REQUESTS_BLOCKED=true (ueberspringe Certificate-Loeschung)"
   fi
 
   # Pruefe ob Backup existiert (Fall 2: kein Backup)
@@ -209,8 +209,8 @@ EOF
   # Schritt 3: Certificate-Ressourcen loeschen
   # ingress-shim erzeugt sie sofort neu - jetzt aber korrekt mit issuerRef
   # letsencrypt-prod (weil Schritt 2 die Annotation bereits gesetzt hat).
-  # Bei NO_NEW_LE_CERT=true wird dieser Schritt uebersprungen.
-  if [[ "${NO_NEW_LE_CERT}" != "true" ]]; then
+  # Bei LE_REQUESTS_BLOCKED=true wird dieser Schritt uebersprungen.
+  if [[ "${LE_REQUESTS_BLOCKED}" != "true" ]]; then
     log "Entferne alte Certificate-Ressourcen "
     local certs=0
     while IFS=$'	' read -r ns name; do
@@ -223,7 +223,7 @@ EOF
     # (mit issuerRef letsencrypt-prod) angelegt hat
     sleep 5
   else
-    log "NO_NEW_LE_CERT=true - Certificate-Loeschung uebersprungen (ingress-shim aktualisiert via Annotation)"
+    log "LE_REQUESTS_BLOCKED=true - Certificate-Loeschung uebersprungen (ingress-shim aktualisiert via Annotation)"
   fi
 
   # Schritt 4: Verifikation
@@ -271,9 +271,9 @@ EOF
 switch_certificate_issuer() {
   log "=== switch_certificate_issuer: LE-Staging -> Production ==="
 
-  # NO_NEW_LE_CERT Safety-Schalter: gar keine Zertifikatsanforderung
-  if [[ "${NO_NEW_LE_CERT}" == "true" ]]; then
-    log_error "NO_NEW_LE_CERT=true (switch_certificate_issuer abgebrochen — Backup/Config manuell pruefen)"
+  # LE_REQUESTS_BLOCKED Safety-Schalter: gar keine Zertifikatsanforderung
+  if [[ "${LE_REQUESTS_BLOCKED}" == "true" ]]; then
+    log_error "LE_REQUESTS_BLOCKED=true (switch_certificate_issuer abgebrochen — Backup/Config manuell pruefen)"
     return 1
   fi
 
