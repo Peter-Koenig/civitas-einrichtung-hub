@@ -270,12 +270,34 @@ setup_tests_env() {
 
   # uv installieren
   if ! command -v uv &>/dev/null; then
-    log "Installiere uv …"
-    pip install uv --quiet 2>/dev/null || {
-      log_warn "uv-Installation fehlgeschlagen — Tests werden uebersprungen"
+    log "Installiere uv via pipx (Userkontext) …"
+
+    if ! command -v pipx &>/dev/null; then
+      log "pipx nicht gefunden — installiere ueber apt (Debian-Repo) ..."
+      apt-get install -y pipx python3-all python-is-python3 2>&1 || {
+        log_warn "pipx-Installation ueber apt fehlgeschlagen — Tests werden uebersprungen"
+        log_warn "  Bitte manuell installieren: apt-get install pipx python3-all python-is-python3"
+        return 1
+      }
+      log_ok "pipx installiert"
+    fi
+
+    pipx ensurepath 2>/dev/null || true
+    export PATH="${HOME}/.local/bin:${PATH}"
+
+    pipx install uv 2>&1 || {
+      log_warn "uv-Installation via pipx fehlgeschlagen — Tests werden uebersprungen"
+      log_warn "  pipx-Ausgabe siehe oben; ggf. manuell: pipx install uv"
       return 1
     }
-    log_ok "uv installiert"
+
+    if ! command -v uv &>/dev/null; then
+      log_warn "uv nach pipx-Installation nicht im PATH gefunden — Tests werden uebersprungen"
+      log_warn "  PATH=${PATH}"
+      return 1
+    fi
+
+    log_ok "uv erfolgreich installiert: $(uv --version)"
   else
     log_ok "uv bereits installiert"
   fi
