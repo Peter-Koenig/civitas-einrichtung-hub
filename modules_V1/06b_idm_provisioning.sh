@@ -272,8 +272,15 @@ configure_pgadmin_ca_trust() {
   fi
 
   # Full Chain aus dem TLS-Secret extrahieren
-  kubectl get secret "${tls_secret}" -n "${tls_secret_ns}" \
-    -o jsonpath='{.data.tls\.crt}' | base64 -d > "${ca_file}"
+  local secret_data
+  secret_data=$(kubectl get secret "${tls_secret}" -n "${tls_secret_ns}" \
+    -o jsonpath='{.data.tls\.crt}' 2>/dev/null || echo "")
+  if [[ -z "${secret_data}" ]]; then
+    log_error "Keine Daten aus Secret ${tls_secret} extrahiert — Abbruch"
+    rm -f "${ca_file}"
+    return 1
+  fi
+  printf '%s' "${secret_data}" | base64 -d > "${ca_file}"
 
   if [[ ! -s "${ca_file}" ]]; then
     log_error "Leere Chain aus Secret ${tls_secret} extrahiert — Abbruch"
@@ -291,8 +298,10 @@ configure_pgadmin_ca_trust() {
   # Pod neugestartet. Dadurch vermeiden wir unnötige Pod-Neustarts bei
   # wiederholtem Skript-Durchlauf.
   local old_hash new_hash
-  old_hash=$(kubectl get configmap "${configmap_name}" -n "${pgadmin_ns}" \
-    -o jsonpath='{.data.cacert\.crt}' 2>/dev/null | sha256sum | awk '{print $1}')
+  local existing_cacert
+  existing_cacert=$(kubectl get configmap "${configmap_name}" -n "${pgadmin_ns}" \
+    -o jsonpath='{.data.cacert\.crt}' 2>/dev/null || echo "")
+  old_hash=$(printf '%s' "${existing_cacert}" | sha256sum | awk '{print $1}')
   new_hash=$(sha256sum "${ca_chain}" | awk '{print $1}')
 
   if [[ -n "${old_hash}" && "${old_hash}" == "${new_hash}" ]]; then
