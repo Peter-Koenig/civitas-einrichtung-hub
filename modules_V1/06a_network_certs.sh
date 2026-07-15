@@ -188,7 +188,27 @@ apply_target_state() {
             return $?
             ;;
         restore_backup)
-            restore_backup_and_switch_to_prod
+            if restore_backup_and_switch_to_prod; then
+                return 0
+            fi
+
+            log_warn "restore_backup_and_switch_to_prod fehlgeschlagen — pruefe Fallback anhand LE_CERT"
+
+            if [[ "${LE_CERT}" != "true" ]]; then
+                log_warn "LE_CERT=false — kein Fallback, bleibe bei Staging"
+                ensure_staging_baseline
+                return $?
+            fi
+
+            log_warn "LE_CERT=true — versuche Fallback: request_fresh_prod_certificates"
+
+            if [[ "${LE_REQUESTS_BLOCKED}" == "true" ]]; then
+                log_error "LE_REQUESTS_BLOCKED=true — Fallback auf request_prod nicht erlaubt."
+                log_error "  LE-CA-Backup oder Konfiguration manuell pruefen."
+                return 1
+            fi
+
+            request_fresh_prod_certificates
             return $?
             ;;
         request_prod)

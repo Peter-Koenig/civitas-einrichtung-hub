@@ -74,13 +74,13 @@ install_civitas() {
 
   apply_target_state "${resolved_state}"
   local apply_rc=$?
+  ensure_keycloak_admin_user
 
   if [[ ${apply_rc} -ne 0 ]]; then
     log_error "apply_target_state fehlgeschlagen (Zielzustand: ${resolved_state})"
     exit 1
   fi
 
-  ensure_keycloak_admin_user
   configure_pgadmin_ca_trust || log_warn "pgAdmin-CA-Trust fehlgeschlagen — OIDC-Login ueber Keycloak manuell pruefen"
   log_ok "Phase 2 abgeschlossen – CIVITAS/CORE laeuft in Namespaces: ${K8S_NAMESPACES[*]}"
 }
