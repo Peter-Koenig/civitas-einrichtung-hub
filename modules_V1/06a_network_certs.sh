@@ -18,6 +18,36 @@
 
 set -euo pipefail
 
+# ── resolve_target_state: Zielzustand fuer Zertifikate ermitteln ──────────
+# Reine Entscheidungsfunktion. Fuehrt KEINE kubectl-Aufrufe aus, veraendert
+# KEINEN Cluster-Zustand. Gibt genau einen der drei Strings per stdout zurueck:
+#   "keep_staging"   | "restore_backup" | "request_prod"
+#
+# Wahrheitstabelle:
+#   LE_CERT=false                     → keep_staging
+#   Backup vorhanden                  → restore_backup
+#   LE_CERT=true, kein Backup         → request_prod
+#
+# Hinweis: LE_REQUESTS_BLOCKED wird hier NICHT abgefragt — die Funktion
+# beschreibt den gewuenschten Zielzustand, unabhaengig von der Ausfuehrbarkeit.
+# Die Blockade wird in Schritt 3 (apply_target_state) geprueft.
+resolve_target_state() {
+    local backup_file="${VM_REMOTE_INSTALL_DIR}/le-certs-backup.yaml"
+
+    if [[ "${LE_CERT}" != "true" ]]; then
+        echo "keep_staging"
+        return 0
+    fi
+
+    if [[ -f "${backup_file}" ]]; then
+        echo "restore_backup"
+        return 0
+    fi
+
+    echo "request_prod"
+    return 0
+}
+
 
 # ── WireGuard konfigurieren und Tunnel aktivieren ────────────────────────────
 # Idempotenz: Tunnel bereits aktiv → return 0.

@@ -69,6 +69,10 @@ install_civitas() {
     exit 1
   fi
   local restore_rc=0
+  # Beobachtungsmodus (Schritt 2 von 4) — nur Logging, keine Wirkung.
+  local resolved_state
+  resolved_state=$(resolve_target_state)
+  log "DEBUG[state-machine-preview]: resolve_target_state() ergibt '${resolved_state}'"
   restore_le_certs || restore_rc=$?
   ensure_keycloak_admin_user
 
