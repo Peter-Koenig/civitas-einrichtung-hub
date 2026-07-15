@@ -257,6 +257,27 @@ verify_certificates() {
 
         local cert_name="${host}-tls"
 
+        # Nachweis (d): LE_CERT=false -> Staging-Zertifikat erwartet
+        if [[ "${LE_CERT}" != "true" ]]; then
+            local staging_ready_d staging_issuer_d
+            staging_issuer_d=$(kubectl get certificate "${cert_name}" -n "${cert_ns}" \
+                -o jsonpath='{.spec.issuerRef.name}' 2>/dev/null)
+            staging_ready_d=$(kubectl get certificate "${cert_name}" -n "${cert_ns}" \
+                -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+
+            if [[ "${staging_ready_d}" == "True" && "${staging_issuer_d}" == "letsencrypt-staging" ]]; then
+                log_ok "  ${host}: Nachweis (d) Staging-Zertifikat READY, LE_CERT=false (Zielzustand korrekt)"
+                ok=$((ok + 1))
+                continue
+            else
+                log_error "  ${host}: LE_CERT=false, aber Staging-Zertifikat nicht READY (issuer=${staging_issuer_d:-leer})"
+                failed=$((failed + 1))
+                failed_hosts+=("${host}")
+                continue
+            fi
+        fi
+
+
         # Nachweis (a): Staging-Annotation
         local staging_annotation
         staging_annotation=$(kubectl get certificate "${cert_name}" -n "${cert_ns}" \
