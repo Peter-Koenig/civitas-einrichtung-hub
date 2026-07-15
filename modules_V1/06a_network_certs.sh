@@ -226,6 +226,97 @@ apply_target_state() {
             ;;
     esac
 }
+
+# ── verify_certificates: Pfadunabhaengige Zertifikats-Abnahme ─────────
+# Zentrale, pfadunabhaengige Verifikation. Laeuft NACH apply_target_state()
+# fuer ALLE Zielzustaende (keep_staging, restore_backup, request_prod)
+# gleichermassen. Prueft pro Hostname genau einen der drei gueltigen
+# Nachweise:
+#   a) Staging-Annotation civitas.io/staging-verified="true"
+#   b) Produktivzertifikat READY=True mit issuerRef letsencrypt-prod
+#   c) Backup-Restore mit identischem notBefore-Zeitstempel
+# Gibt Report aus und liefert Exit-Code 0 (alle ok) oder 1 (Fehler).
+verify_certificates() {
+    log ""
+    log "============================================"
+    log "  REPORT: verify_certificates"
+    log "============================================"
+
+    local backup_file="${VM_REMOTE_INSTALL_DIR}/le-certs-backup.yaml"
+    local total=0 ok=0 failed=0
+    local failed_hosts=()
+
+    local cert_ns="${CC_ENVIRONMENT}-access-stack"
+    local ingress_hosts
+    ingress_hosts=$(kubectl get ingress -n "${cert_ns}" \
+        -o jsonpath='{range .items[*]}{.spec.rules[*].host}{"\n"}{end}' 2>/dev/null)
+
+    while IFS= read -r host; do
+        [[ -z "${host}" ]] && continue
+        total=$((total + 1))
+
+        local cert_name="${host}-tls"
+
+        # Nachweis (a): Staging-Annotation
+        local staging_annotation
+        staging_annotation=$(kubectl get certificate "${cert_name}" -n "${cert_ns}" \
+            -o jsonpath='{.metadata.annotations.civitas\.io/staging-verified}' 2>/dev/null)
+
+        if [[ "${staging_annotation}" == "true" ]]; then
+            log_ok "  ${host}: Nachweis (a) Staging-Annotation vorhanden"
+            ok=$((ok + 1))
+            continue
+        fi
+
+        # Nachweis (b): Produktivzertifikat READY mit issuerRef prod
+        local cert_issuer cert_ready
+        cert_issuer=$(kubectl get certificate "${cert_name}" -n "${cert_ns}" \
+            -o jsonpath='{.spec.issuerRef.name}' 2>/dev/null)
+        cert_ready=$(kubectl get certificate "${cert_name}" -n "${cert_ns}" \
+            -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+
+        if [[ "${cert_ready}" == "True" && "${cert_issuer}" == "letsencrypt-prod" ]]; then
+            log_ok "  ${host}: Nachweis (b) Produktivzertifikat READY (issuer=${cert_issuer})"
+            ok=$((ok + 1))
+            continue
+        fi
+
+        # Nachweis (c): Backup-Restore mit identischem notBefore
+        if [[ -f "${backup_file}" ]]; then
+            local not_before_backup not_before_cluster
+            not_before_backup=$(yq eval "select(.metadata.name == \"${cert_name}\") | .data[\"tls.crt\"]" \
+                "${backup_file}" 2>/dev/null | base64 -d 2>/dev/null | openssl x509 -noout -dates 2>/dev/null \
+                | grep notBefore | cut -d= -f2)
+            not_before_cluster=$(kubectl get secret "${cert_name}" -n "${cert_ns}" \
+                -o jsonpath='{.data.tls\.crt}' 2>/dev/null | base64 -d 2>/dev/null \
+                | openssl x509 -noout -dates 2>/dev/null | grep notBefore | cut -d= -f2)
+
+            if [[ -n "${not_before_backup}" && "${not_before_backup}" == "${not_before_cluster}" ]]; then
+                log_ok "  ${host}: Nachweis (c) Backup-Restore verifiziert (notBefore identisch)"
+                ok=$((ok + 1))
+                continue
+            fi
+        fi
+
+        # Kein Nachweis erfolgreich
+        log_error "  ${host}: KEIN gueltiger Nachweis (a/b/c) gefunden"
+        failed=$((failed + 1))
+        failed_hosts+=("${host}")
+
+    done <<< "${ingress_hosts}"
+
+    log ""
+    log "  Hosts gesamt:  ${total}"
+    log "  Verifiziert:   ${ok}"
+    log "  Fehlgeschlagen: ${failed}"
+    if [[ ${failed} -gt 0 ]]; then
+        log_error "  Fehlgeschlagene Hosts: ${failed_hosts[*]}"
+    fi
+    log "============================================"
+
+    [[ ${failed} -eq 0 ]]
+    return $?
+}
 # ── LE-Zertifikate aus Backup wiederherstellen ──────────────────────────────
 restore_backup_and_switch_to_prod() {
   log "=== restore_backup_and_switch_to_prod: Wiederherstellung aus Backup ==="
@@ -567,25 +658,6 @@ EOF
     done <<< "${ingress_list}"
   fi
 
-  # ── 5. Report ────────────────────────────────────────────────────────────
-  log ""
-  log "============================================"
-  log "  REPORT: request_fresh_prod_certificates"
-  log "============================================"
-  log "  Ingresses gesamt:       ${total}"
-  log "  Staging OK:             ${staging_success}"
-  log "  Staging FAIL:           ${staging_failed}"
-  if [[ ${staging_ok} -eq 1 ]]; then
-    log "  Production OK:          ${prod_success}"
-    log "  Production FAIL:        ${prod_failed}"
-  else
-    log "  Production:             NICHT GESTARTET (Staging-Fehler)"
-  fi
-  log ""
-  log_warn "  Let's-Encrypt-Rate-Limit: 50 Zertifikate/Woche/Domain"
-  log "============================================"
-
-  # Exit-Code: 0 = alles OK, 1 = Staging-Probleme, 2 = Production-Probleme
   if [[ ${staging_failed} -gt 0 ]]; then
     return 1
   elif [[ ${prod_failed} -gt 0 ]]; then

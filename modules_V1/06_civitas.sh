@@ -8,7 +8,7 @@
 # Repository-, Overlay- und cc_cli-Lifecycle-Funktionen.
 #
 # Netzwerk- und Zertifikatsfunktionen (setup_wireguard, patch_playbook_urls,
-# cleanup_geodata_ingress, restore_backup_and_switch_to_prod, request_fresh_prod_certificates)
+# cleanup_geodata_ingress, restore_backup_and_switch_to_prod, request_fresh_prod_certificates, resolve_target_state, apply_target_state, verify_certificates)
 # wurden nach 06a_network_certs.sh ausgelagert.
 #
 # IDM-Provisionierungsfunktionen (ensure_keycloak_admin_user) wurden nach
@@ -80,6 +80,11 @@ install_civitas() {
     log_error "apply_target_state fehlgeschlagen (Zielzustand: ${resolved_state})"
     exit 1
   fi
+  if ! verify_certificates; then
+    log_error "verify_certificates: mindestens ein Host ohne gueltigen Nachweis"
+    exit 1
+  fi
+
 
   configure_pgadmin_ca_trust || log_warn "pgAdmin-CA-Trust fehlgeschlagen — OIDC-Login ueber Keycloak manuell pruefen"
   log_ok "Phase 2 abgeschlossen – CIVITAS/CORE laeuft in Namespaces: ${K8S_NAMESPACES[*]}"
