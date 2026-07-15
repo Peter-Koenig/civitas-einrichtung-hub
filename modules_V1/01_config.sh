@@ -33,6 +33,7 @@ INGRESS_NAMESPACE="ingress-nginx"
 
 # ── Steuervariablen (aus .env.local) ────────────────────────────────────
 LE_CERT="${LE_CERT:-false}"              # false = nur Staging, true = Staging + Production
+NO_NEW_LE_CERT="${NO_NEW_LE_CERT:-false}" # true = keinerlei neue Zertifikatsanforderungen (Safety-Schalter)
 APISIX_DASHBOARD="${APISIX_DASHBOARD:-false}"  # APISIX-Dashboard aktivieren
 RUN_TESTS="${RUN_TESTS:-false}"          # E2E-Tests nach Installation ausführen
 

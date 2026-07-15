@@ -75,6 +75,11 @@ install_civitas() {
   if [[ ${restore_rc} -eq 0 ]]; then
     log_ok "LE-Zertifikate aus Backup wiederhergestellt — switch_certificate_issuer wird uebersprungen"
   else
+    if [[ "${NO_NEW_LE_CERT}" == "true" ]]; then
+      log_error "NO_NEW_LE_CERT=true – kein neues Zertifikat angefordert."
+      log_error "  LE-CA-Backup oder Konfiguration manuell pruefen."
+      exit 1
+    fi
     switch_certificate_issuer
   fi
   configure_pgadmin_ca_trust || log_warn "pgAdmin-CA-Trust fehlgeschlagen — OIDC-Login ueber Keycloak manuell pruefen"

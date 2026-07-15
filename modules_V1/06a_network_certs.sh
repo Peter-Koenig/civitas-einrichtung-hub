@@ -136,17 +136,34 @@ cleanup_geodata_ingress() {
 
 # ── LE-Zertifikate aus Backup wiederherstellen ──────────────────────────────
 restore_le_certs() {
+  log "=== restore_le_certs: Wiederherstellung aus Backup ==="
   local backup_file="${VM_REMOTE_INSTALL_DIR}/le-certs-backup.yaml"
+
+  # Pruefe ob Backup existiert (Fall 2: kein Backup)
   if [[ ! -f "${backup_file}" ]]; then
-    log "Kein LE-Zertifikats-Backup gefunden (${backup_file}) — ueberspringe"
+    log "Kein LE-Zertifikats-Backup gefunden (${backup_file})"
     return 1
   fi
 
-  log "Stelle LE-Zertifikate aus Backup wieder her …"
+  # Backup-Secrets einspielen (VOR Annotation-Aenderung)
+  # Reihenfolge ist kritisch: erst Backup einspielen. Schlaegt das fehl
+  # (Fall 1.1), wird KEINE Annotation auf prod gesetzt, und der Aufrufer
+  # (install_civitas) entscheidet via switch_certificate_issuer ueber
+  # den naechsten Schritt (LE_CERT -> prod oder staging).
+  log "Spiele LE-Zertifikate aus Backup ein "
+  if ! kubectl apply -f "${backup_file}" >/dev/null 2>&1; then
+    log_error "LE-Zertifikats-Backup konnte nicht eingespielt werden"
+    log_error "  Keine Annotation auf letsencrypt-prod gesetzt"
+    return 1
+  fi
+  log_ok "LE-Zertifikats-Secrets aus Backup wiederhergestellt"
 
-  # ── Schritt 1: ClusterIssuer letsencrypt-prod sicherstellen ────────────────
+  # Schritt 1: ClusterIssuer letsencrypt-prod sicherstellen
+  # Erst JETZT (nach erfolgreichem Backup) wird die Infrastruktur auf
+  # letsencrypt-prod umgestellt. Die Secrets liegen bereits, cert-manager
+  # markiert die Certificate-Ressourcen als Ready ohne Neuausstellung.
   if ! kubectl get clusterissuer letsencrypt-prod &>/dev/null; then
-    log "Lege ClusterIssuer letsencrypt-prod an …"
+    log "Lege ClusterIssuer letsencrypt-prod an "
     kubectl apply -f - <<EOF >/dev/null
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
@@ -168,58 +185,42 @@ EOF
     log_ok "ClusterIssuer letsencrypt-prod bereits vorhanden"
   fi
 
-  # ── Schritt 2: Ingress-Annotationen ZUERST auf letsencrypt-prod setzen ───
+  # Schritt 2: Ingress-Annotationen auf letsencrypt-prod setzen
   # Dies MUSS vor dem Loeschen der Certificate-Ressourcen passieren, sonst
   # erzeugt ingress-shim beim Neuanlegen eine Certificate-Ressource mit dem
   # noch alten/fehlenden Issuer (Race Condition).
-  log "Setze Issuer-Annotationen auf letsencrypt-prod (vor Certificate-Loeschung) …"
+  log "Setze Issuer-Annotationen auf letsencrypt-prod "
   local annotated=0
-  while IFS=$'\t' read -r ns name; do
-    kubectl annotate ingress "${name}" -n "${ns}" \
-      cert-manager.io/cluster-issuer=letsencrypt-prod --overwrite \
-      >/dev/null 2>&1 || true
+  while IFS=$'	' read -r ns name; do
+    kubectl annotate ingress "${name}" -n "${ns}"       cert-manager.io/cluster-issuer=letsencrypt-prod --overwrite       >/dev/null 2>&1 || true
     (( annotated++ )) || true
-  done < <(kubectl get ingress --all-namespaces -o json 2>/dev/null \
-    | jq -r '.items[] | select(.spec.tls | type == "array" and length > 0) | "\(.metadata.namespace)\t\(.metadata.name)"' 2>/dev/null || true)
+  done < <(kubectl get ingress --all-namespaces -o json 2>/dev/null     | jq -r '.items[] | select(.spec.tls | type == "array" and length > 0) | "\(.metadata.namespace)	\(.metadata.name)"' 2>/dev/null || true)
   log_ok "${annotated} Ingress(es) auf letsencrypt-prod annotiert"
 
-  # ── Schritt 3: Certificate-Ressourcen loeschen ────────────────────────────
-  # ingress-shim erzeugt sie sofort neu — jetzt aber korrekt mit issuerRef
+  # Schritt 3: Certificate-Ressourcen loeschen
+  # ingress-shim erzeugt sie sofort neu - jetzt aber korrekt mit issuerRef
   # letsencrypt-prod (weil Schritt 2 die Annotation bereits gesetzt hat).
-  log "Entferne alte Certificate-Ressourcen …"
+  log "Entferne alte Certificate-Ressourcen "
   local certs=0
-  while IFS=$'\t' read -r ns name; do
+  while IFS=$'	' read -r ns name; do
     kubectl delete certificate "${name}" -n "${ns}" --ignore-not-found >/dev/null 2>&1 || true
     (( certs++ )) || true
-  done < <(kubectl get certificate --all-namespaces -o json 2>/dev/null \
-    | jq -r '.items[] | select(.metadata.name != "civitas-core-ca") | "\(.metadata.namespace)\t\(.metadata.name)"' 2>/dev/null || true)
+  done < <(kubectl get certificate --all-namespaces -o json 2>/dev/null     | jq -r '.items[] | select(.metadata.name != "civitas-core-ca") | "\(.metadata.namespace)	\(.metadata.name)"' 2>/dev/null || true)
   log_ok "${certs} Certificate-Ressourcen entfernt"
 
-  # Kurze Wartezeit, bis ingress-shim die neuen Certificate-Ressourcen
+  # Wartezeit, bis ingress-shim die neuen Certificate-Ressourcen
   # (mit issuerRef letsencrypt-prod) angelegt hat
   sleep 5
 
-  # ── Schritt 4: Secrets aus Backup einspielen ──────────────────────────────
-  # cert-manager erkennt: Secret bereits vorhanden + Certificate zeigt auf
-  # letsencrypt-prod + Zertifikat noch gueltig → keine Neuausstellung.
-  if ! kubectl apply -f "${backup_file}" >/dev/null 2>&1; then
-    log_warn "LE-Zertifikats-Backup konnte nicht eingespielt werden"
-    log_warn "  Zertifikate muessen neu bei Let's Encrypt beantragt werden"
-    return 1
-  fi
-  log_ok "LE-Zertifikats-Secrets aus Backup wiederhergestellt"
-
-  # ── Schritt 5: Verifikation ──────────────────────────────────────────────
+  # Schritt 4: Verifikation
   # Warten auf Reconcile-Zyklus von cert-manager
   sleep 10
-  log "Verifiziere wiederhergestellte Zertifikate …"
+  log "Verifiziere wiederhergestellte Zertifikate "
   local verify_ns="${CC_ENVIRONMENT}-access-stack"
   local verify_secret="idm.${DOMAIN}-tls"
   if kubectl get secret "${verify_secret}" -n "${verify_ns}" &>/dev/null; then
     local issuer
-    issuer=$(kubectl get secret "${verify_secret}" -n "${verify_ns}" \
-      -o jsonpath='{.data.tls\.crt}' 2>/dev/null \
-      | base64 -d 2>/dev/null | openssl x509 -noout -issuer 2>/dev/null || true)
+    issuer=$(kubectl get secret "${verify_secret}" -n "${verify_ns}"       -o jsonpath='{.data.tls\.crt}' 2>/dev/null       | base64 -d 2>/dev/null | openssl x509 -noout -issuer 2>/dev/null || true)
     if echo "${issuer}" | grep -qi "STAGING\|civitas-core-ca"; then
       log_warn "Wiederhergestelltes Zertifikat ist kein LE-Production-Zertifikat: ${issuer}"
       log_warn "  Zertifikate muessen neu bei Let's Encrypt beantragt werden"
@@ -245,7 +246,7 @@ EOF
 # ausgefuehrt. Kann auch manuell aufgerufen werden.
 #
 # Ablauf:
-#   1. Pruefung ob bereits LE-Production aktiv → ueberspringen
+#   1. Pruefung ob bereits LE-Production aktiv (nur bei LE_CERT=true → ueberspringen)
 #   2. ClusterIssuer letsencrypt-staging anlegen (falls nicht vorhanden)
 #   3. Annotation auf letsencrypt-staging setzen (alle Ingresses)
 #   4. Warten auf READY + issuer-Prüfung (muss (STAGING) enthalten)
@@ -279,8 +280,12 @@ switch_certificate_issuer() {
   done
 
   if [[ "${all_prod}" == "true" && "${any_annotated}" == "true" ]]; then
-    log_ok "Alle Ingresses bereits auf letsencrypt-prod – nichts zu tun"
-    return 0
+    if [[ "${LE_CERT:-false}" == "true" ]]; then
+      log_ok "Alle Ingresses bereits auf letsencrypt-prod (LE_CERT=true) – nichts zu tun"
+      return 0
+    else
+      log_warn "Ingresses auf letsencrypt-prod, aber LE_CERT=false – wechsle zu Staging"
+    fi
   fi
 
   local staging_success=0 staging_failed=0 prod_success=0 prod_failed=0
