@@ -77,7 +77,7 @@ install_civitas() {
   else
     switch_certificate_issuer
   fi
-  configure_pgadmin_ca_trust
+  configure_pgadmin_ca_trust || log_warn "pgAdmin-CA-Trust fehlgeschlagen — OIDC-Login ueber Keycloak manuell pruefen"
   log_ok "Phase 2 abgeschlossen – CIVITAS/CORE laeuft in Namespaces: ${K8S_NAMESPACES[*]}"
 }
 

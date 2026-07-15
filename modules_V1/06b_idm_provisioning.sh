@@ -228,14 +228,24 @@ assign_admin_roles() {
 # idm-TLS-Secret und startet den pgAdmin-Pod neu, damit der ca-importer
 # die neue Chain importiert.
 #
-# Idempotenz: Wenn die ConfigMap bereits aktuell ist, wird kein
-# Pod-Neustart ausgeloest (kubectl apply --dry-run aendert nichts).
+# Idempotenz: Hash-Vergleich zwischen alter und neuer ConfigMap — Pod-Neustart
+# nur bei tatsaechlicher Aenderung der Zertifikatskette.
+#
+# TODO: #<Platzhalter> — Reconcile-Loop oder Kubernetes CronJob noetig, der bei
+# Certificate-Renewal (alle 60–90 Tage bei LE) automatisch erneut die ConfigMap
+# aktualisiert und den Pod restartet. Ohne diesen Mechanismus ist die ConfigMap
+# nach der ersten LE-Renewal veraltet und pgAdmin verliert die OIDC-Verbindung.
+# Loesungsansatz: cert-manager-Certificate mit Event-Trigger (stash/relay) oder
+# k8s-CronJob, der taetig wird, sobald das Secret updated_at-Timestamp sich
+# aendert.
 configure_pgadmin_ca_trust() {
   local pgadmin_ns="${CC_ENVIRONMENT}-operation-stack"
   local tls_secret="idm.${DOMAIN}-tls"
   local tls_secret_ns="${CC_ENVIRONMENT}-access-stack"
   local configmap_name="cacert"
+  local cert_name="idm.${DOMAIN}-tls"
   local ca_file="/tmp/pgadmin-ca-bundle.pem"
+  local rc=0
 
   log "Konfiguriere pgAdmin-CA-Trust …"
 
@@ -245,27 +255,62 @@ configure_pgadmin_ca_trust() {
     return 0
   fi
 
-  # Pruefen ob TLS-Secret mit der Zertifikatskette existiert
+  # Pruefen ob das idm-Certificate READY ist (P1: Race-Condition-Vermeidung)
+  # switch_certificate_issuer() und restore_le_certs() garantieren nicht in
+  # jedem Fall, dass cert-manager den Secret-Inhalt bereits propagiert hat.
+  if ! kubectl wait --for=condition=Ready \
+       certificate/"${cert_name}" -n "${tls_secret_ns}" --timeout=120s 2>/dev/null; then
+    log_error "Certificate ${cert_name} in ${tls_secret_ns} nicht READY nach 120s — Abbruch"
+    return 1
+  fi
+  log_ok "Certificate ${cert_name} ist READY"
+
+  # TLS-Secret-Pfad aus dem Certificate ableiten (Secret heisst wie das Certificate)
   if ! kubectl get secret "${tls_secret}" -n "${tls_secret_ns}" &>/dev/null; then
-    log_warn "TLS-Secret ${tls_secret} in ${tls_secret_ns} nicht gefunden"
-    return 0
+    log_error "TLS-Secret ${tls_secret} in ${tls_secret_ns} nicht gefunden — Abbruch"
+    return 1
   fi
 
   # Full Chain aus dem TLS-Secret extrahieren
   kubectl get secret "${tls_secret}" -n "${tls_secret_ns}" \
     -o jsonpath='{.data.tls\.crt}' | base64 -d > "${ca_file}"
 
+  if [[ ! -s "${ca_file}" ]]; then
+    log_error "Leere Chain aus Secret ${tls_secret} extrahiert — Abbruch"
+    rm -f "${ca_file}"
+    return 1
+  fi
+
   # Gesamte Chain (Leaf + Intermediate + Cross-Sign) als CA-Bundle verwenden.
   # Das Leaf-Zertifikat im Bundle ist harmlos: Python/OpenSSL nutzen nur
   # die CA-Zertifikate daraus fuer die Chain-Verifikation.
   local ca_chain="${ca_file}"
 
-  # ConfigMap aktualisieren oder anlegen (idempotent via --dry-run + apply)
-  kubectl create configmap "${configmap_name}" \
-    -n "${pgadmin_ns}" \
-    --from-file="cacert.crt=${ca_chain}" \
-    --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null
+  # P2: Hash-Vergleich fuer echte Idempotenz
+  # Nur bei geaenderter Chain wird die ConfigMap aktualisiert und der
+  # Pod neugestartet. Dadurch vermeiden wir unnötige Pod-Neustarts bei
+  # wiederholtem Skript-Durchlauf.
+  local old_hash new_hash
+  old_hash=$(kubectl get configmap "${configmap_name}" -n "${pgadmin_ns}" \
+    -o jsonpath='{.data.cacert\.crt}' 2>/dev/null | sha256sum | awk '{print $1}')
+  new_hash=$(sha256sum "${ca_chain}" | awk '{print $1}')
 
+  if [[ -n "${old_hash}" && "${old_hash}" == "${new_hash}" ]]; then
+    log_ok "ConfigMap ${configmap_name} bereits aktuell — kein Neustart noetig"
+    rm -f "${ca_file}"
+    return 0
+  fi
+
+  # P3: Fehlerausgabe erfassen und loggen — kein /dev/null
+  local apply_output
+  if ! apply_output=$(kubectl create configmap "${configmap_name}" \
+       -n "${pgadmin_ns}" \
+       --from-file="cacert.crt=${ca_chain}" \
+       --dry-run=client -o yaml 2>&1 | kubectl apply -f - 2>&1); then
+    log_error "ConfigMap-Update fehlgeschlagen: ${apply_output}"
+    rm -f "${ca_file}"
+    return 1
+  fi
   log_ok "ConfigMap ${configmap_name} in ${pgadmin_ns} aktualisiert"
 
   # pgAdmin-Pod neustarten, damit der ca-importer die neue Chain importiert
@@ -274,14 +319,52 @@ configure_pgadmin_ca_trust() {
     -l app.kubernetes.io/name=pgadmin4 -o name 2>/dev/null | head -1 || true)
 
   if [[ -n "${pgadmin_pod}" ]]; then
-    kubectl delete pod -n "${pgadmin_ns}" \
-      -l app.kubernetes.io/name=pgadmin4 2>/dev/null
-    log_ok "pgAdmin-Pod neugestartet — ca-importer importiert aktualisierte CA-Chain"
+    local delete_output
+    delete_output=$(kubectl delete pod -n "${pgadmin_ns}" \
+      -l app.kubernetes.io/name=pgadmin4 2>&1)
+    log "pgAdmin-Pod geloescht: $(echo "${delete_output}" | head -1)"
   else
     log_warn "Kein pgAdmin-Pod in ${pgadmin_ns} gefunden — Neustart uebersprungen"
+    rm -f "${ca_file}"
+    return 0
+  fi
+
+  # P4: Verifikation — auf Pod-Ready warten und Trust-Store pruefen
+  if ! kubectl wait pod -n "${pgadmin_ns}" \
+       -l app.kubernetes.io/name=pgadmin4 \
+       --for=condition=Ready --timeout=90s 2>/dev/null; then
+    log_error "pgAdmin-Pod nach Neustart nicht Ready innerhalb 90s"
+    rm -f "${ca_file}"
+    return 1
+  fi
+  log_ok "pgAdmin-Pod Ready nach Neustart"
+
+  local new_pod
+  new_pod=$(kubectl get pod -n "${pgadmin_ns}" \
+    -l app.kubernetes.io/name=pgadmin4 -o name 2>/dev/null | head -1 || true)
+
+  if [[ -n "${new_pod}" ]]; then
+    local cert_count
+    cert_count=$(kubectl exec -n "${pgadmin_ns}" "${new_pod}" -- \
+      sh -c 'grep -c "BEGIN CERTIFICATE" /etc/ssl/certs/ca-certificates.crt' \
+      2>/dev/null || echo 0)
+
+    if [[ "${cert_count}" -lt 1 ]]; then
+      log_warn "ca-importer hat keine Zertifikate importiert (Trust-Store: ${cert_count} Certs)"
+      log_warn "  pgAdmin-OIDC-Login koennte weiterhin fehlschlagen"
+      rc=1
+    else
+      log_ok "pgAdmin-Trust-Store enthaelt ${cert_count} Zertifikate — ca-importer aktiv"
+    fi
   fi
 
   # Aufraeumen
   rm -f "${ca_file}"
-  log_ok "pgAdmin-CA-Trust konfiguriert"
+
+  if [[ "${rc}" -eq 0 ]]; then
+    log_ok "pgAdmin-CA-Trust konfiguriert"
+  else
+    log_warn "pgAdmin-CA-Trust mit Warnungen abgeschlossen"
+  fi
+  return "${rc}"
 }
