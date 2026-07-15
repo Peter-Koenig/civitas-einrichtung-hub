@@ -16,7 +16,7 @@ GATEWAY_API_VERSION="v1.2.1"        # Kubernetes Gateway API CRDs (standard chan
 # ── Plattform ────────────────────────────────────────────────────────────────
 DOMAIN_NAME="${DOMAIN_NAME:?'DOMAIN_NAME muss als Umgebungsvariable gesetzt sein (z.B. example.org)'}"
 DOMAIN="udp.${DOMAIN_NAME}"
-K8S_NAMESPACE="civitas-core"
+# K8S_NAMESPACE (Singular) wurde entfernt — alle Prüfungen nutzen K8S_NAMESPACES-Array
 KUBECONFIG_PATH="${HOME}/.kube/config"
 export KUBECONFIG="${KUBECONFIG_PATH}"
 K3S_DATA_DIR="/var/lib/rancher/k3s"

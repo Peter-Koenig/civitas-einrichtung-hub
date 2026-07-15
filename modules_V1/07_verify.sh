@@ -157,47 +157,55 @@ verify_phase2() {
     return 1
   fi
 
-  # Pods der Plattform
-  local civitas_pods civitas_running civitas_failed
-  civitas_pods="$(kubectl --kubeconfig="${KUBECONFIG_PATH}" \
-    get pods -n "${K8S_NAMESPACE}" -o name 2>/dev/null | wc -l)"
-  civitas_running="$(kubectl --kubeconfig="${KUBECONFIG_PATH}" \
-    get pods -n "${K8S_NAMESPACE}" \
-    --field-selector=status.phase=Running -o name 2>/dev/null | wc -l)"
-  civitas_failed="$(kubectl --kubeconfig="${KUBECONFIG_PATH}" \
-    get pods -n "${K8S_NAMESPACE}" \
-    --field-selector=status.phase!=Running,status.phase!=Succeeded \
-    -o name 2>/dev/null | wc -l)"
-  if [[ "$civitas_pods" -gt 0 ]] && [[ "$civitas_failed" -eq 0 ]]; then
-    log_ok "[PHASE 2] ${civitas_running}/${civitas_pods} Pods Running ... OK"
+  # Pods der Plattform (aggregiert ueber alle K8S_NAMESPACES)
+  local total_pods=0 total_running=0 total_failed=0
+  for ns in "${K8S_NAMESPACES[@]}"; do
+    local p_ns r_ns f_ns
+    p_ns="$(kubectl --kubeconfig="${KUBECONFIG_PATH}" get pods -n "${ns}" -o name 2>/dev/null | wc -l)"
+    r_ns="$(kubectl --kubeconfig="${KUBECONFIG_PATH}" get pods -n "${ns}" --field-selector=status.phase=Running -o name 2>/dev/null | wc -l)"
+    f_ns="$(kubectl --kubeconfig="${KUBECONFIG_PATH}" get pods -n "${ns}" --field-selector=status.phase!=Running,status.phase!=Succeeded -o name 2>/dev/null | wc -l)"
+    total_pods=$(( total_pods + p_ns ))
+    total_running=$(( total_running + r_ns ))
+    total_failed=$(( total_failed + f_ns ))
+  done
+  if [[ "$total_pods" -gt 0 ]] && [[ "$total_failed" -eq 0 ]]; then
+    log_ok "[PHASE 2] ${total_running}/${total_pods} Pods Running ... OK"
   else
-    log_error "[PHASE 2] ${civitas_failed} Pod(s) nicht Running (${civitas_running}/${civitas_pods})"
+    log_error "[PHASE 2] ${total_failed} Pod(s) nicht Running (${total_running}/${total_pods})"
     (( VERIFY_ERRORS++ )) || true
   fi
 
-  # Ingress-Ressourcen
-  local ingress_count
-  ingress_count="$(kubectl --kubeconfig="${KUBECONFIG_PATH}" \
-    get ingress -n "${K8S_NAMESPACE}" -o name 2>/dev/null | wc -l)"
-  if [[ "$ingress_count" -ge 2 ]]; then
-    log_ok "[PHASE 2] Ingress-Ressourcen (${ingress_count}) ... OK"
-  elif [[ "$ingress_count" -eq 1 ]]; then
-    log_warn "[PHASE 2] Nur 1 Ingress-Ressource gefunden (erwartet: 2 für idm + portal)"
+  # Ingress-Ressourcen (aggregiert ueber alle K8S_NAMESPACES)
+  local total_ingress=0
+  for ns in "${K8S_NAMESPACES[@]}"; do
+    local ic_ns
+    ic_ns="$(kubectl --kubeconfig="${KUBECONFIG_PATH}" get ingress -n "${ns}" -o name 2>/dev/null | wc -l)"
+    total_ingress=$(( total_ingress + ic_ns ))
+  done
+  if [[ "$total_ingress" -ge 2 ]]; then
+    log_ok "[PHASE 2] Ingress-Ressourcen (${total_ingress}) ... OK"
+  elif [[ "$total_ingress" -eq 1 ]]; then
+    log_warn "[PHASE 2] Nur 1 Ingress-Ressource gefunden (erwartet: mindestens 2)"
     (( VERIFY_ERRORS++ )) || true
   else
-    log_error "[PHASE 2] Keine Ingress-Ressourcen in ${K8S_NAMESPACE}"
+    log_error "[PHASE 2] Keine Ingress-Ressourcen in Namespaces"
     (( VERIFY_ERRORS++ )) || true
   fi
 
-  # TLS-Zertifikate
-  local cert_count cert_ready
-  cert_count="$(kubectl --kubeconfig="${KUBECONFIG_PATH}" \
-    get certificate -n "${K8S_NAMESPACE}" -o name 2>/dev/null | wc -l)"
-  cert_ready="$(kubectl --kubeconfig="${KUBECONFIG_PATH}" \
-    get certificate -n "${K8S_NAMESPACE}" \
-    -o jsonpath='{.items[*].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)"
-  if [[ "$cert_count" -gt 0 ]] && [[ "$cert_ready" != *"False"* ]]; then
-    log_ok "[PHASE 2] TLS-Zertifikate (${cert_count}) ... OK"
+  # TLS-Zertifikate (aggregiert ueber alle K8S_NAMESPACES)
+  local total_certs=0 certs_not_ready=false
+  for ns in "${K8S_NAMESPACES[@]}"; do
+    local cc_ns cr_ns
+    cc_ns="$(kubectl --kubeconfig="${KUBECONFIG_PATH}" get certificate -n "${ns}" -o name 2>/dev/null | wc -l)"
+    cr_ns="$(kubectl --kubeconfig="${KUBECONFIG_PATH}" get certificate -n "${ns}" \
+      -o jsonpath='{.items[*].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)"
+    total_certs=$(( total_certs + cc_ns ))
+    if [[ "$cr_ns" == *"False"* ]]; then
+      certs_not_ready=true
+    fi
+  done
+  if [[ "$total_certs" -gt 0 ]] && [[ "$certs_not_ready" == false ]]; then
+    log_ok "[PHASE 2] TLS-Zertifikate (${total_certs}) ... OK"
   else
     log_error "[PHASE 2] TLS-Zertifikate nicht bereit"
     (( VERIFY_ERRORS++ )) || true
