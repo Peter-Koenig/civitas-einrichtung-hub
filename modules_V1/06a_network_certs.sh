@@ -32,21 +32,22 @@ set -euo pipefail
 # beschreibt den gewuenschten Zielzustand, unabhaengig von der Ausfuehrbarkeit.
 # Die Blockade wird in Schritt 3 (apply_target_state) geprueft.
 resolve_target_state() {
-    local backup_file="${VM_REMOTE_INSTALL_DIR}/le-certs-backup.yaml"
-
-    if [[ "${LE_CERT}" != "true" ]]; then
-        echo "keep_staging"
-        return 0
-    fi
+    local backup_file="${CERT_BACKUP_FILE:-${VM_REMOTE_INSTALL_DIR}/le-certs-backup.yaml}"
 
     if [[ -f "${backup_file}" ]]; then
         echo "restore_backup"
         return 0
     fi
 
+    if [[ "${LE_CERT}" != "true" ]]; then
+        echo "keep_staging"
+        return 0
+    fi
+
     echo "request_prod"
     return 0
 }
+
 
 
 # ── WireGuard konfigurieren und Tunnel aktivieren ────────────────────────────
@@ -171,9 +172,32 @@ cleanup_geodata_ingress() {
 # laufen und READY=True sind.
 # Idempotenz: Bereits auf Staging → nichts tun.
 ensure_staging_baseline() {
-    log "=== ensure_staging_baseline: Staging-Issuer aktiv ==="
-    log_ok "Staging ist Default-Zustand nach cc_cli exec – keine Aktion erforderlich"
+    log "=== ensure_staging_baseline: Pruefe Staging-Issuer ==="
+    local all_expected=true
+    for ns in "${K8S_NAMESPACES[@]}"; do
+        local ingress_hosts
+        ingress_hosts=$(kubectl get ingress -n "${ns}" \
+            -o jsonpath='{range .items[*]}{.spec.rules[*].host}{"\n"}{end}' 2>/dev/null)
+        while IFS= read -r host; do
+            [[ -z "${host}" ]] && continue
+            local cert_name="${host}-tls"
+            local issuer
+            issuer=$(kubectl get certificate "${cert_name}" -n "${ns}" \
+                -o jsonpath='{.spec.issuerRef.name}' 2>/dev/null || true)
+            if [[ -z "${issuer}" ]]; then
+                continue
+            fi
+            if [[ "${issuer}" != "letsencrypt-staging" && "${issuer}" != "selfsigned-issuer" ]]; then
+                log_warn "  ${host} (${ns}): issuerRef=${issuer} (weder staging noch selfsigned)"
+                all_expected=false
+            fi
+        done <<< "${ingress_hosts}"
+    done
+    if [[ "${all_expected}" == "true" ]]; then
+        log_ok "Alle Zertifikate auf erwartetem Issuer (staging/selfsigned)"
+    fi
 }
+
 
 
 # ── apply_target_state: Zielzustand ausfuehren ──────────────────────────

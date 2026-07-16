@@ -118,6 +118,7 @@ SSH_PUBKEY_PATH="${HOME}/.ssh/authorized_keys"  # SSH-Public-Key für root-Zugan
 
 # ── Remote-Ausführung in der VM ─────────────────────────────────────────────
 VM_REMOTE_INSTALL_DIR="/root/civitas-install"   # Zielverzeichnis für scp/SSH in der VM
+CERT_BACKUP_FILE="${CERT_BACKUP_FILE:-${VM_REMOTE_INSTALL_DIR}/le-certs-backup.yaml}"
 
 # ── Credentials-Ausgabe ─────────────────────────────────────────────────────
 CREDENTIALS_OUTPUT_PATH="${CREDENTIALS_OUTPUT_PATH:-/root/civitas-install/credentials.env}"
