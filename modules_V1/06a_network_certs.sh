@@ -32,7 +32,15 @@ set -euo pipefail
 # beschreibt den gewuenschten Zielzustand, unabhaengig von der Ausfuehrbarkeit.
 # Die Blockade wird in Schritt 3 (apply_target_state) geprueft.
 resolve_target_state() {
-    local backup_file="${CERT_BACKUP_FILE:-${VM_REMOTE_INSTALL_DIR}/le-certs-backup.yaml}"
+    local backup_file="${VM_REMOTE_INSTALL_DIR}/le-certs-backup.yaml"
+    if [[ -n "${CERT_BACKUP_FILE}" ]]; then
+        if [[ "${CERT_BACKUP_FILE}" == /* ]]; then
+            backup_file="${CERT_BACKUP_FILE}"
+        else
+            backup_file="${VM_REMOTE_INSTALL_DIR}/${CERT_BACKUP_FILE}"
+        fi
+    fi
+
 
     if [[ -f "${backup_file}" ]]; then
         echo "restore_backup"
