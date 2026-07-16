@@ -80,7 +80,7 @@ install_civitas() {
     log_error "apply_target_state fehlgeschlagen (Zielzustand: ${resolved_state})"
     exit 1
   fi
-  if ! verify_certificates; then
+  if ! verify_certificates "${resolved_state}"; then
     log_error "verify_certificates: mindestens ein Host ohne gueltigen Nachweis"
     exit 1
   fi

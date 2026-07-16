@@ -252,28 +252,23 @@ apply_target_state() {
     esac
 }
 
-# ── verify_certificates: Pfadunabhaengige Zertifikats-Abnahme ─────────
-# Zentrale, pfadunabhaengige Verifikation. Laeuft NACH apply_target_state()
-# fuer ALLE Zielzustaende (keep_staging, restore_backup, request_prod)
-# gleichermassen. Prueft pro Hostname genau einen der drei gueltigen
-# Nachweise:
-#   a) Staging-Annotation civitas.io/staging-verified="true"
-#   b) Produktivzertifikat READY=True mit issuerRef letsencrypt-prod
-#   c) Backup-Restore mit identischem notBefore-Zeitstempel
-# Gibt Report aus und liefert Exit-Code 0 (alle ok) oder 1 (Fehler).
 
 # ── verify_certificates: Pfadunabhaengige Zertifikats-Abnahme ─────────
-# Zentrale, pfadunabhaengige Verifikation. Laeuft NACH apply_target_state()
-# fuer ALLE Zielzustaende gleichermassen. Iteriert ueber alle K8S_NAMESPACES.
-# Prueft pro Hostname genau einen der drei gueltigen Nachweise:
-#   a) Staging-Annotation civitas.io/staging-verified="true"
+# Verifiziert pro Hostname GENAU EINEN gueltigen Nachweis, basierend
+# auf dem via $1 uebergebenen target_state:
+#   - target_state=keep_staging:    Nachweis (a) oder (d)
+#   - target_state=restore_backup/
+#     request_prod:                 Nachweis (a), (b) oder (c)
+# Nachweise:
+#   a) Staging-Annotation civitas.io/staging-verified="true" (immer gueltig)
 #   b) Produktivzertifikat READY=True mit issuerRef letsencrypt-prod
 #   c) Backup-Restore mit identischem notBefore-Zeitstempel
-# Gibt Report aus und liefert Exit-Code 0 (alle ok) oder 1 (Fehler).
+#   d) Staging-Zertifikat READY=True mit issuerRef letsencrypt-staging
 verify_certificates() {
+    local target_state="${1:?target_state muss uebergeben werden}"
     log ""
     log "============================================"
-    log "  REPORT: verify_certificates"
+    log "  REPORT: verify_certificates (target_state=${target_state})"
     log "============================================"
 
     local backup_file="${CERT_BACKUP_FILE}"
@@ -288,29 +283,10 @@ verify_certificates() {
         while IFS= read -r host; do
             [[ -z "${host}" ]] && continue
             total=$((total + 1))
-
             local cert_name="${host}-tls"
 
-            # Nachweis (d): LE_CERT=false -> Staging-Zertifikat erwartet
-            if [[ "${LE_CERT}" != "true" ]]; then
-                local staging_ready_d staging_issuer_d
-                staging_issuer_d=$(kubectl get certificate "${cert_name}" -n "${ns}" \
-                    -o jsonpath='{.spec.issuerRef.name}' 2>/dev/null)
-                staging_ready_d=$(kubectl get certificate "${cert_name}" -n "${ns}" \
-                    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
-                if [[ "${staging_ready_d}" == "True" && "${staging_issuer_d}" == "letsencrypt-staging" ]]; then
-                    log_ok "  ${host} (${ns}): Nachweis (d) Staging, LE_CERT=false"
-                    ok=$((ok + 1))
-                    continue
-                else
-                    log_error "  ${host} (${ns}): LE_CERT=false, aber Staging nicht READY (issuer=${staging_issuer_d:-leer})"
-                    failed=$((failed + 1))
-                    failed_hosts+=("${host}")
-                    continue
-                fi
-            fi
-
-            # Nachweis (a): Staging-Annotation
+            # Nachweis (a): Staging-Annotation — IMMER zulaessig,
+            # unabhaengig von target_state
             local staging_annotation
             staging_annotation=$(kubectl get certificate "${cert_name}" -n "${ns}" \
                 -o jsonpath='{.metadata.annotations.civitas\.io/staging-verified}' 2>/dev/null)
@@ -320,38 +296,53 @@ verify_certificates() {
                 continue
             fi
 
-            # Nachweis (b): Produktivzertifikat READY mit issuerRef prod
-            local cert_issuer cert_ready
-            cert_issuer=$(kubectl get certificate "${cert_name}" -n "${ns}" \
-                -o jsonpath='{.spec.issuerRef.name}' 2>/dev/null)
-            cert_ready=$(kubectl get certificate "${cert_name}" -n "${ns}" \
-                -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
-            if [[ "${cert_ready}" == "True" && "${cert_issuer}" == "letsencrypt-prod" ]]; then
-                log_ok "  ${host} (${ns}): Nachweis (b) Produktiv READY"
-                ok=$((ok + 1))
-                continue
-            fi
+            case "${target_state}" in
+                keep_staging)
+                    local issuer ready
+                    issuer=$(kubectl get certificate "${cert_name}" -n "${ns}" \
+                        -o jsonpath='{.spec.issuerRef.name}' 2>/dev/null)
+                    ready=$(kubectl get certificate "${cert_name}" -n "${ns}" \
+                        -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+                    if [[ "${ready}" == "True" && "${issuer}" == "letsencrypt-staging" ]]; then
+                        log_ok "  ${host} (${ns}): Nachweis (d) Staging READY"
+                        ok=$((ok + 1))
+                        continue
+                    fi
+                    ;;
+                restore_backup|request_prod)
+                    local issuer ready
+                    issuer=$(kubectl get certificate "${cert_name}" -n "${ns}" \
+                        -o jsonpath='{.spec.issuerRef.name}' 2>/dev/null)
+                    ready=$(kubectl get certificate "${cert_name}" -n "${ns}" \
+                        -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+                    if [[ "${ready}" == "True" && "${issuer}" == "letsencrypt-prod" ]]; then
+                        log_ok "  ${host} (${ns}): Nachweis (b) Produktiv READY"
+                        ok=$((ok + 1))
+                        continue
+                    fi
+                    if [[ -f "${backup_file}" ]]; then
+                        local nb_backup nb_cluster
+                        nb_backup=$(yq eval "select(.metadata.name == \"${cert_name}\") | .data[\"tls.crt\"]" \
+                            "${backup_file}" 2>/dev/null | base64 -d 2>/dev/null \
+                            | openssl x509 -noout -dates 2>/dev/null | grep notBefore | cut -d= -f2)
+                        nb_cluster=$(kubectl get secret "${cert_name}" -n "${ns}" \
+                            -o jsonpath='{.data.tls\.crt}' 2>/dev/null | base64 -d 2>/dev/null \
+                            | openssl x509 -noout -dates 2>/dev/null | grep notBefore | cut -d= -f2)
+                        if [[ -n "${nb_backup}" && "${nb_backup}" == "${nb_cluster}" ]]; then
+                            log_ok "  ${host} (${ns}): Nachweis (c) Backup-Restore"
+                            ok=$((ok + 1))
+                            continue
+                        fi
+                    fi
+                    ;;
+                *)
+                    log_error "  ${host} (${ns}): unbekannter target_state=${target_state}"
+                    ;;
+            esac
 
-            # Nachweis (c): Backup-Restore mit identischem notBefore
-            if [[ -f "${backup_file}" ]]; then
-                local nb_backup nb_cluster
-                nb_backup=$(yq eval "select(.metadata.name == \"${cert_name}\") | .data[\"tls.crt\"]" \
-                    "${backup_file}" 2>/dev/null | base64 -d 2>/dev/null | openssl x509 -noout -dates 2>/dev/null \
-                    | grep notBefore | cut -d= -f2)
-                nb_cluster=$(kubectl get secret "${cert_name}" -n "${ns}" \
-                    -o jsonpath='{.data.tls\.crt}' 2>/dev/null | base64 -d 2>/dev/null \
-                    | openssl x509 -noout -dates 2>/dev/null | grep notBefore | cut -d= -f2)
-                if [[ -n "${nb_backup}" && "${nb_backup}" == "${nb_cluster}" ]]; then
-                    log_ok "  ${host} (${ns}): Nachweis (c) Backup-Restore (notBefore identisch)"
-                    ok=$((ok + 1))
-                    continue
-                fi
-            fi
-
-            log_error "  ${host} (${ns}): KEIN gueltiger Nachweis (a/b/c/d) gefunden"
+            log_error "  ${host} (${ns}): KEIN gueltiger Nachweis fuer target_state=${target_state}"
             failed=$((failed + 1))
             failed_hosts+=("${host}")
-
         done <<< "${ingress_hosts}"
     done
 
@@ -368,13 +359,6 @@ verify_certificates() {
     return $?
 }
 
-
-# ── restore_backup_and_switch_to_prod: Backup-Restore mit Controller-Pause ──
-# Zielzustand: restore_backup
-# Stoppt zunaechst den cert-manager Controller, ersetzt Secrets via
-# kubectl replace --force, legt Certificate-Objekte manuell mit korrektem
-# issuerRef an, startet Controller neu. Verifiziert notBefore VOR
-# Controller-Restart (garantiert, dass Backup-Zeitstempel erhalten bleibt).
 restore_backup_and_switch_to_prod() {
   log "=== restore_backup_and_switch_to_prod: Backup-Restore mit Controller-Pause ==="
   local backup_file="${CERT_BACKUP_FILE}"
