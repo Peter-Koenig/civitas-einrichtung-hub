@@ -276,14 +276,14 @@ verify_certificates() {
     local failed_hosts=()
 
     for ns in "${K8S_NAMESPACES[@]}"; do
-        local ingress_hosts
-        ingress_hosts=$(kubectl get ingress -n "${ns}" \
-            -o jsonpath='{range .items[*]}{.spec.rules[*].host}{"\n"}{end}' 2>/dev/null)
+        local ingress_data
+        ingress_data=$(kubectl get ingress -n "${ns}" -o json 2>/dev/null \
+            | jq -r '.items[] | select(.spec.tls|type=="array" and length>0) | .spec.tls[0] | "\(.hosts[0])\t\(.secretName)"')
 
-        while IFS= read -r host; do
+        while IFS=$'\t' read -r host secret_name; do
             [[ -z "${host}" ]] && continue
             total=$((total + 1))
-            local cert_name="${host}-tls"
+            local cert_name="${secret_name}"
 
             # Nachweis (a): Staging-Annotation — IMMER zulaessig,
             # unabhaengig von target_state
@@ -343,7 +343,7 @@ verify_certificates() {
             log_error "  ${host} (${ns}): KEIN gueltiger Nachweis fuer target_state=${target_state}"
             failed=$((failed + 1))
             failed_hosts+=("${host}")
-        done <<< "${ingress_hosts}"
+        done <<< "${ingress_data}"
     done
 
     log ""
