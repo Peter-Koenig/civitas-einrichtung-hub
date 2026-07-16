@@ -314,11 +314,46 @@ setup_tests_env() {
     log_ok "Python-Venv bereits vorhanden"
   fi
 
+
   # Playwright-Browser installieren
-  log "Installiere Playwright-Browser …"
-  (cd "${tests_dir}" && source .venv/bin/activate && playwright install --with-deps chromium 2>/dev/null) || {
+  # HINWEIS: playwright install --with-deps NICHT verwenden — fragt
+  # veraltete Ubuntu-Paketnamen (ttf-ubuntu-font-family, ttf-unifont)
+  # an, die in Debian 13 Trixie nicht existieren. Ersatzpakete
+  # (fonts-ubuntu aus non-free, fonts-unifont aus main) sowie die
+  # Chromium-Laufzeitbibliotheken werden unten explizit installiert.
+  log "Installiere Font- und Laufzeit-Abhaengigkeiten fuer Playwright/Chromium …"
+  if apt-get install -y \
+      fonts-ubuntu fonts-unifont \
+      libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libxcb1 \
+      libxkbcommon0 libatspi2.0-0 libx11-6 libxcomposite1 libxdamage1 \
+      libxext6 libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 libcairo2 \
+      libasound2 2>&1; then
+    log_ok "Font- und Laufzeit-Abhaengigkeiten installiert"
+  else
+    log_warn "Font-/Bibliotheks-Installation fehlgeschlagen — Playwright-Browser-Install wird trotzdem versucht"
+  fi
+
+  log "Installiere Playwright-Browser (chromium, ohne --with-deps) …"
+  cd "${tests_dir}"
+  source .venv/bin/activate
+  if "${tests_dir}/.venv/bin/python" -m playwright install chromium 2>&1; then
+    log_ok "Playwright-Browser (chromium) installiert"
+  else
     log_warn "Playwright-Installation fehlgeschlagen — UI-Tests werden uebersprungen"
-  }
+  fi
+
+  if "${tests_dir}/.venv/bin/python" -c "
+from playwright.sync_api import sync_playwright
+p = sync_playwright().start()
+b = p.chromium.launch()
+print('Chromium OK')
+b.close()
+p.stop()
+" 2>&1; then
+    log_ok "Chromium startet erfolgreich"
+  else
+    log_warn "Chromium-Start fehlgeschlagen — UI-Tests werden uebersprungen"
+  fi
 
   # .env aus Secrets generieren (sofern nicht vorhanden)
   if [[ ! -f "${tests_dir}/.env" ]]; then

@@ -20,6 +20,7 @@ run_preflight() {
   check_smtp
   check_k3s_version
   check_pbs_backup
+  check_nonfree_source
 }
 
 # ── OS ──
@@ -343,5 +344,40 @@ check_pbs_backup() {
     fi
   else
     log_warn "Kein PBS-Storage '${PBS_STORAGE}' gefunden — Backup vor Produktivbetrieb einrichten"
+  fi
+}
+
+# ── non-free-Quelle (apt) ────────────────────────────────────────────────────
+# Prueft, ob die Sektion non-free in /etc/apt/sources.list.d/debian.sources
+# aktiviert ist. Wird fuer fonts-ubuntu (Playwright/Chromium unter Debian 13
+# Trixie) benoetigt. Idempotent: schon aktiv → nichts tun.
+check_nonfree_source() {
+  log "Pruefe non-free in apt-Quellen …"
+  local sources_file="/etc/apt/sources.list.d/debian.sources"
+  local sources_legacy="/etc/apt/sources.list"
+
+  if [[ -f "${sources_file}" ]]; then
+    if grep -q "^Components.*\bnon-free\b" "${sources_file}" 2>/dev/null; then
+      log_ok "non-free bereits in ${sources_file} aktiv"
+      return 0
+    fi
+    log "non-free nicht gefunden — ergaenze in ${sources_file} …"
+    sed -i 's/^Components: \(.*\)$/Components: \1 non-free/' "${sources_file}"
+    if apt-get update -qq 2>&1; then
+      log_ok "non-free hinzugefuegt und apt-Update erfolgreich"
+    else
+      log_warn "apt-get update nach non-free-Ergaenzung fehlgeschlagen"
+      log_warn "  fonts-ubuntu (Playwright/Chromium) ist ggf. nicht installierbar"
+    fi
+  elif [[ -f "${sources_legacy}" ]]; then
+    if grep -q "^deb.*non-free" "${sources_legacy}" 2>/dev/null; then
+      log_ok "non-free bereits in ${sources_legacy} aktiv"
+      return 0
+    fi
+    log_warn "non-free nicht in ${sources_legacy} gefunden"
+    log_warn "  Bitte manuell ergaenzen und apt-get update ausfuehren"
+  else
+    log_warn "Keine apt-Quellen-Datei gefunden (weder ${sources_file} noch ${sources_legacy})"
+    log_warn "  non-free kann nicht automatisch aktiviert werden"
   fi
 }
