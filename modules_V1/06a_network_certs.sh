@@ -359,6 +359,13 @@ verify_certificates() {
     return $?
 }
 
+# ── restore_backup_and_switch_to_prod: Backup-Restore mit Controller-Pause ──
+# Zielzustand: restore_backup
+# Stoppt zunaechst den cert-manager Controller, ersetzt Secrets via
+# kubectl replace --force, legt Certificate-Objekte manuell mit korrektem
+# issuerRef an, startet Controller neu. Verifiziert notBefore VOR
+# Controller-Restart (garantiert, dass Backup-Zeitstempel erhalten bleibt).
+
 restore_backup_and_switch_to_prod() {
   log "=== restore_backup_and_switch_to_prod: Backup-Restore mit Controller-Pause ==="
   local backup_file="${CERT_BACKUP_FILE}"
