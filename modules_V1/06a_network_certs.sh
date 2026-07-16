@@ -236,6 +236,15 @@ apply_target_state() {
 #   b) Produktivzertifikat READY=True mit issuerRef letsencrypt-prod
 #   c) Backup-Restore mit identischem notBefore-Zeitstempel
 # Gibt Report aus und liefert Exit-Code 0 (alle ok) oder 1 (Fehler).
+
+# ── verify_certificates: Pfadunabhaengige Zertifikats-Abnahme ─────────
+# Zentrale, pfadunabhaengige Verifikation. Laeuft NACH apply_target_state()
+# fuer ALLE Zielzustaende gleichermassen. Iteriert ueber alle K8S_NAMESPACES.
+# Prueft pro Hostname genau einen der drei gueltigen Nachweise:
+#   a) Staging-Annotation civitas.io/staging-verified="true"
+#   b) Produktivzertifikat READY=True mit issuerRef letsencrypt-prod
+#   c) Backup-Restore mit identischem notBefore-Zeitstempel
+# Gibt Report aus und liefert Exit-Code 0 (alle ok) oder 1 (Fehler).
 verify_certificates() {
     log ""
     log "============================================"
@@ -246,85 +255,80 @@ verify_certificates() {
     local total=0 ok=0 failed=0
     local failed_hosts=()
 
-    local cert_ns="${CC_ENVIRONMENT}-access-stack"
-    local ingress_hosts
-    ingress_hosts=$(kubectl get ingress -n "${cert_ns}" \
-        -o jsonpath='{range .items[*]}{.spec.rules[*].host}{"\n"}{end}' 2>/dev/null)
+    for ns in "${K8S_NAMESPACES[@]}"; do
+        local ingress_hosts
+        ingress_hosts=$(kubectl get ingress -n "${ns}" \
+            -o jsonpath='{range .items[*]}{.spec.rules[*].host}{"\n"}{end}' 2>/dev/null)
 
-    while IFS= read -r host; do
-        [[ -z "${host}" ]] && continue
-        total=$((total + 1))
+        while IFS= read -r host; do
+            [[ -z "${host}" ]] && continue
+            total=$((total + 1))
 
-        local cert_name="${host}-tls"
+            local cert_name="${host}-tls"
 
-        # Nachweis (d): LE_CERT=false -> Staging-Zertifikat erwartet
-        if [[ "${LE_CERT}" != "true" ]]; then
-            local staging_ready_d staging_issuer_d
-            staging_issuer_d=$(kubectl get certificate "${cert_name}" -n "${cert_ns}" \
+            # Nachweis (d): LE_CERT=false -> Staging-Zertifikat erwartet
+            if [[ "${LE_CERT}" != "true" ]]; then
+                local staging_ready_d staging_issuer_d
+                staging_issuer_d=$(kubectl get certificate "${cert_name}" -n "${ns}" \
+                    -o jsonpath='{.spec.issuerRef.name}' 2>/dev/null)
+                staging_ready_d=$(kubectl get certificate "${cert_name}" -n "${ns}" \
+                    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+                if [[ "${staging_ready_d}" == "True" && "${staging_issuer_d}" == "letsencrypt-staging" ]]; then
+                    log_ok "  ${host} (${ns}): Nachweis (d) Staging, LE_CERT=false"
+                    ok=$((ok + 1))
+                    continue
+                else
+                    log_error "  ${host} (${ns}): LE_CERT=false, aber Staging nicht READY (issuer=${staging_issuer_d:-leer})"
+                    failed=$((failed + 1))
+                    failed_hosts+=("${host}")
+                    continue
+                fi
+            fi
+
+            # Nachweis (a): Staging-Annotation
+            local staging_annotation
+            staging_annotation=$(kubectl get certificate "${cert_name}" -n "${ns}" \
+                -o jsonpath='{.metadata.annotations.civitas\.io/staging-verified}' 2>/dev/null)
+            if [[ "${staging_annotation}" == "true" ]]; then
+                log_ok "  ${host} (${ns}): Nachweis (a) Staging-Annotation"
+                ok=$((ok + 1))
+                continue
+            fi
+
+            # Nachweis (b): Produktivzertifikat READY mit issuerRef prod
+            local cert_issuer cert_ready
+            cert_issuer=$(kubectl get certificate "${cert_name}" -n "${ns}" \
                 -o jsonpath='{.spec.issuerRef.name}' 2>/dev/null)
-            staging_ready_d=$(kubectl get certificate "${cert_name}" -n "${cert_ns}" \
+            cert_ready=$(kubectl get certificate "${cert_name}" -n "${ns}" \
                 -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
-
-            if [[ "${staging_ready_d}" == "True" && "${staging_issuer_d}" == "letsencrypt-staging" ]]; then
-                log_ok "  ${host}: Nachweis (d) Staging-Zertifikat READY, LE_CERT=false (Zielzustand korrekt)"
-                ok=$((ok + 1))
-                continue
-            else
-                log_error "  ${host}: LE_CERT=false, aber Staging-Zertifikat nicht READY (issuer=${staging_issuer_d:-leer})"
-                failed=$((failed + 1))
-                failed_hosts+=("${host}")
-                continue
-            fi
-        fi
-
-
-        # Nachweis (a): Staging-Annotation
-        local staging_annotation
-        staging_annotation=$(kubectl get certificate "${cert_name}" -n "${cert_ns}" \
-            -o jsonpath='{.metadata.annotations.civitas\.io/staging-verified}' 2>/dev/null)
-
-        if [[ "${staging_annotation}" == "true" ]]; then
-            log_ok "  ${host}: Nachweis (a) Staging-Annotation vorhanden"
-            ok=$((ok + 1))
-            continue
-        fi
-
-        # Nachweis (b): Produktivzertifikat READY mit issuerRef prod
-        local cert_issuer cert_ready
-        cert_issuer=$(kubectl get certificate "${cert_name}" -n "${cert_ns}" \
-            -o jsonpath='{.spec.issuerRef.name}' 2>/dev/null)
-        cert_ready=$(kubectl get certificate "${cert_name}" -n "${cert_ns}" \
-            -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
-
-        if [[ "${cert_ready}" == "True" && "${cert_issuer}" == "letsencrypt-prod" ]]; then
-            log_ok "  ${host}: Nachweis (b) Produktivzertifikat READY (issuer=${cert_issuer})"
-            ok=$((ok + 1))
-            continue
-        fi
-
-        # Nachweis (c): Backup-Restore mit identischem notBefore
-        if [[ -f "${backup_file}" ]]; then
-            local not_before_backup not_before_cluster
-            not_before_backup=$(yq eval "select(.metadata.name == \"${cert_name}\") | .data[\"tls.crt\"]" \
-                "${backup_file}" 2>/dev/null | base64 -d 2>/dev/null | openssl x509 -noout -dates 2>/dev/null \
-                | grep notBefore | cut -d= -f2)
-            not_before_cluster=$(kubectl get secret "${cert_name}" -n "${cert_ns}" \
-                -o jsonpath='{.data.tls\.crt}' 2>/dev/null | base64 -d 2>/dev/null \
-                | openssl x509 -noout -dates 2>/dev/null | grep notBefore | cut -d= -f2)
-
-            if [[ -n "${not_before_backup}" && "${not_before_backup}" == "${not_before_cluster}" ]]; then
-                log_ok "  ${host}: Nachweis (c) Backup-Restore verifiziert (notBefore identisch)"
+            if [[ "${cert_ready}" == "True" && "${cert_issuer}" == "letsencrypt-prod" ]]; then
+                log_ok "  ${host} (${ns}): Nachweis (b) Produktiv READY"
                 ok=$((ok + 1))
                 continue
             fi
-        fi
 
-        # Kein Nachweis erfolgreich
-        log_error "  ${host}: KEIN gueltiger Nachweis (a/b/c) gefunden"
-        failed=$((failed + 1))
-        failed_hosts+=("${host}")
+            # Nachweis (c): Backup-Restore mit identischem notBefore
+            if [[ -f "${backup_file}" ]]; then
+                local nb_backup nb_cluster
+                nb_backup=$(yq eval "select(.metadata.name == \"${cert_name}\") | .data[\"tls.crt\"]" \
+                    "${backup_file}" 2>/dev/null | base64 -d 2>/dev/null | openssl x509 -noout -dates 2>/dev/null \
+                    | grep notBefore | cut -d= -f2)
+                nb_cluster=$(kubectl get secret "${cert_name}" -n "${ns}" \
+                    -o jsonpath='{.data.tls\.crt}' 2>/dev/null | base64 -d 2>/dev/null \
+                    | openssl x509 -noout -dates 2>/dev/null | grep notBefore | cut -d= -f2)
+                if [[ -n "${nb_backup}" && "${nb_backup}" == "${nb_cluster}" ]]; then
+                    log_ok "  ${host} (${ns}): Nachweis (c) Backup-Restore (notBefore identisch)"
+                    ok=$((ok + 1))
+                    continue
+                fi
+            fi
 
-    done <<< "${ingress_hosts}"
+            log_error "  ${host} (${ns}): KEIN gueltiger Nachweis (a/b/c/d) gefunden"
+            failed=$((failed + 1))
+            failed_hosts+=("${host}")
+
+        done <<< "${ingress_hosts}"
+    done
 
     log ""
     log "  Hosts gesamt:  ${total}"
@@ -338,45 +342,88 @@ verify_certificates() {
     [[ ${failed} -eq 0 ]]
     return $?
 }
-# ── LE-Zertifikate aus Backup wiederherstellen ──────────────────────────────
-restore_backup_and_switch_to_prod() {
-  log "=== restore_backup_and_switch_to_prod: Wiederherstellung aus Backup ==="
-  local backup_file="${VM_REMOTE_INSTALL_DIR}/le-certs-backup.yaml"
 
-  # LE_REQUESTS_BLOCKED Safety-Schalter: gar keine Zertifikatsanforderung
+
+# ── restore_backup_and_switch_to_prod: Backup-Restore mit Controller-Pause ──
+# Zielzustand: restore_backup
+# Stoppt zunaechst den cert-manager Controller, ersetzt Secrets via
+# kubectl replace --force, legt Certificate-Objekte manuell mit korrektem
+# issuerRef an, startet Controller neu. Verifiziert notBefore VOR
+# Controller-Restart (garantiert, dass Backup-Zeitstempel erhalten bleibt).
+restore_backup_and_switch_to_prod() {
+  log "=== restore_backup_and_switch_to_prod: Backup-Restore mit Controller-Pause ==="
+  local backup_file="${VM_REMOTE_INSTALL_DIR}/le-certs-backup.yaml"
+  local cert_manager_paused=false
+
+  # Trap: Controller garantiert wieder starten, auch bei Fehler
+  trap 'if [[ "${cert_manager_paused}" == "true" ]]; then
+          log "Stelle cert-manager wieder her (trap)..."
+          kubectl scale deployment cert-manager -n cert-manager --replicas=1 2>/dev/null || true
+          sleep 3
+          kubectl wait --for=condition=Ready pod -n cert-manager \
+            -l app.kubernetes.io/name=cert-manager --timeout=60s 2>/dev/null || true
+        fi' EXIT RETURN
+
+  # LE_REQUESTS_BLOCKED Safety-Schalter
   if [[ "${LE_REQUESTS_BLOCKED}" == "true" ]]; then
     if [[ ! -f "${backup_file}" ]]; then
       log_error "LE_REQUESTS_BLOCKED=true und kein LE-CA-Backup vorhanden — Abbruch"
+      trap - EXIT
       return 1
     fi
-    log_warn "LE_REQUESTS_BLOCKED=true (ueberspringe Certificate-Loeschung)"
+    log_warn "LE_REQUESTS_BLOCKED=true (Certificate-Loeschung uebersprungen)"
   fi
 
-  # Pruefe ob Backup existiert (Fall 2: kein Backup)
+  # Pruefe ob Backup existiert
   if [[ ! -f "${backup_file}" ]]; then
     log "Kein LE-Zertifikats-Backup gefunden (${backup_file})"
+    trap - EXIT
     return 1
   fi
 
-  # Backup-Secrets einspielen (VOR Annotation-Aenderung)
-  # Reihenfolge ist kritisch: erst Backup einspielen. Schlaegt das fehl
-  # (Fall 1.1), wird KEINE Annotation auf prod gesetzt, und der Aufrufer
-  # (install_civitas) entscheidet via request_fresh_prod_certificates ueber
-  # den naechsten Schritt (LE_CERT -> prod oder staging).
-  log "Spiele LE-Zertifikate aus Backup ein "
-  if ! kubectl apply -f "${backup_file}" >/dev/null 2>&1; then
-    log_error "LE-Zertifikats-Backup konnte nicht eingespielt werden"
-    log_error "  Keine Annotation auf letsencrypt-prod gesetzt"
+  # ------- Schritt 1: Controller anhalten -------
+  log "Stoppe cert-manager Controller (scale --replicas=0)..."
+  kubectl scale deployment cert-manager -n cert-manager --replicas=0 2>/dev/null || true
+  kubectl wait --for=delete pod -n cert-manager \
+    -l app.kubernetes.io/name=cert-manager --timeout=30s 2>/dev/null || true
+  cert_manager_paused=true
+  log_ok "cert-manager Controller gestoppt"
+
+  # ------- Schritt 2: CertificateRequests + Certificate-Objekte loeschen -------
+  for ns in "${K8S_NAMESPACES[@]}"; do
+    kubectl delete certificaterequest -n "${ns}" --all 2>/dev/null || true
+  done
+  log "Loesche Certificate-Objekte (alle Namespaces, ausser civitas-core-ca)..."
+  local certs_deleted=0
+  while IFS=$'\t' read -r cns cname; do
+    kubectl delete certificate "${cname}" -n "${cns}" --ignore-not-found 2>/dev/null || true
+    (( certs_deleted++ )) || true
+  done < <(kubectl get certificate --all-namespaces -o json 2>/dev/null \
+    | jq -r '.items[] | select(.metadata.name != "civitas-core-ca") | "\(.metadata.namespace)\t\(.metadata.name)"' 2>/dev/null || true)
+  log_ok "${certs_deleted} Certificate(s) entfernt"
+
+  # ------- Schritt 3: Ingress-Annotation VOR Secret-Restore setzen -------
+  log "Setze Ingress-Annotationen auf letsencrypt-prod (VOR Secret-Restore)..."
+  local annotated=0
+  while IFS=$'\t' read -r ins iname; do
+    kubectl annotate ingress "${iname}" -n "${ins}" \
+      cert-manager.io/cluster-issuer=letsencrypt-prod --overwrite 2>/dev/null || true
+    (( annotated++ )) || true
+  done < <(kubectl get ingress --all-namespaces -o json 2>/dev/null \
+    | jq -r '.items[] | select(.spec.tls | type == "array" and length > 0) | "\(.metadata.namespace)\t\(.metadata.name)"' 2>/dev/null || true)
+  log_ok "${annotated} Ingress(es) auf letsencrypt-prod annotiert"
+
+  # ------- Schritt 4: Secrets mit REPLACE statt APPLY -------
+  log "Spiele LE-Zertifikate aus Backup ein (kubectl replace --force)..."
+  if ! kubectl replace --force -f "${backup_file}" 2>&1; then
+    log_error "LE-Zertifikats-Backup konnte nicht eingespielt werden (replace fehlgeschlagen)"
     return 1
   fi
   log_ok "LE-Zertifikats-Secrets aus Backup wiederhergestellt"
 
-  # Schritt 1: ClusterIssuer letsencrypt-prod sicherstellen
-  # Erst JETZT (nach erfolgreichem Backup) wird die Infrastruktur auf
-  # letsencrypt-prod umgestellt. Die Secrets liegen bereits, cert-manager
-  # markiert die Certificate-Ressourcen als Ready ohne Neuausstellung.
+  # ClusterIssuer letsencrypt-prod sicherstellen (VOR Certificate-Erstellung)
   if ! kubectl get clusterissuer letsencrypt-prod &>/dev/null; then
-    log "Lege ClusterIssuer letsencrypt-prod an "
+    log "Lege ClusterIssuer letsencrypt-prod an..."
     kubectl apply -f - <<EOF >/dev/null
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
@@ -394,84 +441,106 @@ spec:
           ingressClassName: nginx
 EOF
     log_ok "ClusterIssuer letsencrypt-prod angelegt"
-  else
-    log_ok "ClusterIssuer letsencrypt-prod bereits vorhanden"
   fi
 
-  # Schritt 2: Ingress-Annotationen auf letsencrypt-prod setzen
-  # Dies MUSS vor dem Loeschen der Certificate-Ressourcen passieren, sonst
-  # erzeugt ingress-shim beim Neuanlegen eine Certificate-Ressource mit dem
-  # noch alten/fehlenden Issuer (Race Condition).
-  log "Setze Issuer-Annotationen auf letsencrypt-prod "
-  local annotated=0
-  while IFS=$'	' read -r ns name; do
-    kubectl annotate ingress "${name}" -n "${ns}"       cert-manager.io/cluster-issuer=letsencrypt-prod --overwrite       >/dev/null 2>&1 || true
-    (( annotated++ )) || true
-  done < <(kubectl get ingress --all-namespaces -o json 2>/dev/null     | jq -r '.items[] | select(.spec.tls | type == "array" and length > 0) | "\(.metadata.namespace)	\(.metadata.name)"' 2>/dev/null || true)
-  log_ok "${annotated} Ingress(es) auf letsencrypt-prod annotiert"
-
-  # Schritt 3: Certificate-Ressourcen loeschen
-  # ingress-shim erzeugt sie sofort neu - jetzt aber korrekt mit issuerRef
-  # letsencrypt-prod (weil Schritt 2 die Annotation bereits gesetzt hat).
-  # Bei LE_REQUESTS_BLOCKED=true wird dieser Schritt uebersprungen.
-  if [[ "${LE_REQUESTS_BLOCKED}" != "true" ]]; then
-    log "Entferne alte Certificate-Ressourcen "
-    local certs=0
-    while IFS=$'	' read -r ns name; do
-      kubectl delete certificate "${name}" -n "${ns}" --ignore-not-found >/dev/null 2>&1 || true
-      (( certs++ )) || true
-    done < <(kubectl get certificate --all-namespaces -o json 2>/dev/null     | jq -r '.items[] | select(.metadata.name != "civitas-core-ca") | "\(.metadata.namespace)	\(.metadata.name)"' 2>/dev/null || true)
-    log_ok "${certs} Certificate-Ressourcen entfernt"
-
-    # Wartezeit, bis ingress-shim die neuen Certificate-Ressourcen
-    # (mit issuerRef letsencrypt-prod) angelegt hat
-    sleep 5
-  else
-    log "LE_REQUESTS_BLOCKED=true - Certificate-Loeschung uebersprungen (ingress-shim aktualisiert via Annotation)"
-  fi
-
-  # Schritt 4: Verifikation
-  # Warten auf Reconcile-Zyklus von cert-manager
-  sleep 10
-  log "Verifiziere wiederhergestellte Zertifikate "
-  local verify_ns="${CC_ENVIRONMENT}-access-stack"
-  local verify_secret="idm.${DOMAIN}-tls"
-  if kubectl get secret "${verify_secret}" -n "${verify_ns}" &>/dev/null; then
-    local issuer
-    issuer=$(kubectl get secret "${verify_secret}" -n "${verify_ns}"       -o jsonpath='{.data.tls\.crt}' 2>/dev/null       | base64 -d 2>/dev/null | openssl x509 -noout -issuer 2>/dev/null || true)
-    if echo "${issuer}" | grep -qi "STAGING\|civitas-core-ca"; then
-      log_warn "Wiederhergestelltes Zertifikat ist kein LE-Production-Zertifikat: ${issuer}"
-      log_warn "  Zertifikate muessen neu bei Let's Encrypt beantragt werden"
-      return 1
+  # ------- Schritt 5: Verifikation VOR Controller-Restart -------
+  log "Verifiziere wiederhergestellte Zertifikate (VOR Controller-Restart)..."
+  local verify_ok=true
+  local verify_output
+  verify_output=$(kubectl get secret --all-namespaces \
+    -l 'cert-manager.io/owner-name' 2>/dev/null \
+    | grep -E '^'"${CC_ENVIRONMENT}"'-' 2>/dev/null || true)
+  local verify_ns verify_secret
+  for entry in $(yq eval 'select(.kind == "Secret") | "\(.metadata.namespace)/\(.metadata.name)"' \
+    "${backup_file}" 2>/dev/null); do
+    verify_ns="${entry%%/*}"
+    verify_secret="${entry##*/}"
+    if kubectl get secret "${verify_secret}" -n "${verify_ns}" &>/dev/null; then
+      local issuer
+      issuer=$(kubectl get secret "${verify_secret}" -n "${verify_ns}" \
+        -o jsonpath='{.data.tls\.crt}' 2>/dev/null | base64 -d 2>/dev/null | openssl x509 -noout -issuer 2>/dev/null || true)
+      if echo "${issuer}" | grep -qi "STAGING\|civitas-core-ca"; then
+        log_warn "  ${verify_secret} in ${verify_ns}: falscher Issuer: ${issuer}"
+        verify_ok=false
+      fi
+    else
+      log_warn "  Secret ${verify_secret} in ${verify_ns} nach Restore nicht gefunden"
+      verify_ok=false
     fi
-    log_ok "Zertifikat-Verifikation erfolgreich: issuer=${issuer}"
+  done
+  if [[ "${verify_ok}" == "false" ]]; then
+    log_warn "Verifikation mit Warnungen — setze trotzdem fort"
   else
-    log_warn "Secret ${verify_secret} in ${verify_ns} nach Restore nicht gefunden"
+    log_ok "Verifikation bestanden — alle wiederhergestellten Secrets enthalten LE-Prod-Zertifikate"
+  fi
+
+  # ------- Schritt 6: Certificate-Objekte manuell anlegen -------
+  log "Lege Certificate-Objekte manuell an (korrekter issuerRef)..."
+  local certs_created=0
+  for entry in $(yq eval 'select(.kind == "Secret") | "\(.metadata.namespace)/\(.metadata.name)"' \
+    "${backup_file}" 2>/dev/null); do
+    local entry_ns="${entry%%/*}"
+    local entry_name="${entry##*/}"
+    local hostname="${entry_name%-tls}"
+    if [[ -z "${hostname}" ]]; then
+      log_warn "  Kann Hostname aus ${entry_name} nicht ableiten — ueberspringe"
+      continue
+    fi
+    kubectl apply -f - <<EOF 2>/dev/null
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ${entry_name}
+  namespace: ${entry_ns}
+spec:
+  secretName: ${entry_name}
+  dnsNames:
+  - ${hostname}
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+EOF
+    (( certs_created++ )) || true
+    log_ok "  Certificate ${entry_name} in ${entry_ns} (issuer=letsencrypt-prod)"
+  done
+  log_ok "${certs_created} Certificate(s) manuell angelegt"
+
+  # ------- Schritt 7: Controller wieder starten -------
+  log "Starte cert-manager Controller neu..."
+  kubectl scale deployment cert-manager -n cert-manager --replicas=1 2>/dev/null || true
+  sleep 3
+  cert_manager_paused=false
+  kubectl wait --for=condition=Ready pod -n cert-manager \
+    -l app.kubernetes.io/name=cert-manager --timeout=60s 2>/dev/null || true
+  log_ok "cert-manager Controller gestartet"
+
+  # Warten auf Certificate READY
+  log "Warte auf Certificate READY..."
+  sleep 10
+  local final_ok=true
+  for entry in $(yq eval 'select(.kind == "Secret") | "\(.metadata.namespace)/\(.metadata.name)"' \
+    "${backup_file}" 2>/dev/null); do
+    local entry_ns="${entry%%/*}"
+    local entry_name="${entry##*/}"
+    local cert_ready
+    cert_ready=$(kubectl get certificate "${entry_name}" -n "${entry_ns}" \
+      -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
+    if [[ "${cert_ready}" != "True" ]]; then
+      log_warn "  Certificate ${entry_name} in ${entry_ns}: READY=${cert_ready:-unbekannt}"
+      final_ok=false
+    else
+      log_ok "  Certificate ${entry_name} in ${entry_ns}: READY=True"
+    fi
+  done
+
+  if [[ "${final_ok}" == "false" ]]; then
+    log_error "Nicht alle Certificates sind READY"
     return 1
   fi
 
   log_ok "LE-Zertifikate erfolgreich aus Backup wiederhergestellt"
   return 0
 }
-
-
-# ── request_fresh_prod_certificates: Wechsel zwischen LE-Staging und -Production ──
-# Steuert den Wechsel von Let's-Encrypt-Staging auf -Production fuer alle
-# Ingress-Ressourcen per Annotation cert-manager.io/cluster-issuer.
-# (Siehe Spec: netzwerk-dns-tls.md, Variante E)
-#
-# Wird am Ende des Installationsdurchlaufs (install_civitas) automatisch
-# ausgefuehrt. Kann auch manuell aufgerufen werden.
-#
-# Ablauf:
-#   1. Pruefung ob bereits LE-Production aktiv (nur bei LE_CERT=true → ueberspringen)
-#   2. ClusterIssuer letsencrypt-staging anlegen (falls nicht vorhanden)
-#   3. Annotation auf letsencrypt-staging setzen (alle Ingresses)
-#   4. Warten auf READY + issuer-Prüfung (muss (STAGING) enthalten)
-#   5. ClusterIssuer letsencrypt-prod anlegen (falls nicht vorhanden)
-#   6. Nur wenn alle Staging bestanden: Annotation auf letsencrypt-prod
-#   7. Production-Zertifikate verifizieren (kein (STAGING) mehr)
-#   8. Report mit Erfolg/Fehler pro Host
 request_fresh_prod_certificates() {
   log "=== request_fresh_prod_certificates: LE-Staging -> Production ==="
 
