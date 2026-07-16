@@ -378,16 +378,17 @@ verify_certificates() {
 restore_backup_and_switch_to_prod() {
   log "=== restore_backup_and_switch_to_prod: Backup-Restore mit Controller-Pause ==="
   local backup_file="${CERT_BACKUP_FILE}"
-  local cert_manager_paused=false
 
   # Trap: Controller garantiert wieder starten, auch bei Fehler
-  trap 'if [[ "${cert_manager_paused}" == "true" ]]; then
+  trap 'if kubectl get deployment cert-manager -n cert-manager \
+           -o jsonpath="{.spec.replicas}" 2>/dev/null | grep -q "^0$" 2>/dev/null; then
           log "Stelle cert-manager wieder her (trap)..."
           kubectl scale deployment cert-manager -n cert-manager --replicas=1 2>/dev/null || true
           sleep 3
           kubectl wait --for=condition=Ready pod -n cert-manager \
             -l app.kubernetes.io/name=cert-manager --timeout=60s 2>/dev/null || true
         fi' RETURN
+
 
   # LE_REQUESTS_BLOCKED Safety-Schalter
   if [[ "${LE_REQUESTS_BLOCKED}" == "true" ]]; then
@@ -411,7 +412,6 @@ restore_backup_and_switch_to_prod() {
   kubectl scale deployment cert-manager -n cert-manager --replicas=0 2>/dev/null || true
   kubectl wait --for=delete pod -n cert-manager \
     -l app.kubernetes.io/name=cert-manager --timeout=30s 2>/dev/null || true
-  cert_manager_paused=true
   log_ok "cert-manager Controller gestoppt"
 
   # ------- Schritt 2: CertificateRequests + Certificate-Objekte loeschen -------
@@ -530,7 +530,6 @@ EOF
   log "Starte cert-manager Controller neu..."
   kubectl scale deployment cert-manager -n cert-manager --replicas=1 2>/dev/null || true
   sleep 3
-  cert_manager_paused=false
   kubectl wait --for=condition=Ready pod -n cert-manager \
     -l app.kubernetes.io/name=cert-manager --timeout=60s 2>/dev/null || true
   log_ok "cert-manager Controller gestartet"
