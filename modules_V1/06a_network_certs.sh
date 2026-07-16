@@ -362,13 +362,13 @@ restore_backup_and_switch_to_prod() {
           sleep 3
           kubectl wait --for=condition=Ready pod -n cert-manager \
             -l app.kubernetes.io/name=cert-manager --timeout=60s 2>/dev/null || true
-        fi' EXIT RETURN
+        fi' RETURN
 
   # LE_REQUESTS_BLOCKED Safety-Schalter
   if [[ "${LE_REQUESTS_BLOCKED}" == "true" ]]; then
     if [[ ! -f "${backup_file}" ]]; then
       log_error "LE_REQUESTS_BLOCKED=true und kein LE-CA-Backup vorhanden — Abbruch"
-      trap - EXIT
+      trap - RETURN
       return 1
     fi
     log_warn "LE_REQUESTS_BLOCKED=true (Certificate-Loeschung uebersprungen)"
@@ -377,7 +377,7 @@ restore_backup_and_switch_to_prod() {
   # Pruefe ob Backup existiert
   if [[ ! -f "${backup_file}" ]]; then
     log "Kein LE-Zertifikats-Backup gefunden (${backup_file})"
-    trap - EXIT
+    trap - RETURN
     return 1
   fi
 
@@ -446,35 +446,31 @@ EOF
   # ------- Schritt 5: Verifikation VOR Controller-Restart -------
   log "Verifiziere wiederhergestellte Zertifikate (VOR Controller-Restart)..."
   local verify_ok=true
-  local verify_output
-  verify_output=$(kubectl get secret --all-namespaces \
-    -l 'cert-manager.io/owner-name' 2>/dev/null \
-    | grep -E '^'"${CC_ENVIRONMENT}"'-' 2>/dev/null || true)
   local verify_ns verify_secret
   for entry in $(yq eval 'select(.kind == "Secret") | "\(.metadata.namespace)/\(.metadata.name)"' \
     "${backup_file}" 2>/dev/null); do
     verify_ns="${entry%%/*}"
     verify_secret="${entry##*/}"
-    if kubectl get secret "${verify_secret}" -n "${verify_ns}" &>/dev/null; then
-      local issuer
-      issuer=$(kubectl get secret "${verify_secret}" -n "${verify_ns}" \
-        -o jsonpath='{.data.tls\.crt}' 2>/dev/null | base64 -d 2>/dev/null | openssl x509 -noout -issuer 2>/dev/null || true)
-      if echo "${issuer}" | grep -qi "STAGING\|civitas-core-ca"; then
-        log_warn "  ${verify_secret} in ${verify_ns}: falscher Issuer: ${issuer}"
-        verify_ok=false
-      fi
-    else
-      log_warn "  Secret ${verify_secret} in ${verify_ns} nach Restore nicht gefunden"
+    local nb_backup nb_cluster
+    nb_backup=$(yq eval "select(.metadata.name == \"${verify_secret}\") | .data[\"tls.crt\"]" \
+      "${backup_file}" 2>/dev/null | base64 -d 2>/dev/null | openssl x509 -noout -dates 2>/dev/null \
+      | grep notBefore | cut -d= -f2)
+    nb_cluster=$(kubectl get secret "${verify_secret}" -n "${verify_ns}" \
+      -o jsonpath='{.data.tls\.crt}' 2>/dev/null | base64 -d 2>/dev/null \
+      | openssl x509 -noout -dates 2>/dev/null | grep notBefore | cut -d= -f2)
+    if [[ -z "${nb_backup}" || "${nb_backup}" != "${nb_cluster}" ]]; then
+      log_warn "  ${verify_secret} in ${verify_ns}: notBefore weicht ab (backup=${nb_backup:-leer}, cluster=${nb_cluster:-leer})"
       verify_ok=false
     fi
   done
   if [[ "${verify_ok}" == "false" ]]; then
-    log_warn "Verifikation mit Warnungen — setze trotzdem fort"
-  else
-    log_ok "Verifikation bestanden — alle wiederhergestellten Secrets enthalten LE-Prod-Zertifikate"
+    log_error "Verifikation fehlgeschlagen - notBefore weicht vom Backup ab, Abbruch"
+    return 1
   fi
 
+  log_ok "Verifikation bestanden - notBefore aller wiederhergestellten Secrets identisch mit Backup"
   # ------- Schritt 6: Certificate-Objekte manuell anlegen -------
+
   log "Lege Certificate-Objekte manuell an (korrekter issuerRef)..."
   local certs_created=0
   for entry in $(yq eval 'select(.kind == "Secret") | "\(.metadata.namespace)/\(.metadata.name)"' \
