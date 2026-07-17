@@ -218,23 +218,17 @@ setup_ca_trust() {
   fi
 
   # ── ISRG Root X1 (öffentliche LE-Root für externe Zertifikate) ──────────
-  # ca_path im Inventory zeigt auf diese Datei. Bei aktivem LE-Prod-Zertifikat
-  # (Backup-Restore oder Staging→Production) muss ISRG Root X1 ebenfalls
-  # vertrauenswürdig sein, sonst scheitert cc_cli exec mit
-  # CERTIFICATE_VERIFY_FAILED.
+  # ca_path im Inventory zeigt auf diese Datei. Die Datei wurde unmittelbar
+  # zuvor mit `>` aus dem Kubernetes-Secret überschrieben und enthält daher
+  # garantiert nur die interne CA — ein Idempotenz-Check via openssl ist
+  # strukturell nicht möglich. Der Download läuft bei jedem Durchlauf; bei
+  # Fehlschlag wird die finale Verifikation am Funktionsende zuschlagen.
   local le_root_url="https://letsencrypt.org/certs/isrgrootx1.pem"
-  if ! openssl x509 -in "${ca_cert_local}" -noout -issuer 2>/dev/null \
-       | grep -q "O = Internet Security Research Group"; then
-    log "Ergänze ISRG Root X1 (Let's Encrypt) im CA-Bundle …"
-    if ! curl -fsSL "${le_root_url}" >> "${ca_cert_local}"; then
-      log_error "ISRG Root X1 konnte nicht heruntergeladen werden — ${le_root_url}"
-      log_error "  Ohne LE-Root scheitert cc_cli exec mit CERTIFICATE_VERIFY_FAILED"
-      log_error "  Internetverbindung prüfen oder LE-Root manuell in ${ca_cert_local} eintragen"
-      exit 1
-    fi
+  if curl -fsSL "${le_root_url}" >> "${ca_cert_local}"; then
     log_ok "ISRG Root X1 ergänzt in ${ca_cert_local}"
   else
-    log_ok "ISRG Root X1 bereits im CA-Bundle vorhanden"
+    log_warn "ISRG Root X1 konnte nicht heruntergeladen werden — ${le_root_url}"
+    log_warn "  CA-Bundle enthält nur die interne CA — cc_cli exec wird später scheitern"
   fi
 
   # System-Trust-Store
@@ -253,6 +247,19 @@ setup_ca_trust() {
     log_warn "certifi cacert.pem nicht gefunden in ${CC_CLI_VENV_PATH}"
     log_warn "cc_cli exec koennte mit CERTIFICATE_VERIFY_FAILED scheitern"
   fi
+
+  # ── Finale Verifikation: CA-Bundle muss beide Trust-Anker enthalten ────
+  # Die Datei wurde zu Beginn mit der internen CA überschrieben (Schritt 1)
+  # und im ISRG-Block (Schritt 2) um die LE-Root ergänzt. Fehlt die LE-Root
+  # (Download-Fehler, abgebrochener Lauf), enthält die Datei nur 1 Zertifikat.
+  local cert_count
+  cert_count=$(grep -c "BEGIN CERTIFICATE" "${ca_cert_local}" 2>/dev/null || echo 0)
+  if [[ "${cert_count}" -lt 2 ]]; then
+    log_error "CA-Bundle enthält nur ${cert_count} Zertifikat(e) (erwartet ≥ 2)"
+    log_error "  ISRG Root X1 fehlt — cc_cli exec wird mit CERTIFICATE_VERIFY_FAILED scheitern"
+    exit 1
+  fi
+  log_ok "CA-Bundle enthält ${cert_count} Zertifikat(e) — beide Trust-Anker vorhanden"
 }
 
 # ── nginx-Ingress ─────────────────────────────────────────────────────────────
