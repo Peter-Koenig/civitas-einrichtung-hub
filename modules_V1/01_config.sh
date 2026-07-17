@@ -156,6 +156,9 @@ WG_CONF_PATH="/etc/wireguard/${WG_INTERFACE}.conf"
 RUSTFS_ENDPOINT="${RUSTFS_ENDPOINT:-}"     # S3-Endpoint (leer = s3_backend deaktiviert)
 RUSTFS_ACCESS_KEY="${RUSTFS_ACCESS_KEY:-}" # S3-Access-Key (leer = s3_backend deaktiviert)
 RUSTFS_SECRET_KEY="${RUSTFS_SECRET_KEY:-}" # S3-Secret-Key (leer = s3_backend deaktiviert)
+RUSTFS_BUCKET_NAME="${RUSTFS_BUCKET_NAME:-portal-config}"   # S3-Bucket-Name (Default: portal-config)
+RUSTFS_REGION="${RUSTFS_REGION:-eu-north-1}"                 # S3-Region (Default: eu-north-1)
+RUSTFS_FORCE_PATH_STYLE="${RUSTFS_FORCE_PATH_STYLE:-true}"   # S3-Force-Path-Style (Default: true)
 
 # ── Versionspinning-Regel (nur als Kommentar, kein Code) ─────────────────────
 # Alle *_VERSION-Variablen werden beim Skriptbau auf konkrete Werte gesetzt.
