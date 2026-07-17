@@ -183,6 +183,14 @@ all:
             image_registry: "registry.gitlab.com"
             image_repository: "civitas-connect/civitas-core/civitas-core-v1/geoportal-components/geoportal_backend"
             image_tag: "v1.7.0"
+            s3_backend:
+              enable: PLACEHOLDER_S3_ENABLE
+              endpoint: "PLACEHOLDER_S3_ENDPOINT"
+              access_key_id: "PLACEHOLDER_S3_ACCESS_KEY"
+              secret_access_key: "PLACEHOLDER_S3_SECRET_KEY"
+              bucket_name: "PLACEHOLDER_S3_BUCKET_NAME"
+              region: "PLACEHOLDER_S3_REGION"
+              force_path_style: PLACEHOLDER_S3_FORCE_PATH_STYLE
 
         inv_addons:
           import: false
