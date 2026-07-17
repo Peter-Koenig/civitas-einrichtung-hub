@@ -217,6 +217,26 @@ setup_ca_trust() {
     exit 1
   fi
 
+  # ── ISRG Root X1 (öffentliche LE-Root für externe Zertifikate) ──────────
+  # ca_path im Inventory zeigt auf diese Datei. Bei aktivem LE-Prod-Zertifikat
+  # (Backup-Restore oder Staging→Production) muss ISRG Root X1 ebenfalls
+  # vertrauenswürdig sein, sonst scheitert cc_cli exec mit
+  # CERTIFICATE_VERIFY_FAILED.
+  local le_root_url="https://letsencrypt.org/certs/isrgrootx1.pem"
+  if ! openssl x509 -in "${ca_cert_local}" -noout -issuer 2>/dev/null \
+       | grep -q "O = Internet Security Research Group"; then
+    log "Ergänze ISRG Root X1 (Let's Encrypt) im CA-Bundle …"
+    if ! curl -fsSL "${le_root_url}" >> "${ca_cert_local}"; then
+      log_error "ISRG Root X1 konnte nicht heruntergeladen werden — ${le_root_url}"
+      log_error "  Ohne LE-Root scheitert cc_cli exec mit CERTIFICATE_VERIFY_FAILED"
+      log_error "  Internetverbindung prüfen oder LE-Root manuell in ${ca_cert_local} eintragen"
+      exit 1
+    fi
+    log_ok "ISRG Root X1 ergänzt in ${ca_cert_local}"
+  else
+    log_ok "ISRG Root X1 bereits im CA-Bundle vorhanden"
+  fi
+
   # System-Trust-Store
   update-ca-certificates
   log_ok "System-Trust-Store aktualisiert"
