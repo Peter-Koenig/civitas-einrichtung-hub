@@ -363,6 +363,13 @@ render_inventory() {
     -e "s|PLACEHOLDER_GRAFANA_PASSWORD|${pw_grafana}|g" \
     -e "s|PLACEHOLDER_GEOSERVER_PASSWORD|${pw_geoserver}|g" \
     -e "s|PLACEHOLDER_PIVAU_PASSWORD|${pw_pivau}|g" \
+    -e "s|PLACEHOLDER_S3_ENABLE|${RUSTFS_S3_ENABLE:-false}|g" \
+    -e "s|PLACEHOLDER_S3_ENDPOINT|${RUSTFS_ENDPOINT}|g" \
+    -e "s|PLACEHOLDER_S3_ACCESS_KEY|${RUSTFS_ACCESS_KEY}|g" \
+    -e "s|PLACEHOLDER_S3_SECRET_KEY|${RUSTFS_SECRET_KEY}|g" \
+    -e "s|PLACEHOLDER_S3_BUCKET_NAME|${RUSTFS_BUCKET_NAME:-portal-config}|g" \
+    -e "s|PLACEHOLDER_S3_REGION|${RUSTFS_REGION:-eu-north-1}|g" \
+    -e "s|PLACEHOLDER_S3_FORCE_PATH_STYLE|${RUSTFS_FORCE_PATH_STYLE:-true}|g" \
     -e "s|PLACEHOLDER_KUBECONFIG|config|g" \
     "${tpl}" > "${out}"
 
