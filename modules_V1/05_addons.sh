@@ -20,6 +20,7 @@ install_addons() {
 
   configure_cluster_issuer    # zweistufig, Java-kompatibel
   setup_ca_trust              # CA in System-Store + certifi (vor nginx)
+  setup_mc_client             # mc-Client für RustFS-S3-Zugriff
 
   install_nginx_ingress
   verify_storage_class
@@ -295,6 +296,70 @@ EOF
   rm -f "${values_file}"
   log_ok "nginx-Ingress ${NGINX_INGRESS_VERSION} installiert"
 }
+
+# ── mc-Client (MinIO Client für RustFS) ───────────────────────────────────────
+# Installiert den mc-Client (MinIO Client) für S3-Zugriff auf RustFS.
+# Idempotenz: binary vorhanden (command -v mc) → Version loggen, überspringen.
+# Der Alias civitas-rustfs und der Bucket portal-config werden nach der
+# Installation automatisch konfiguriert.
+setup_mc_client() {
+  log "Installiere mc-Client (MinIO Client) für RustFS …"
+
+  # ── Schritt 1: Binary installieren (Idempotenz) ─────────────────────────
+  if command -v mc &>/dev/null; then
+    local mc_ver
+    mc_ver="$(mc --version 2>/dev/null | head -1)"
+    log_ok "mc-Client bereits installiert: ${mc_ver:-unbekannte Version}"
+  else
+    log "Lade mc-Binary von https://dl.min.io/client/mc/release/linux-amd64/mc …"
+    if ! curl -fsSL "https://dl.min.io/client/mc/release/linux-amd64/mc" \
+         -o /usr/local/bin/mc; then
+      log_error "mc-Binary konnte nicht heruntergeladen werden"
+      log_error "  RustFS-Bucket-Operationen sind ohne mc nicht möglich"
+      exit 1
+    fi
+    chmod +x /usr/local/bin/mc
+    log_ok "mc-Client installiert: $(mc --version | head -1)"
+  fi
+
+  # ── Schritt 2: Prüfe ob RustFS-Credentials gesetzt sind ─────────────────
+  if [[ -z "${RUSTFS_ENDPOINT}" || -z "${RUSTFS_ACCESS_KEY}" || -z "${RUSTFS_SECRET_KEY}" ]]; then
+    log_warn "RustFS-Credentials nicht vollständig — mc-Alias wird übersprungen"
+    log_warn "  RUSTFS_ENDPOINT, RUSTFS_ACCESS_KEY, RUSTFS_SECRET_KEY müssen gesetzt sein"
+    return 0
+  fi
+
+  # ── Schritt 3: mc-Alias setzen (Idempotenz) ────────────────────────────
+  local mc_alias="${MC_ALIAS_NAME:-civitas-rustfs}"
+  if mc alias list 2>/dev/null | grep -q "${mc_alias}"; then
+    log_ok "mc-Alias ${mc_alias} bereits vorhanden"
+  else
+    log "Setze mc-Alias ${mc_alias} auf ${RUSTFS_ENDPOINT} …"
+    if ! mc alias set "${mc_alias}" "${RUSTFS_ENDPOINT}" \
+         "${RUSTFS_ACCESS_KEY}" "${RUSTFS_SECRET_KEY}"; then
+      log_warn "mc-Alias ${mc_alias} konnte nicht gesetzt werden"
+      log_warn "  RustFS-Endpoint ${RUSTFS_ENDPOINT} möglicherweise nicht erreichbar"
+      return 0
+    fi
+    log_ok "mc-Alias ${mc_alias} gesetzt"
+  fi
+
+  # ── Schritt 4: Bucket anlegen (Idempotenz via --ignore-existing) ────────
+  local bucket_name="${MC_BUCKET_NAME:-portal-config}"
+  if mc ls "${mc_alias}/${bucket_name}" &>/dev/null; then
+    log_ok "Bucket ${mc_alias}/${bucket_name} existiert bereits"
+  else
+    log "Lege Bucket ${mc_alias}/${bucket_name} an …"
+    if ! mc mb --ignore-existing "${mc_alias}/${bucket_name}"; then
+      log_warn "Bucket ${mc_alias}/${bucket_name} konnte nicht angelegt werden"
+      return 0
+    fi
+    log_ok "Bucket ${mc_alias}/${bucket_name} angelegt"
+  fi
+
+  log_ok "mc-Client konfiguriert — RustFS unter ${mc_alias} verfügbar"
+}
+
 
 # ── Storage Class prüfen ──────────────────────────────────────────────────────
 verify_storage_class() {

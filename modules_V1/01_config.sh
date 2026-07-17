@@ -160,6 +160,10 @@ RUSTFS_BUCKET_NAME="${RUSTFS_BUCKET_NAME:-portal-config}"   # S3-Bucket-Name (De
 RUSTFS_REGION="${RUSTFS_REGION:-eu-north-1}"                 # S3-Region (Default: eu-north-1)
 RUSTFS_FORCE_PATH_STYLE="${RUSTFS_FORCE_PATH_STYLE:-true}"   # S3-Force-Path-Style (Default: true)
 
+# ── mc-Client (MinIO Client für RustFS) ───────────────────────────────────────
+MC_ALIAS_NAME="${MC_ALIAS_NAME:-civitas-rustfs}"   # mc-Alias für RustFS-Endpoint
+MC_BUCKET_NAME="${MC_BUCKET_NAME:-portal-config}"   # S3-Bucket-Name für portal-backend
+
 # ── Versionspinning-Regel (nur als Kommentar, kein Code) ─────────────────────
 # Alle *_VERSION-Variablen werden beim Skriptbau auf konkrete Werte gesetzt.
 # Änderungen nur durch bewusste Wartungsaktionen. Niemals "latest" verwenden.
