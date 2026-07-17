@@ -148,6 +148,15 @@ WG_LISTEN_PORT="${WG_LISTEN_PORT:-51820}"
 WG_ALLOWED_IPS="10.10.10.0/24"
 WG_CONF_PATH="/etc/wireguard/${WG_INTERFACE}.conf"
 
+# ── RustFS / S3 (optional — steuern s3_backend.enable im Inventory) ──────────
+# Alle drei Variablen haben Leerstring-Default (:- statt :?), damit die
+# 3-Felder-Prüfung in render_inventory() eigenständig über s3_backend.enable
+# entscheiden kann. Siehe portal-backend-objektspeicher.md, Abschnitt
+# "Noch zu implementieren", Punkt 3 und 4.
+RUSTFS_ENDPOINT="${RUSTFS_ENDPOINT:-}"     # S3-Endpoint (leer = s3_backend deaktiviert)
+RUSTFS_ACCESS_KEY="${RUSTFS_ACCESS_KEY:-}" # S3-Access-Key (leer = s3_backend deaktiviert)
+RUSTFS_SECRET_KEY="${RUSTFS_SECRET_KEY:-}" # S3-Secret-Key (leer = s3_backend deaktiviert)
+
 # ── Versionspinning-Regel (nur als Kommentar, kein Code) ─────────────────────
 # Alle *_VERSION-Variablen werden beim Skriptbau auf konkrete Werte gesetzt.
 # Änderungen nur durch bewusste Wartungsaktionen. Niemals "latest" verwenden.
