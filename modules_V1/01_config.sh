@@ -161,6 +161,8 @@ RUSTFS_REGION="${RUSTFS_REGION:-eu-north-1}"                 # S3-Region (Defaul
 RUSTFS_FORCE_PATH_STYLE="${RUSTFS_FORCE_PATH_STYLE:-true}"   # S3-Force-Path-Style (Default: true)
 
 # ── mc-Client (MinIO Client für RustFS) ───────────────────────────────────────
+MC_VERSION="${MC_VERSION:-RELEASE.2025-05-21T01-59-54Z}"  # beim Skriptbau aus MinIO-Release-Doku fixieren
+MC_DOWNLOAD_URL="https://dl.min.io/client/mc/release/linux-amd64/archive/mc.${MC_VERSION}"
 MC_ALIAS_NAME="${MC_ALIAS_NAME:-civitas-rustfs}"   # mc-Alias für RustFS-Endpoint
 MC_BUCKET_NAME="${MC_BUCKET_NAME:-portal-config}"   # S3-Bucket-Name für portal-backend
 

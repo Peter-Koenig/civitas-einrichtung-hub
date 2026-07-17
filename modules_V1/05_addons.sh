@@ -311,8 +311,8 @@ setup_mc_client() {
     mc_ver="$(mc --version 2>/dev/null | head -1)"
     log_ok "mc-Client bereits installiert: ${mc_ver:-unbekannte Version}"
   else
-    log "Lade mc-Binary von https://dl.min.io/client/mc/release/linux-amd64/mc …"
-    if ! curl -fsSL "https://dl.min.io/client/mc/release/linux-amd64/mc" \
+    log "Lade mc-Binary (gepinnt: ${MC_VERSION}) …"
+    if ! curl -fsSL "${MC_DOWNLOAD_URL}" \
          -o /usr/local/bin/mc; then
       log_error "mc-Binary konnte nicht heruntergeladen werden"
       log_error "  RustFS-Bucket-Operationen sind ohne mc nicht möglich"
