@@ -21,6 +21,7 @@ install_addons() {
   configure_cluster_issuer    # zweistufig, Java-kompatibel
   setup_ca_trust              # CA in System-Store + certifi (vor nginx)
   setup_mc_client             # mc-Client für RustFS-S3-Zugriff
+  install_cico_utils          # cico-shutdown / cico-uncordon
 
   install_nginx_ingress
   verify_storage_class
@@ -359,6 +360,179 @@ setup_mc_client() {
 
   log_ok "mc-Client konfiguriert — RustFS unter ${mc_alias} verfügbar"
 }
+
+
+# ── CIVITAS/CORE-Shutdown und -Uncordon (cico-utils) ─────────────────────────
+# Installiert die Skripte cico-shutdown und cico-uncordon nach /usr/local/bin
+# und aktiviert den systemd-Dienst cico-uncordon.service für automatisches
+# Uncordon nach k3s-Neustart.
+install_cico_utils() {
+  log "Installiere CIVITAS/CORE-Shutdown-Utilities …"
+
+  # ── cico-shutdown ──────────────────────────────────────────────────────
+  if [[ ! -f /usr/local/bin/cico-shutdown ]]; then
+    cat > /usr/local/bin/cico-shutdown << 'CICO_SCRIPT'
+#!/usr/bin/env bash
+#
+# cico-shutdown — CIVITAS/CORE VM sauber herunterfahren
+#
+# Fuehrt einen ordentlichen Shutdown der CIVITAS/CORE-VM durch:
+#   1. kubectl drain (Node cordon + Pod-Eviction)
+#   2. Warten auf Pod-Terminierung (polling loop mit Timeout)
+#   3. k3s-Dienst stoppen
+#   4. sync + shutdown -h now
+#
+# Aufruf:
+#   cico-shutdown                     # normaler Shutdown
+#   TIMEOUT=180 cico-shutdown         # laengerer Timeout (Default: 120s)
+#
+# Siehe: installationsphasen-und-abnahme.md, Abschnitt "CIVITAS/CORE-Shutdown"
+
+set -euo pipefail
+
+K3S_NODE="${K3S_NODE:-civitas-core}"
+TIMEOUT="${TIMEOUT:-120}"
+POLL_INTERVAL="${POLL_INTERVAL:-5}"
+
+echo "[cico-shutdown] === CIVITAS/CORE VM — Sauberer Shutdown ==="
+echo "[cico-shutdown] Node:     ${K3S_NODE}"
+echo "[cico-shutdown] Timeout:  ${TIMEOUT}s"
+echo ""
+
+# Schritt 1: Node drainen
+echo "[cico-shutdown] Drain node ${K3S_NODE} ..."
+kubectl drain "${K3S_NODE}" \
+  --ignore-daemonsets \
+  --delete-emptydir-data \
+  --grace-period=60 \
+  --disable-eviction \
+  --timeout="${TIMEOUT}s" 2>&1 || \
+  echo "[cico-shutdown] WARN: drain beendet (moeglicherweise nicht vollstaendig)"
+
+# Schritt 2: Warten bis alle Pods terminiert sind
+echo "[cico-shutdown] Warte auf Pod-Terminierung (max. ${TIMEOUT}s) ..."
+elapsed=0
+while true; do
+  local_pods=$(kubectl get pods -A \
+    --field-selector="spec.nodeName=${K3S_NODE}" \
+    -o name 2>/dev/null | wc -l)
+
+  if [[ "${local_pods}" -eq 0 ]]; then
+    echo "[cico-shutdown] Alle Pods terminiert (nach ${elapsed}s)."
+    break
+  fi
+
+  if [[ ${elapsed} -ge ${TIMEOUT} ]]; then
+    echo "[cico-shutdown] WARN: Timeout ${TIMEOUT}s erreicht — ${local_pods} Pod(s) noch aktiv"
+    kubectl get pods -A --field-selector="spec.nodeName=${K3S_NODE}" -o wide 2>/dev/null || true
+    break
+  fi
+
+  sleep "${POLL_INTERVAL}"
+  elapsed=$((elapsed + POLL_INTERVAL))
+done
+
+# Schritt 3: k3s stoppen
+echo "[cico-shutdown] Stoppe k3s ..."
+systemctl stop k3s || echo "[cico-shutdown] WARN: k3s konnte nicht gestoppt werden"
+
+# Schritt 4: Herunterfahren
+echo "[cico-shutdown] sync && shutdown -h now ..."
+sync
+shutdown -h now
+CICO_SCRIPT
+    chmod +x /usr/local/bin/cico-shutdown
+    log_ok "cico-shutdown installiert"
+  else
+    log_ok "cico-shutdown bereits installiert"
+  fi
+
+  # ── cico-uncordon ─────────────────────────────────────────────────────
+  if [[ ! -f /usr/local/bin/cico-uncordon ]]; then
+    cat > /usr/local/bin/cico-uncordon << 'UNCORDON_SCRIPT'
+#!/usr/bin/env bash
+#
+# cico-uncordon — CIVITAS/CORE Node Uncordon (post-boot recovery)
+#
+# Wartet auf die k3s-API und hebt die Cordon-Markierung des Knotens auf.
+# Wird automatisch durch cico-uncordon.service nach k3s-Start ausgefuehrt.
+#
+# Aufruf:
+#   cico-uncordon                    # Knoten "civitas-core" (Default)
+#   K3S_NODE=my-node cico-uncordon   # Abweichender Knotenname
+#
+# Exit-Codes:
+#   0 — Node erfolgreich uncordoned oder war bereits schedulable
+#   1 — k3s-API nach 180s nicht verfuegbar
+
+set -euo pipefail
+
+K3S_NODE="${K3S_NODE:-civitas-core}"
+TIMEOUT="${TIMEOUT:-180}"
+
+echo "[cico-uncordon] Warte auf k3s-API (Node ${K3S_NODE}) ..."
+
+elapsed=0
+until kubectl get nodes "${K3S_NODE}" &>/dev/null; do
+    sleep 5
+    elapsed=$((elapsed + 5))
+    if [[ ${elapsed} -ge ${TIMEOUT} ]]; then
+        echo "[cico-uncordon] FEHLER: k3s-API nach ${TIMEOUT}s nicht verfuegbar."
+        exit 1
+    fi
+done
+echo "[cico-uncordon] k3s-API verfuegbar (${elapsed}s)"
+
+cordoned=$(kubectl get node "${K3S_NODE}" -o jsonpath='{.spec.unschedulable}' 2>/dev/null || echo "false")
+
+if [[ "${cordoned}" == "true" ]]; then
+    echo "[cico-uncordon] Node ${K3S_NODE} ist cordon'd — hebe Sperre auf ..."
+    kubectl uncordon "${K3S_NODE}"
+    echo "[cico-uncordon] Node ${K3S_NODE} ist jetzt schedulable."
+else
+    echo "[cico-uncordon] Node ${K3S_NODE} ist bereits schedulable — nichts zu tun."
+fi
+UNCORDON_SCRIPT
+    chmod +x /usr/local/bin/cico-uncordon
+    log_ok "cico-uncordon installiert"
+  else
+    log_ok "cico-uncordon bereits installiert"
+  fi
+
+  # ── systemd-Dienst aktivieren ──────────────────────────────────────────
+  if [[ ! -f /etc/systemd/system/cico-uncordon.service ]]; then
+    cat > /etc/systemd/system/cico-uncordon.service << 'SERVICE_EOF'
+[Unit]
+Description=CIVITAS/CORE – Automatisches Uncordon nach k3s-Start
+After=k3s.service
+Requires=k3s.service
+Documentation=https://doc.data-dna.eu/de/specs/civitas-core-plugin/serveraufbau-v1/installationsphasen-und-abnahme
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/cico-uncordon
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+SERVICE_EOF
+    systemctl daemon-reload
+    systemctl enable cico-uncordon.service
+    log_ok "cico-uncordon.service installiert und aktiviert"
+  else
+    if systemctl is-enabled cico-uncordon.service &>/dev/null; then
+      log_ok "cico-uncordon.service bereits aktiviert"
+    else
+      systemctl enable cico-uncordon.service
+      log_ok "cico-uncordon.service nachtraeglich aktiviert"
+    fi
+  fi
+
+  log_ok "CIVITAS/CORE-Shutdown-Utilities installiert"
+}
+
 
 
 # ── Storage Class prüfen ──────────────────────────────────────────────────────
