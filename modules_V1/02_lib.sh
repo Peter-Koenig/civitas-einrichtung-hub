@@ -77,6 +77,13 @@ assert_success() {
 #   - KEINE Zeichen, die mit sed (&, #, |), YAML (#, :) oder Shell
 #     ($, !, Backtick, Anführungszeichen) kollidieren
 #   - KEINE base64-Sonderzeichen (+, /, =)
+#
+# HINWEIS: '%' ist im Charset enthalten, weil das aktuell verwendete
+# sed-Trennzeichen in 06_civitas.sh '|' ist (sed -e "s|PLACEHOLDER|${pw}|g").
+# Falls das sed-Trennzeichen jemals auf '%' geaendert wird, MUSS '%'
+# hier aus dem Charset entfernt werden. Diese Abhaengigkeit ist bewusst
+# in Kauf genommen und muss bei Aenderungen an den sed-Aufrufen in
+# 06_civitas.sh manuell nachgezogen werden.
 gen_policy_password() {
   local length="${1:-24}"
   local max_attempts=50

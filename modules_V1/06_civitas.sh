@@ -486,6 +486,7 @@ run_cc_cli_exec() {
       log_error "  ${ansible_log_file}"
       log_error ""
       log_error "DIAGNOSE: Pruefe Passwort-Integritaet im gerenderten Inventory ..."
+      local inventory_intakt=true
       if [[ -n "${CONFIG_YAML_PATH:-}" && -f "${CONFIG_YAML_PATH}" && -n "${CREDENTIALS_OUTPUT_PATH:-}" && -f "${CREDENTIALS_OUTPUT_PATH}" ]]; then
         local pw_checks=("PGADMIN_PASSWORD" "GEOSERVER_PASSWORD" "SUPERSET_PASSWORD" "GRAFANA_PASSWORD" "APISIX_DASHBOARD_PASSWORD")
         for pw_name in "${pw_checks[@]}"; do
@@ -493,12 +494,28 @@ run_cc_cli_exec() {
           pw_value="$(grep -oP "(?<=^${pw_name}=).*" "${CREDENTIALS_OUTPUT_PATH}" 2>/dev/null || true)"
           if [[ -n "${pw_value}" ]]; then
             if ! grep -qF "${pw_value}" "${CONFIG_YAML_PATH}" 2>/dev/null; then
-              log_error "  ✗ ${pw_name}: Im Inventory nicht gefunden — wurde beim sed-Rendering veraendert?"
+              log_error "  ✗ ${pw_name}: NICHT im Inventory gefunden -> Rendering-Fehler (sed)"
+              inventory_intakt=false
             fi
           fi
         done
       else
         log_error "  Inventory (${CONFIG_YAML_PATH:-unset}) oder Credentials (${CREDENTIALS_OUTPUT_PATH:-unset}) nicht lesbar"
+        inventory_intakt=false
+      fi
+      if [[ "${inventory_intakt}" == "true" ]]; then
+        log_error "DIAGNOSE: Alle Passwoerter korrekt im Inventory vorhanden."
+        log_error "Fehlerursache liegt vermutlich bei der Ziel-Policy des Dienstes"
+        log_error "(z.B. Keycloak password_policy), NICHT beim Passwort-Rendering."
+        log_error "Pruefe Ansible-Log auf konkrete Policy-Fehlermeldung:"
+        if [[ -f "${ansible_log_file}" ]]; then
+          grep -i "password" "${ansible_log_file}" | tail -20 | while read -r line; do
+            log_error "  ${line}"
+          done
+        fi
+      else
+        log_error "DIAGNOSE: Mindestens ein Passwort wurde beim sed-Rendering"
+        log_error "veraendert oder ist verschwunden. Charset/sed-Trennzeichen pruefen."
       fi
       log_warn ""
       log_warn "Die generierten Passwoerter werden mit diesem Lauf verworfen."
