@@ -73,17 +73,33 @@ assert_success() {
 #   - mind. 1 Ziffer
 #   - mind. 1 Großbuchstabe
 #   - mind. 1 Kleinbuchstabe
-#   - mind. 1 Sonderzeichen aus: !@#$%^&*()-_
+#   - mind. 1 Sonderzeichen aus: @%^*()+=~?><,.{}-
+#   - KEINE Zeichen, die mit sed (&, #, |), YAML (#, :) oder Shell
+#     ($, !, Backtick, Anführungszeichen) kollidieren
 #   - KEINE base64-Sonderzeichen (+, /, =)
 gen_policy_password() {
   local length="${1:-24}"
-  local charset='A-Za-z0-9!@#$%^&*()\-_'
+  local max_attempts=50
+  local charset='A-Za-z0-9@%^*()+=~?><,.{}-'
   local pw
+  local attempt=0
   while true; do
+    attempt=$((attempt + 1))
     pw="$(tr -dc "${charset}" < /dev/urandom | head -c "${length}" || true)"
-    if echo "${pw}" | grep -qP '(?=.*[0-9])(?=.*[A-Z])(?=.*[a-z])(?=.*[!@#$%^&*()\-_])'; then
+    if echo "${pw}" | grep -qP '(?=.*[0-9])(?=.*[A-Z])(?=.*[a-z])(?=.*[@%^*()+=~?><,.{}-])'; then
       echo "${pw}"
       return 0
+    fi
+    if [[ $attempt -ge $max_attempts ]]; then
+      local has_digit='nein'; local has_upper='nein'; local has_lower='nein'; local has_special='nein'
+      echo "${pw}" | grep -qP '[0-9]' && has_digit='ja'
+      echo "${pw}" | grep -qP '[A-Z]' && has_upper='ja'
+      echo "${pw}" | grep -qP '[a-z]' && has_lower='ja'
+      echo "${pw}" | grep -qP '[@%^*()+=~?><,.{}-]' && has_special='ja'
+      log_error "gen_policy_password: Nach ${max_attempts} Versuchen kein gueltiges Passwort erzeugt"
+      log_error "  Letzter Versuch: '${pw}' (Laenge: ${#pw})"
+      log_error "  Bedingungen: Ziffer=${has_digit}, Grossbuchstabe=${has_upper}, Kleinbuchstabe=${has_lower}, Sonderzeichen=${has_special}"
+      exit 1
     fi
   done
 }

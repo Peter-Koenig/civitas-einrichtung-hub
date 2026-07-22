@@ -484,10 +484,25 @@ run_cc_cli_exec() {
     else
       log_error "cc_cli exec: Playbook fehlgeschlagen — Logs pruefen:"
       log_error "  ${ansible_log_file}"
+      log_error ""
+      log_error "DIAGNOSE: Pruefe Passwort-Integritaet im gerenderten Inventory ..."
+      if [[ -n "${CONFIG_YAML_PATH:-}" && -f "${CONFIG_YAML_PATH}" && -n "${CREDENTIALS_OUTPUT_PATH:-}" && -f "${CREDENTIALS_OUTPUT_PATH}" ]]; then
+        local pw_checks=("PGADMIN_PASSWORD" "GEOSERVER_PASSWORD" "SUPERSET_PASSWORD" "GRAFANA_PASSWORD" "APISIX_DASHBOARD_PASSWORD")
+        for pw_name in "${pw_checks[@]}"; do
+          local pw_value
+          pw_value="$(grep -oP "(?<=^${pw_name}=).*" "${CREDENTIALS_OUTPUT_PATH}" 2>/dev/null || true)"
+          if [[ -n "${pw_value}" ]]; then
+            if ! grep -qF "${pw_value}" "${CONFIG_YAML_PATH}" 2>/dev/null; then
+              log_error "  ✗ ${pw_name}: Im Inventory nicht gefunden — wurde beim sed-Rendering veraendert?"
+            fi
+          fi
+        done
+      else
+        log_error "  Inventory (${CONFIG_YAML_PATH:-unset}) oder Credentials (${CREDENTIALS_OUTPUT_PATH:-unset}) nicht lesbar"
+      fi
       log_warn ""
-      log_warn "Moegliche Ursache: Eine Passwort-Validierung (z. B. 'Ensure PGAdmin password')"
-      log_warn "hat sporadisch nicht bestanden. Das ist kein Infrastrukturfehler –"
-      log_warn "einfach den Build neu starten, dann wird ein neues, gueltiges Passwort generiert."
+      log_warn "Die generierten Passwoerter werden mit diesem Lauf verworfen."
+      log_warn "Beim naechsten Build werden neue, policy-konforme Passwoerter erzeugt."
       log_warn "Bei wiederholtem Auftreten: Passwort-Laenge in 06_civitas.sh erhoehen."
       log_warn ""
       exit 1
