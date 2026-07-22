@@ -257,8 +257,11 @@ Zielzustand für TLS-Zertifikate anhand folgender Logik ermittelt:
 
 ### 7. Lizenz / Ansprechpartner
 
-- **Lizenz:** Derzeit nicht spezifiziert. Bei Fragen zur Nutzung wenden Sie
-  sich bitte an den Projektverantwortlichen.
+- **Lizenz:** European Union Public Licence, Version 1.2 (EUPL-1.2).
+  Der vollständige Lizenztext ist unter
+  <https://joinup.ec.europa.eu/software/page/eupl> abrufbar.
+  Alle Dateien in diesem Repository enthalten einen SPDX-Header mit dem
+  Identifier `SPDX-License-Identifier: EUPL-1.2`.
 - **Ansprechpartner:** Peter König (Projektverantwortlicher) –
   Kontaktaufnahme über das CIVITAS/CORE-Projektteam.
 - **Repository:** Dieses Repository ist Teil des CIVITAS/CORE-Ökosystems und
@@ -512,8 +515,11 @@ target state for TLS certificates based on the following logic:
 
 ### 7. License / Contact
 
-- **License:** Not specified at this time. For licensing inquiries, please
-  contact the project lead.
+- **License:** European Union Public Licence, Version 1.2 (EUPL-1.2).
+  The full license text is available at
+  <https://joinup.ec.europa.eu/software/page/eupl>.
+  All source files in this repository carry an SPDX header with the
+  identifier `SPDX-License-Identifier: EUPL-1.2`.
 - **Contact:** Peter König (project lead) – reachable via the CIVITAS/CORE
   project team.
 - **Repository:** This repository is part of the CIVITAS/CORE ecosystem and

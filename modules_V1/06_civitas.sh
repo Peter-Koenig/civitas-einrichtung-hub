@@ -1,4 +1,17 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: EUPL-1.2
+# Copyright (C) 2024-2025 CIVITAS/CORE Contributors
+#
+# Licensed under the EUPL, Version 1.2 only (the "Licence");
+# You may not use this work except in compliance with the Licence.
+# You may obtain a copy of the Licence at:
+#   https://joinup.ec.europa.eu/software/page/eupl
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the Licence is distributed on an "AS IS" basis,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the Licence for the specific language governing permissions and
+# limitations under the Licence.
 # 06_civitas.sh – Phase 2: CIVITAS/CORE-Plattform via cc_cli (V1)
 #
 # Siehe: skriptarchitektur.md (V1), Modul 06
