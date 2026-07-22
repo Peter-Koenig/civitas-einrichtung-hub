@@ -273,8 +273,7 @@ Zielzustand für TLS-Zertifikate anhand folgender Logik ermittelt:
   <https://joinup.ec.europa.eu/software/page/eupl> abrufbar.
   Alle Dateien in diesem Repository enthalten einen SPDX-Header mit dem
   Identifier `SPDX-License-Identifier: EUPL-1.2`.
-- **Ansprechpartner:** Peter König (Projektverantwortlicher) –
-  Kontaktaufnahme über das CIVITAS/CORE-Projektteam.
+- **Ansprechpartner:** Peter König (externer Contributor / p2d2)
 - **Repository:** Dieses Repository ist Teil des CIVITAS/CORE-Ökosystems und
   wird im Rahmen des p2d2-Projekts (Public-Public Data-DNA) entwickelt.
   Siehe auch: <https://www.data-dna.eu>
@@ -541,8 +540,4 @@ target state for TLS certificates based on the following logic:
   <https://joinup.ec.europa.eu/software/page/eupl>.
   All source files in this repository carry an SPDX header with the
   identifier `SPDX-License-Identifier: EUPL-1.2`.
-- **Contact:** Peter König (project lead) – reachable via the CIVITAS/CORE
-  project team.
-- **Repository:** This repository is part of the CIVITAS/CORE ecosystem and
-  is developed within the p2d2 project (Public-Public Data-DNA).
-  See also: <https://www.data-dna.eu>
+- **Contact:** Peter König (external contributor / p2d2)
