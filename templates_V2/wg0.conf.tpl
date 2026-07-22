@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: EUPL-1.2
-# Copyright (C) 2024-2025 CIVITAS/CORE Contributors
+# Copyright (C) 2024-2025 p2d2 Contributors
 #
 # Licensed under the EUPL, Version 1.2 only (the "Licence");
 # You may not use this work except in compliance with the Licence.
