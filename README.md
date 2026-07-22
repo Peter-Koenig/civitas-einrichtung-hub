@@ -254,6 +254,17 @@ Zielzustand für TLS-Zertifikate anhand folgender Logik ermittelt:
   (steuerbar über `RUN_TESTS`), aber noch nicht vollständig integriert
   (bekannter offener Punkt: `BASE_DOMAIN`-Fehler in der tests-`.env`-
   Generierung).
+- **Unvollständiger Komponenten-Satz (V1):** Das Installationsskript
+  richtet CIVITAS/CORE V1 mit Keycloak, Superset, pgAdmin, GeoServer
+  und dem Masterportal (sowie den dazugehörigen Abhängigkeiten) ein.
+  Diese Komponenten sind für den Betrieb von p2d2 essenziell.
+  Andere Komponenten wie QuantumLeap sind nicht enthalten. Daher
+  schlagen viele E2E-Tests am Ende der Installation fehl und erzeugen
+  falsch-positive Fehler.
+  **Workaround:** Gegebenenfalls auf die E2E-Tests verzichten
+  (`RUN_TESTS=false`) und die erfolgreiche Installation der Komponenten
+  anhand des Loggings der Ansible-Playbooks (in den Logs unter
+  `${CC_V1_REPO_PATH}/logs/`) nachvollziehen.
 
 ### 7. Lizenz / Ansprechpartner
 
@@ -512,6 +523,16 @@ target state for TLS certificates based on the following logic:
 - **E2E tests:** Playwright-based E2E tests are in preparation (controllable
   via `RUN_TESTS`) but not yet fully integrated (known open issue:
   `BASE_DOMAIN` error in the test `.env` generation).
+- **Incomplete component set (V1):** The installation script deploys
+  CIVITAS/CORE V1 with Keycloak, Superset, pgAdmin, GeoServer,
+  and the Masterportal (including their respective dependencies).
+  These components are essential for operating p2d2.
+  Other components such as QuantumLeap are not included. As a result,
+  many E2E tests at the end of the installation fail and produce
+  false-positive errors.
+  **Workaround:** Consider skipping the E2E tests (`RUN_TESTS=false`)
+  and verify successful component installation through the Ansible
+  playbook logs (in `${CC_V1_REPO_PATH}/logs/`).
 
 ### 7. License / Contact
 
