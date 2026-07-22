@@ -1,16 +1,4 @@
-# SPDX-License-Identifier: EUPL-1.2
-# Copyright (C) 2024-2025 CIVITAS/CORE Contributors
-#
-# Licensed under the EUPL, Version 1.2 only (the "Licence");
-# You may not use this work except in compliance with the Licence.
-# You may obtain a copy of the Licence at:
-#   https://joinup.ec.europa.eu/software/page/eupl
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Licence is distributed on an "AS IS" basis,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the Licence for the specific language governing permissions and
-# limitations under the Licence.
+
 # Copyright Broadcom, Inc. All Rights Reserved.
 # SPDX-License-Identifier: APACHE-2.0
 
@@ -137,7 +125,7 @@ image:
   ## pullSecrets:
   ##   - myRegistryKeySecretName
   ##
-  pullSecrets: 
+  pullSecrets:
     - private-registry-pull-secret
   ## Set to true if you would like to see extra information on logs
   ##
@@ -309,7 +297,7 @@ args: []
 ##   - name: FOO
 ##     value: "bar"
 ##
-extraEnvVars: 
+extraEnvVars:
   - name: KC_FEATURES
     value: "scripts"
   - name: KC_HTTP_ENABLED
@@ -345,7 +333,7 @@ containerPorts:
   http: 8080
   https: 8443
   metrics: 9000
-  infinispan: 7800  
+  infinispan: 7800
 ## @param extraContainerPorts Optionally specify extra list of additional port-mappings for Keycloak container
 ##
 extraContainerPorts: []
@@ -717,7 +705,7 @@ ingress:
   ##
 {% raw %}
   path: "{{ .Values.httpRelativePath }}(.*)"
-{% endraw %}  
+{% endraw %}
   ## @param ingress.servicePort Backend service port to use
   ## Default is http. Alternative is https.
   ##
@@ -730,7 +718,7 @@ ingress:
   ##   kubernetes.io/ingress.class: nginx
   ##   cert-manager.io/cluster-issuer: cluster-issuer-name
   ##
-  annotations: 
+  annotations:
     cert-manager.io/cluster-issuer: "{{ inv_k8s.cert_manager.issuer_name }}"
     # kubernetes.io/tls-acme: "true"
     nginx.ingress.kubernetes.io/ssl-redirect: "{{ open_http_port|default('true')|lower }}"
@@ -771,14 +759,14 @@ ingress:
   ##     serviceName: ssl-redirect
   ##     servicePort: use-annotation
   ##
-  extraPaths: 
+  extraPaths:
     - path: /auth/(.*)
       pathType: ImplementationSpecific
       backend:
         service:
           name: idmkeycloak
           port:
-            name: http  
+            name: http
   ## @param ingress.extraTls The tls configuration for additional hostnames to be covered with this ingress record.
   ## see: https://kubernetes.io/docs/concepts/services-networking/ingress/#tls
   ## extraTls:
@@ -845,9 +833,9 @@ adminIngress:
   hostname: "idm.{{ INGRESS_DOMAIN }}"
   ## @param adminIngress.path [string] Default path for the admin ingress record (evaluated as template)
   ##
-{% raw %}  
+{% raw %}
   path: "{{ .Values.httpRelativePath }}/admin(.*)"
-{% endraw %}  
+{% endraw %}
   ## @param adminIngress.servicePort Backend service port to use
   ## Default is http. Alternative is https.
   ##
@@ -860,7 +848,7 @@ adminIngress:
   ##   kubernetes.io/ingress.class: nginx
   ##   cert-manager.io/cluster-issuer: cluster-issuer-name
   ##
-  annotations: 
+  annotations:
     # cert-manager.io/cluster-issuer: "{{ inv_k8s.cert_manager.issuer_name }}"
     # kubernetes.io/tls-acme: "true"
     nginx.ingress.kubernetes.io/ssl-redirect: "{{ open_http_port|default('true')|lower }}"
@@ -868,7 +856,7 @@ adminIngress:
     nginx.ingress.kubernetes.io/proxy-buffer-size: 128k
     nginx.ingress.kubernetes.io/rewrite-target: /$1
     nginx.ingress.kubernetes.io/use-regex: 'true'
-    nginx.ingress.kubernetes.io/proxy-cookie-path: "off"  
+    nginx.ingress.kubernetes.io/proxy-cookie-path: "off"
   ## @param adminIngress.labels Additional labels for the Ingress resource.
   ## e.g:
   ## labels:
@@ -1126,10 +1114,10 @@ metrics:
     ## @param metrics.service.annotations [object] Annotations for enabling prometheus to access the metrics endpoints
     ##
     annotations:
-{% raw %}    
+{% raw %}
       prometheus.io/scrape: "true"
       prometheus.io/port: "{{ .Values.metrics.service.ports.metrics }}"
-{% endraw %}      
+{% endraw %}
     ## @param metrics.service.extraPorts [array] Add additional ports to the keycloak metrics service (i.e. admin port 9000)
     ##
     extraPorts: []
@@ -1151,11 +1139,11 @@ metrics:
     ## @param metrics.serviceMonitor.endpoints [array] The endpoint configuration of the ServiceMonitor. Path is mandatory. Port, scheme, tlsConfig, interval, timeout and labellings can be overwritten.
     ##
     endpoints:
-{% raw %}    
+{% raw %}
       - path: '{{ include "keycloak.httpPath" . }}metrics'
       - path: '{{ include "keycloak.httpPath" . }}realms/{{ .Values.adminRealm }}/metrics'
         port: http
-{% endraw %}        
+{% endraw %}
     ## @param metrics.serviceMonitor.path Metrics service HTTP path. Deprecated: Use @param metrics.serviceMonitor.endpoints instead
     ##
     path: ""
