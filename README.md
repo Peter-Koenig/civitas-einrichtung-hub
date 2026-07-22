@@ -70,11 +70,7 @@ bei aktivem Swap mit einer Fehlermeldung ab.
 
 ### 3. Netzwerk-Abhängigkeiten
 
-**Dieser Abschnitt ist besonders wichtig, da die Netzwerk-Architektur oft
-übersehen wird.**
-
-Die VM ist **nicht direkt öffentlich erreichbar**. Die externe Erreichbarkeit
-aller CIVITAS/CORE-Endpunkte basiert auf folgendem Aufbau:
+Die externe Erreichbarkeit aller CIVITAS/CORE-Endpunkte basiert auf folgendem Aufbau:
 
 1. **WireGuard-Tunnel:** Zwischen der CIVITAS/CORE-VM und einer
    OPNsense-Instanz wird ein WireGuard-Tunnel eingerichtet. Die VM erhält
@@ -104,13 +100,13 @@ aller CIVITAS/CORE-Endpunkte basiert auf folgendem Aufbau:
    `idm.<domain>` oder `portal.<domain>` nicht aufgelöst werden können, bricht
    aber nicht ab.
 
-4. **SOHO-Gateway:** Die VM kommuniziert mit dem Gateway `192.168.12.1`
+4. **SOHO-Gateway:** Die VM kommuniziert mit dem Gateway `192.168.aaa.1`
    (`SOHO_GATEWAY`). Die Preflight-Phase prüft die Erreichbarkeit dieses
    Gateways und bricht bei Fehlschlag ab.
 
-**Konsequenz:** Ohne korrekt konfigurierten WireGuard-Tunnel und
-HAProxy-Weiterleitung bleiben alle Endpunkte von außen unerreichbar, selbst
-wenn die Installation in der VM fehlerfrei abgeschlossen wurde.
+Ohne korrekt konfigurierten WireGuard-Tunnel und HAProxy-Weiterleitung bleiben
+alle Endpunkte von außen unerreichbar, selbst wenn die Installation in der VM
+fehlerfrei abgeschlossen wurde.
 
 ### 4. Phasenübersicht (Kurzfassung)
 
@@ -157,51 +153,73 @@ wenn die Installation in der VM fehlerfrei abgeschlossen wurde.
 
 ### 5. Voraussetzungen zum Start
 
-**Benötigte Umgebungsvariablen (vor Skript-Start exportieren oder in
-`.env.local` setzen):**
+Die Datei `.env.example` im Repository-Stammverzeichnis dient als Vorlage.
+Empfohlener Arbeitsablauf:
 
-| Variable               | Beschreibung                                      |
-|------------------------|---------------------------------------------------|
-| `ROOT_PASSWORD`        | Root-Passwort für die VM                          |
-| `SMTP_HOST`            | SMTP-Server-Hostname                              |
-| `SMTP_USER`            | SMTP-Benutzer                                     |
-| `SMTP_PASS`            | SMTP-Passwort                                     |
-| `ADMIN_PASS`           | Plattform-Admin-Passwort (master_password)        |
-| `WG_VM_PRIVATE_KEY`    | WireGuard-Private-Key der VM                      |
-| `WG_OPN_PUBLIC_KEY`    | WireGuard-Public-Key der OPNsense                 |
-| `WG_OPN_ENDPOINT`      | WireGuard-Endpoint (öffentliche IP:Port der OPNsense) |
-| `DOMAIN_NAME`          | Domain-Name (z. B. `example.org`)                 |
+1. `.env.example` nach `.env.local` kopieren
+2. Werte eintragen (Passwörter, Schlüssel, Domain)
+3. `.env.local` **nie** committen (in `.gitignore` eingetragen)
+4. Skript starten — es erkennt `.env.local` automatisch und überträgt es in die VM
 
-**Optionale Umgebungsvariablen:**
+Alternativ können alle Variablen auch direkt als Umgebungsvariablen exportiert werden.
 
-| Variable                 | Default            | Beschreibung                                      |
-|--------------------------|--------------------|---------------------------------------------------|
-| `LE_CERT`                | `false`            | `true` → Let's-Encrypt-Production-Zertifikate anfordern |
-| `LE_REQUESTS_BLOCKED`    | `false`            | `true` → Safety-Schalter: keine neuen Zertifikatsanforderungen |
-| `APISIX_DASHBOARD`       | `false`            | `true` → APISIX-Dashboard aktivieren              |
-| `RUN_TESTS`              | `false`            | `true` → E2E-Tests nach Installation ausführen    |
-| `WG_PRESHARED_KEY`       | *(leer)*           | Optionaler Pre-Shared-Key für WireGuard           |
-| `LOG_FILE`               | *(leer)*           | Pfad zu einer Logdatei (z. B. `/var/log/civitas_install_v1.log`) |
-| `CIVITAS_CONTEXT`        | `host`             | `host` (von Proxmox) oder `vm` (innerhalb der VM) |
-| `CREDENTIALS_OUTPUT_PATH`| `/root/civitas-install/credentials.env` | Zielpfad für generierte Dienst-Passwörter |
+**Pflichtvariablen (Skript bricht ab, wenn nicht gesetzt):**
 
-**Optionale `.env.local`-Datei:**
+| Variable               | Beschreibung                                                |
+|------------------------|-------------------------------------------------------------|
+| `ROOT_PASSWORD`        | Root-Passwort für die VM                                    |
+| `DOMAIN_NAME`          | Basis-Domain-Name (z. B. `example.eu`)                     |
+| `SMTP_HOST`            | SMTP-Server-Hostname                                        |
+| `SMTP_USER`            | SMTP-Benutzer                                               |
+| `SMTP_PASS`            | SMTP-Passwort                                               |
+| `ADMIN_PASS`           | Plattform-Admin-Passwort (gleichzeitig `master_password`)   |
+| `WG_VM_PRIVATE_KEY`    | WireGuard-Private-Key der VM                                |
+| `WG_OPN_PUBLIC_KEY`    | WireGuard-Public-Key der OPNsense                           |
+| `WG_OPN_ENDPOINT`      | WireGuard-Endpoint (öffentliche IP:Port der OPNsense)       |
 
-Alle oben genannten Variablen können auch in einer Datei `.env.local` im
-Repository-Stammverzeichnis abgelegt werden. Diese wird beim Start des Skripts
-automatisch erkannt und in die VM übertragen. Beispiel:
+**Optionale Variablen (mit Default-Werten und Detail-Erklärung):**
 
-```
-ROOT_PASSWORD="mein-sicheres-passwort"
-SMTP_HOST="mail.example.org"
-SMTP_USER="no-reply@example.org"
-SMTP_PASS="smtp-passwort"
-ADMIN_PASS="admin-passwort"
-WG_VM_PRIVATE_KEY="..."
-WG_OPN_PUBLIC_KEY="..."
-WG_OPN_ENDPOINT="opnsense.example.org:51820"
-DOMAIN_NAME="example.org"
-```
+| Variable                 | Default                     | Beschreibung                                                                 |
+|--------------------------|-----------------------------|------------------------------------------------------------------------------|
+| `CIVITAS_DEBUG`          | nicht gesetzt               | `true` → Ausführliche Debug-Ausgabe während der Installation                |
+| `LE_CERT`                | `false`                     | Steuert die Zertifikats-Strategie. Siehe Detail-Erklärung weiter unten.      |
+| `NO_NEW_LE_CERT`         | `false`                     | Safety-Schalter: `true` → blockiert **alle** neuen Zertifikatsanforderungen  |
+| `CERT_BACKUP_FILE`       | `le-certs-backup.yaml`      | Pfad zum Backup bestehender Let's-Encrypt-Zertifikate (YAML)                |
+| `APISIX_DASHBOARD`       | `false`                     | `true` → APISIX-Dashboard nach Installation aktivieren                      |
+| `RUN_TESTS`              | `true`                      | `true` → Playwright-E2E-Tests nach der Installation ausführen                |
+| `DOMAIN`                 | `udp.<DOMAIN_NAME>`         | Überschreibt die berechnete vollständige Domain inkl. `udp.`-Präfix          |
+| `TEST_ID`                | *(kein Default)*            | Identifier für E2E-Tests (z. B. `udp`)                                      |
+| `BASE_DOMAIN`            | *(kein Default)*            | Basis-Domain für E2E-Tests (z. B. `example.eu`)                             |
+| `RUSTFS_ENDPOINT`        | *(nicht gesetzt)*           | S3-kompatibler Endpoint für RustFS (z. B. `http://192.168.x.x:9000`)        |
+| `RUSTFS_ACCESS_KEY`      | *(nicht gesetzt)*           | S3-Access-Key für RustFS                                                    |
+| `RUSTFS_SECRET_KEY`      | *(nicht gesetzt)*           | S3-Secret-Key für RustFS                                                    |
+| `SMTP_PORT`              | `587`                       | SMTP-Port des ausgehenden Mailservers                                       |
+| `ADMIN_EMAIL`            | `admin@<DOMAIN_NAME>`       | E-Mail-Adresse des Plattform-Administrators                                 |
+| `WG_PRESHARED_KEY`       | *(leer)*                    | Optionaler Pre-Shared-Key für den WireGuard-Tunnel                          |
+
+**Detail-Erklärung: Zertifikats-Management (`LE_CERT` / `CERT_BACKUP_FILE` / `NO_NEW_LE_CERT`)**
+
+Das Skript verwendet eine Entscheidungsfunktion (`resolve_target_state`), die den
+Zielzustand für TLS-Zertifikate anhand folgender Logik ermittelt:
+
+- **`LE_CERT=false`** (Standard): Es werden ausschließlich Let's-Encrypt-Staging-
+  Zertifikate verwendet. Es erfolgen keine Production-Anfragen.
+- **`CERT_BACKUP_FILE` vorhanden**: Ein bestehendes Backup (z. B. aus einer
+  vorherigen Installation mit Production-Zertifikaten) wird wiederhergestellt.
+  Dies hat **Vorrang** vor `LE_CERT` — selbst bei `LE_CERT=false` wird ein
+  vorhandenes Backup restauriert.
+- **`LE_CERT=true` und kein Backup vorhanden**: Es werden neue Let's-Encrypt-
+  Production-Zertifikate angefordert.
+- **`NO_NEW_LE_CERT=true`**: Safety-Schalter. Selbst wenn alle Bedingungen für
+  eine Production-Anfrage erfüllt sind, wird diese blockiert. Nützlich, um
+  versehentliche Raten-Limits bei Let's-Encrypt zu vermeiden.
+
+**Hinweise zum Arbeitsablauf:**
+
+- `.env.example` dient ausschließlich als Vorlage — **nie direkt ausführen**.
+- Die Datei `.env.local` wird automatisch vom Skript erkannt und per `scp` in
+  die VM übertragen (bei Ausführung vom Proxmox-Host).
+- Werte mit `****` in `.env.example` sind Platzhalter und müssen ersetzt werden.
 
 **Weitere Voraussetzungen:**
 
@@ -231,7 +249,7 @@ DOMAIN_NAME="example.org"
 - **Zertifikats-Management:** Standardmäßig werden nur
   Let's-Encrypt-Staging-Zertifikate ausgestellt. Für Production-Zertifikate
   muss `LE_CERT=true` gesetzt werden. Ein Safety-Schalter
-  (`LE_REQUESTS_BLOCKED`) kann neue Zertifikatsanforderungen blockieren.
+  (`NO_NEW_LE_CERT`) kann neue Zertifikatsanforderungen blockieren.
 - **E2E-Tests:** Playwright-basierte E2E-Tests sind in Vorbereitung
   (steuerbar über `RUN_TESTS`), aber noch nicht vollständig integriert
   (bekannter offener Punkt: `BASE_DOMAIN`-Fehler in der tests-`.env`-
@@ -393,51 +411,72 @@ installation inside the VM completed successfully.
 
 ### 5. Prerequisites for Starting
 
-**Required environment variables (export before script start or set in
-`.env.local`):**
+The `.env.example` file in the repository root serves as a template.
+Recommended workflow:
 
-| Variable               | Description                                      |
-|------------------------|---------------------------------------------------|
-| `ROOT_PASSWORD`        | Root password for the VM                          |
-| `SMTP_HOST`            | SMTP server hostname                              |
-| `SMTP_USER`            | SMTP user                                         |
-| `SMTP_PASS`            | SMTP password                                     |
-| `ADMIN_PASS`           | Platform admin password (master_password)         |
-| `WG_VM_PRIVATE_KEY`    | WireGuard private key of the VM                   |
-| `WG_OPN_PUBLIC_KEY`    | WireGuard public key of the OPNsense              |
-| `WG_OPN_ENDPOINT`      | WireGuard endpoint (public IP:port of OPNsense)   |
-| `DOMAIN_NAME`          | Domain name (e.g., `example.org`)                 |
+1. Copy `.env.example` to `.env.local`
+2. Fill in the values (passwords, keys, domain)
+3. **Never commit** `.env.local` (it is listed in `.gitignore`)
+4. Start the script — it automatically detects `.env.local` and transfers it to the VM
 
-**Optional environment variables:**
+Alternatively, all variables can be exported directly as environment variables.
 
-| Variable                 | Default                     | Description                                   |
-|--------------------------|-----------------------------|-----------------------------------------------|
-| `LE_CERT`                | `false`                     | `true` → request Let's-Encrypt production certificates |
-| `LE_REQUESTS_BLOCKED`    | `false`                     | `true` → safety switch: block all new certificate requests |
-| `APISIX_DASHBOARD`       | `false`                     | `true` → enable APISIX dashboard              |
-| `RUN_TESTS`              | `false`                     | `true` → run E2E tests after installation     |
-| `WG_PRESHARED_KEY`       | *(empty)*                   | Optional pre-shared key for WireGuard         |
-| `LOG_FILE`               | *(empty)*                   | Path to a log file (e.g., `/var/log/civitas_install_v1.log`) |
-| `CIVITAS_CONTEXT`        | `host`                      | `host` (from Proxmox) or `vm` (inside the VM) |
-| `CREDENTIALS_OUTPUT_PATH`| `/root/civitas-install/credentials.env` | Target path for generated service passwords |
+**Required variables (script aborts if not set):**
 
-**Optional `.env.local` file:**
+| Variable               | Description                                             |
+|------------------------|---------------------------------------------------------|
+| `ROOT_PASSWORD`        | Root password for the VM                                |
+| `DOMAIN_NAME`          | Base domain name (e.g., `example.eu`)                   |
+| `SMTP_HOST`            | SMTP server hostname                                    |
+| `SMTP_USER`            | SMTP user                                               |
+| `SMTP_PASS`            | SMTP password                                           |
+| `ADMIN_PASS`           | Platform admin password (also used as `master_password`)|
+| `WG_VM_PRIVATE_KEY`    | WireGuard private key of the VM                         |
+| `WG_OPN_PUBLIC_KEY`    | WireGuard public key of the OPNsense                    |
+| `WG_OPN_ENDPOINT`      | WireGuard endpoint (public IP:port of the OPNsense)     |
 
-All variables above can also be placed in a `.env.local` file in the
-repository root directory. It is automatically detected and transferred to the
-VM when the script starts. Example:
+**Optional variables (with defaults and detailed explanation):**
 
-```
-ROOT_PASSWORD="my-secure-password"
-SMTP_HOST="mail.example.org"
-SMTP_USER="no-reply@example.org"
-SMTP_PASS="smtp-password"
-ADMIN_PASS="admin-password"
-WG_VM_PRIVATE_KEY="..."
-WG_OPN_PUBLIC_KEY="..."
-WG_OPN_ENDPOINT="opnsense.example.org:51820"
-DOMAIN_NAME="example.org"
-```
+| Variable                 | Default                     | Description                                                                |
+|--------------------------|-----------------------------|----------------------------------------------------------------------------|
+| `CIVITAS_DEBUG`          | not set                     | `true` → verbose debug output during installation                          |
+| `LE_CERT`                | `false`                     | Controls the certificate strategy. See detailed explanation below.         |
+| `NO_NEW_LE_CERT`         | `false`                     | Safety switch: `true` → blocks **all** new certificate requests           |
+| `CERT_BACKUP_FILE`       | `le-certs-backup.yaml`      | Path to a backup of existing Let's-Encrypt certificates (YAML)            |
+| `APISIX_DASHBOARD`       | `false`                     | `true` → enable APISIX dashboard after installation                        |
+| `RUN_TESTS`              | `true`                      | `true` → run Playwright E2E tests after installation                       |
+| `DOMAIN`                 | `udp.<DOMAIN_NAME>`         | Overrides the computed full domain including the `udp.` prefix             |
+| `TEST_ID`                | *(no default)*              | Identifier for E2E tests (e.g., `udp`)                                     |
+| `BASE_DOMAIN`            | *(no default)*              | Base domain for E2E tests (e.g., `example.eu`)                             |
+| `RUSTFS_ENDPOINT`        | *(not set)*                 | S3-compatible endpoint for RustFS (e.g., `http://192.168.x.x:9000`)       |
+| `RUSTFS_ACCESS_KEY`      | *(not set)*                 | S3 access key for RustFS                                                   |
+| `RUSTFS_SECRET_KEY`      | *(not set)*                 | S3 secret key for RustFS                                                   |
+| `SMTP_PORT`              | `587`                       | SMTP port of the outgoing mail server                                      |
+| `ADMIN_EMAIL`            | `admin@<DOMAIN_NAME>`       | Email address of the platform administrator                                |
+| `WG_PRESHARED_KEY`       | *(empty)*                   | Optional pre-shared key for the WireGuard tunnel                           |
+
+**Detailed explanation: Certificate management (`LE_CERT` / `CERT_BACKUP_FILE` / `NO_NEW_LE_CERT`)**
+
+The script uses a decision function (`resolve_target_state`) that determines the
+target state for TLS certificates based on the following logic:
+
+- **`LE_CERT=false`** (default): Only Let's-Encrypt staging certificates are
+  used. No production requests are made.
+- **`CERT_BACKUP_FILE` exists**: An existing backup (e.g., from a previous
+  installation with production certificates) is restored. This takes **precedence**
+  over `LE_CERT` — even with `LE_CERT=false`, an existing backup is restored.
+- **`LE_CERT=true` and no backup exists**: New Let's-Encrypt production
+  certificates are requested.
+- **`NO_NEW_LE_CERT=true`**: Safety switch. Even if all conditions for a
+  production request are met, it is blocked. Useful for preventing accidental
+  rate-limit hits at Let's-Encrypt.
+
+**Workflow notes:**
+
+- `.env.example` is a template only — **never run it directly**.
+- The `.env.local` file is automatically detected by the script and transferred
+  via `scp` to the VM (when running from the Proxmox host).
+- Values marked with `****` in `.env.example` are placeholders and must be replaced.
 
 **Further requirements:**
 
@@ -448,6 +487,7 @@ DOMAIN_NAME="example.org"
 - The Proxmox storage `local-zfs-civitas` must exist.
 - A Proxmox Backup Server (PBS) with storage `backup-p2d2-kinglui` is
   recommended (checked in phase 0).
+
 
 ### 6. Known Limitations / Development Status
 
@@ -465,7 +505,7 @@ DOMAIN_NAME="example.org"
   from the outside (see section 3).
 - **Certificate management:** By default, only Let's-Encrypt staging
   certificates are issued. For production certificates, set `LE_CERT=true`. A
-  safety switch (`LE_REQUESTS_BLOCKED`) can block new certificate requests.
+  safety switch (`NO_NEW_LE_CERT`) can block new certificate requests.
 - **E2E tests:** Playwright-based E2E tests are in preparation (controllable
   via `RUN_TESTS`) but not yet fully integrated (known open issue:
   `BASE_DOMAIN` error in the test `.env` generation).
