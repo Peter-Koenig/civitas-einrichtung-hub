@@ -50,9 +50,9 @@ verify_phase2() {
   local total_pods=0 total_running=0 total_failed=0
   for ns in "${K8S_NAMESPACES[@]}"; do
     local p_ns r_ns f_ns
-    p_ns="$(kubectl --kubeconfig="${K8S_NAMESPACES[@]}" get pods -n "${ns}" -o name 2>/dev/null | wc -l)"
-    r_ns="$(kubectl --kubeconfig="${K8S_NAMESPACES[@]}" get pods -n "${ns}" --field-selector=status.phase=Running -o name 2>/dev/null | wc -l)"
-    f_ns="$(kubectl --kubeconfig="${K8S_NAMESPACES[@]}" get pods -n "${ns}" --field-selector=status.phase!=Running,status.phase!=Succeeded -o name 2>/dev/null | wc -l)"
+    p_ns="$(kubectl --kubeconfig="${KUBECONFIG_PATH}" get pods -n "${ns}" -o name 2>/dev/null | wc -l)"
+    r_ns="$(kubectl --kubeconfig="${KUBECONFIG_PATH}" get pods -n "${ns}" --field-selector=status.phase=Running -o name 2>/dev/null | wc -l)"
+    f_ns="$(kubectl --kubeconfig="${KUBECONFIG_PATH}" get pods -n "${ns}" --field-selector=status.phase!=Running,status.phase!=Succeeded -o name 2>/dev/null | wc -l)"
     total_pods=$(( total_pods + p_ns ))
     total_running=$(( total_running + r_ns ))
     total_failed=$(( total_failed + f_ns ))
@@ -68,7 +68,7 @@ verify_phase2() {
   local total_ingress=0
   for ns in "${K8S_NAMESPACES[@]}"; do
     local ic_ns
-    ic_ns="$(kubectl --kubeconfig="${K8S_NAMESPACES[@]}" get ingress -n "${ns}" -o name 2>/dev/null | wc -l)"
+    ic_ns="$(kubectl --kubeconfig="${KUBECONFIG_PATH}" get ingress -n "${ns}" -o name 2>/dev/null | wc -l)"
     total_ingress=$(( total_ingress + ic_ns ))
   done
   if [[ "$total_ingress" -ge 2 ]]; then
@@ -85,8 +85,8 @@ verify_phase2() {
   local total_certs=0 certs_not_ready=false
   for ns in "${K8S_NAMESPACES[@]}"; do
     local cc_ns cr_ns
-    cc_ns="$(kubectl --kubeconfig="${K8S_NAMESPACES[@]}" get certificate -n "${ns}" -o name 2>/dev/null | wc -l)"
-    cr_ns="$(kubectl --kubeconfig="${K8S_NAMESPACES[@]}" get certificate -n "${ns}" \
+    cc_ns="$(kubectl --kubeconfig="${KUBECONFIG_PATH}" get certificate -n "${ns}" -o name 2>/dev/null | wc -l)"
+    cr_ns="$(kubectl --kubeconfig="${KUBECONFIG_PATH}" get certificate -n "${ns}" \
       -o jsonpath='{.items[*].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)"
     total_certs=$(( total_certs + cc_ns ))
     if [[ "$cr_ns" == *"False"* ]]; then
