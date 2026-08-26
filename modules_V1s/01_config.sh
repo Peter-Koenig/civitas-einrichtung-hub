@@ -174,24 +174,6 @@ WG_LISTEN_PORT="${WG_LISTEN_PORT:-51820}"
 WG_ALLOWED_IPS="10.10.10.0/24"
 WG_CONF_PATH="/etc/wireguard/${WG_INTERFACE}.conf"
 
-# ── RustFS / S3 (optional — steuern s3_backend.enable im Inventory) ──────────
-# Alle drei Variablen haben Leerstring-Default (:- statt :?), damit die
-# 3-Felder-Prüfung in render_inventory() eigenständig über s3_backend.enable
-# entscheiden kann. Siehe portal-backend-objektspeicher.md, Abschnitt
-# "Noch zu implementieren", Punkt 3 und 4.
-RUSTFS_ENDPOINT="${RUSTFS_ENDPOINT:-}"     # S3-Endpoint (leer = s3_backend deaktiviert)
-RUSTFS_ACCESS_KEY="${RUSTFS_ACCESS_KEY:-}" # S3-Access-Key (leer = s3_backend deaktiviert)
-RUSTFS_SECRET_KEY="${RUSTFS_SECRET_KEY:-}" # S3-Secret-Key (leer = s3_backend deaktiviert)
-RUSTFS_BUCKET_NAME="${RUSTFS_BUCKET_NAME:-portal-config}"   # S3-Bucket-Name (Default: portal-config)
-RUSTFS_REGION="${RUSTFS_REGION:-eu-north-1}"                 # S3-Region (Default: eu-north-1)
-RUSTFS_FORCE_PATH_STYLE="${RUSTFS_FORCE_PATH_STYLE:-true}"   # S3-Force-Path-Style (Default: true)
-
-# ── mc-Client (MinIO Client für RustFS) ───────────────────────────────────────
-MC_VERSION="${MC_VERSION:-RELEASE.2025-05-21T01-59-54Z}"  # beim Skriptbau aus MinIO-Release-Doku fixieren
-MC_DOWNLOAD_URL="https://dl.min.io/client/mc/release/linux-amd64/archive/mc.${MC_VERSION}"
-MC_ALIAS_NAME="${MC_ALIAS_NAME:-civitas-rustfs}"   # mc-Alias für RustFS-Endpoint
-MC_BUCKET_NAME="${MC_BUCKET_NAME:-portal-config}"   # S3-Bucket-Name für portal-backend
-
 # ── Versionspinning-Regel (nur als Kommentar, kein Code) ─────────────────────
 # Alle *_VERSION-Variablen werden beim Skriptbau auf konkrete Werte gesetzt.
 # Änderungen nur durch bewusste Wartungsaktionen. Niemals "latest" verwenden.

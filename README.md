@@ -190,12 +190,14 @@ Alternativ können alle Variablen auch direkt als Umgebungsvariablen exportiert 
 | `DOMAIN`                 | `udp.<DOMAIN_NAME>`         | Überschreibt die berechnete vollständige Domain inkl. `udp.`-Präfix          |
 | `TEST_ID`                | *(kein Default)*            | Identifier für E2E-Tests (z. B. `udp`)                                      |
 | `BASE_DOMAIN`            | *(kein Default)*            | Basis-Domain für E2E-Tests (z. B. `example.eu`)                             |
-| `RUSTFS_ENDPOINT`        | *(nicht gesetzt)*           | S3-kompatibler Endpoint für RustFS (z. B. `http://192.168.x.x:9000`)        |
-| `RUSTFS_ACCESS_KEY`      | *(nicht gesetzt)*           | S3-Access-Key für RustFS                                                    |
-| `RUSTFS_SECRET_KEY`      | *(nicht gesetzt)*           | S3-Secret-Key für RustFS                                                    |
+| `RUSTFS_ENDPOINT`        | *(nicht gesetzt)*           | Nur V1: S3-kompatibler Endpoint für RustFS (z. B. `http://192.168.x.x:9000`) |
+| `RUSTFS_ACCESS_KEY`      | *(nicht gesetzt)*           | Nur V1: S3-Access-Key für RustFS                                             |
+| `RUSTFS_SECRET_KEY`      | *(nicht gesetzt)*           | Nur V1: S3-Secret-Key für RustFS                                             |
 | `SMTP_PORT`              | `587`                       | SMTP-Port des ausgehenden Mailservers                                       |
 | `ADMIN_EMAIL`            | `admin@<DOMAIN_NAME>`       | E-Mail-Adresse des Plattform-Administrators                                 |
 | `WG_PRESHARED_KEY`       | *(leer)*                    | Optionaler Pre-Shared-Key für den WireGuard-Tunnel                          |
+
+> **Hinweis V1s:** Die `RUSTFS_*`-Variablen gelten nur für die V1-Referenzvariante (S3-/RustFS-basierte Masterportal-Konfiguration). Die V1s-Buildvariante liefert die Masterportal-Konfiguration statisch über das gebaute Portal-Backend-Image und benötigt diese Variablen nicht.
 
 **Detail-Erklärung: Zertifikats-Management (`LE_CERT` / `CERT_BACKUP_FILE` / `NO_NEW_LE_CERT`)**
 
@@ -461,12 +463,14 @@ Alternatively, all variables can be exported directly as environment variables.
 | `DOMAIN`                 | `udp.<DOMAIN_NAME>`         | Overrides the computed full domain including the `udp.` prefix             |
 | `TEST_ID`                | *(no default)*              | Identifier for E2E tests (e.g., `udp`)                                     |
 | `BASE_DOMAIN`            | *(no default)*              | Base domain for E2E tests (e.g., `example.eu`)                             |
-| `RUSTFS_ENDPOINT`        | *(not set)*                 | S3-compatible endpoint for RustFS (e.g., `http://192.168.x.x:9000`)       |
-| `RUSTFS_ACCESS_KEY`      | *(not set)*                 | S3 access key for RustFS                                                   |
-| `RUSTFS_SECRET_KEY`      | *(not set)*                 | S3 secret key for RustFS                                                   |
+| `RUSTFS_ENDPOINT`        | *(not set)*                 | V1 only: S3-compatible endpoint for RustFS (e.g., `http://192.168.x.x:9000`)|
+| `RUSTFS_ACCESS_KEY`      | *(not set)*                 | V1 only: S3 access key for RustFS                                            |
+| `RUSTFS_SECRET_KEY`      | *(not set)*                 | V1 only: S3 secret key for RustFS                                            |
 | `SMTP_PORT`              | `587`                       | SMTP port of the outgoing mail server                                      |
 | `ADMIN_EMAIL`            | `admin@<DOMAIN_NAME>`       | Email address of the platform administrator                                |
 | `WG_PRESHARED_KEY`       | *(empty)*                   | Optional pre-shared key for the WireGuard tunnel                           |
+
+> **V1s note:** The `RUSTFS_*` variables apply only to the V1 reference variant (S3/RustFS-based Masterportal configuration). The V1s build variant serves the Masterportal configuration statically from the built portal-backend image and does not require these variables.
 
 **Detailed explanation: Certificate management (`LE_CERT` / `CERT_BACKUP_FILE` / `NO_NEW_LE_CERT`)**
 

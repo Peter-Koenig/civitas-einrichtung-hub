@@ -332,26 +332,6 @@ render_inventory() {
   local pw_geoserver;          pw_geoserver="$(gen_policy_password 16 | sed 's/[&|\\$]/\\&/g' || echo "CHANGEME_geoserver")"
   local pw_pivau;              pw_pivau="$(gen_policy_password 24 | sed 's/[&|\\$]/\\&/g' || echo "CHANGEME_pivau")"
 
-  # ── S3-Backend: 3-Felder-Prüfung (Velero-analog) ─────────────────────────
-  # RUSTFS_S3_ENABLE steuert s3_backend.enable im Inventory.
-  # Nur wenn alle drei Pflichtfelder gesetzt und nicht-leer sind, wird das
-  # S3-Backend aktiviert (true). Fehlt eines → false.
-  # RUSTFS_BUCKET_NAME und RUSTFS_REGION haben Komfort-Defaults und sind
-  # nicht Teil der Prüfung.
-  local RUSTFS_S3_ENABLE="false"
-  if [[ -n "${RUSTFS_ENDPOINT}" && -n "${RUSTFS_ACCESS_KEY}" && -n "${RUSTFS_SECRET_KEY}" ]]; then
-    RUSTFS_S3_ENABLE="true"
-    log_ok "S3-Backend aktiviert (alle drei Pflichtfelder gesetzt)"
-  else
-    log_warn "S3-Backend deaktiviert — RUSTFS_ENDPOINT, RUSTFS_ACCESS_KEY und/oder RUSTFS_SECRET_KEY nicht gesetzt"
-    log_warn "  s3_backend.enable=false — portal-backend startet ggf. mit ENOENT-Fehler"
-  fi
-
-  # Sonderzeichen escapen (Env-Vars von außen — analog zu pw_* und ADMIN_PASS)
-  local rustfs_endpoint_esc;    rustfs_endpoint_esc="$(echo "${RUSTFS_ENDPOINT}" | sed 's/[&|\\$]/\\&/g')"
-  local rustfs_access_key_esc;  rustfs_access_key_esc="$(echo "${RUSTFS_ACCESS_KEY}" | sed 's/[&|\\$]/\\&/g')"
-  local rustfs_secret_key_esc;  rustfs_secret_key_esc="$(echo "${RUSTFS_SECRET_KEY}" | sed 's/[&|\\$]/\\&/g')"
-
   # sed-Trennzeichen '|' vermeidet Konflikte mit '/' in URLs und Pfaden.
   # Reihenfolge: spezifischere Token vor generischeren (kein Überschreiben).
   sed \
@@ -382,13 +362,6 @@ render_inventory() {
     -e "s|PLACEHOLDER_GRAFANA_PASSWORD|${pw_grafana}|g" \
     -e "s|PLACEHOLDER_GEOSERVER_PASSWORD|${pw_geoserver}|g" \
     -e "s|PLACEHOLDER_PIVAU_PASSWORD|${pw_pivau}|g" \
-    -e "s|PLACEHOLDER_S3_ENABLE|${RUSTFS_S3_ENABLE}|g" \
-    -e "s|PLACEHOLDER_S3_ENDPOINT|${rustfs_endpoint_esc}|g" \
-    -e "s|PLACEHOLDER_S3_ACCESS_KEY|${rustfs_access_key_esc}|g" \
-    -e "s|PLACEHOLDER_S3_SECRET_KEY|${rustfs_secret_key_esc}|g" \
-    -e "s|PLACEHOLDER_S3_BUCKET_NAME|${RUSTFS_BUCKET_NAME}|g" \
-    -e "s|PLACEHOLDER_S3_REGION|${RUSTFS_REGION}|g" \
-    -e "s|PLACEHOLDER_S3_FORCE_PATH_STYLE|${RUSTFS_FORCE_PATH_STYLE}|g" \
     -e "s|PLACEHOLDER_V1S_IMAGE_REPOSITORY|${V1S_IMAGE_REF%%:*}|g" \
     -e "s|PLACEHOLDER_V1S_IMAGE_TAG|${V1S_IMAGE_REF##*:}|g" \
     -e "s|PLACEHOLDER_KUBECONFIG|config|g" \
