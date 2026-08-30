@@ -133,7 +133,7 @@ build_geoportal_backend_image() {
   # apt-get purge --dry-run muss das Paket docker.io auflisten.
   if [[ "${V1S_DOCKER_INSTALLED_BY_SCRIPT}" == "true" && "${docker_was_present}" == "false" ]]; then
     log "Deinstalliere temporär installiertes Docker (Sicherheitscheck) …"
-    if ! apt-get purge --dry-run docker.io | grep -q "Remv docker.io"; then
+    if ! apt-get purge --dry-run docker.io | grep -qE "Purg docker\.io(:[a-z0-9]+)?[[:space:]]"; then
       log_error "Sicherheitscheck fehlgeschlagen: apt-get purge --dry-run docker.io entfernt docker.io nicht"
       log_error "  Docker-Entfernung abgebrochen — bitte manuell prüfen"
       exit 1
