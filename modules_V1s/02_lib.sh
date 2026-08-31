@@ -73,10 +73,11 @@ assert_success() {
 #   - mind. 1 Ziffer
 #   - mind. 1 Großbuchstabe
 #   - mind. 1 Kleinbuchstabe
-#   - mind. 1 Sonderzeichen aus: @%^*()+=~?><,.{}-
+#   - mind. 1 Sonderzeichen aus: @%^*()+=~?><,.-
 #   - KEINE Zeichen, die mit sed (&, #, |), YAML (#, :) oder Shell
 #     ($, !, Backtick, Anführungszeichen) kollidieren
 #   - KEINE base64-Sonderzeichen (+, /, =)
+#   - KEINE geschweiften Klammern ({, }): Jinja2-Kollision, siehe HINWEIS unten
 #
 # HINWEIS: '%' ist im Charset enthalten, weil das aktuell verwendete
 # sed-Trennzeichen in 06_civitas.sh '|' ist (sed -e "s|PLACEHOLDER|${pw}|g").
@@ -84,16 +85,24 @@ assert_success() {
 # hier aus dem Charset entfernt werden. Diese Abhaengigkeit ist bewusst
 # in Kauf genommen und muss bei Aenderungen an den sed-Aufrufen in
 # 06_civitas.sh manuell nachgezogen werden.
+#
+# HINWEIS (unabhaengig vom sed-Trennzeichen): '{' und '}' sind dauerhaft aus
+# dem Charset ausgeschlossen, weil Ansible das Inventory in cc_cli exec per
+# Jinja2 rendert. Die Zweizeichenfolgen '{%' und '%}' starten/beenden dort
+# einen Jinja-Statement-Block (analog '{{'/'}}' fuer Ausdruecke). Ein zufaellig
+# gezogenes Passwort mit '{%', '%}', '{{' oder '}}' fuehrt zu einem
+# Ansible-Templating-Fehler ("Encountered unknown tag"). '%' allein ist
+# ungefaehrlich und bleibt fuer das sed-Trennzeichen '|' weiterhin erforderlich.
 gen_policy_password() {
   local length="${1:-24}"
   local max_attempts=50
-  local charset='A-Za-z0-9@%^*()+=~?><,.{}-'
+  local charset='A-Za-z0-9@%^*()+=~?><,.-'
   local pw
   local attempt=0
   while true; do
     attempt=$((attempt + 1))
     pw="$(tr -dc "${charset}" < /dev/urandom | head -c "${length}" || true)"
-    if echo "${pw}" | grep -qP '(?=.*[0-9])(?=.*[A-Z])(?=.*[a-z])(?=.*[@%^*()+=~?><,.{}-])'; then
+    if echo "${pw}" | grep -qP '(?=.*[0-9])(?=.*[A-Z])(?=.*[a-z])(?=.*[@%^*()+=~?><,.-])'; then
       echo "${pw}"
       return 0
     fi
@@ -102,7 +111,7 @@ gen_policy_password() {
       echo "${pw}" | grep -qP '[0-9]' && has_digit='ja'
       echo "${pw}" | grep -qP '[A-Z]' && has_upper='ja'
       echo "${pw}" | grep -qP '[a-z]' && has_lower='ja'
-      echo "${pw}" | grep -qP '[@%^*()+=~?><,.{}-]' && has_special='ja'
+      echo "${pw}" | grep -qP '[@%^*()+=~?><,.-]' && has_special='ja'
       log_error "gen_policy_password: Nach ${max_attempts} Versuchen kein gueltiges Passwort erzeugt"
       log_error "  Letzter Versuch: '${pw}' (Laenge: ${#pw})"
       log_error "  Bedingungen: Ziffer=${has_digit}, Grossbuchstabe=${has_upper}, Kleinbuchstabe=${has_lower}, Sonderzeichen=${has_special}"
