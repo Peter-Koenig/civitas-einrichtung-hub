@@ -198,6 +198,10 @@ all:
             image_tag: "PLACEHOLDER_V1S_IMAGE_TAG"
             s3_backend:
               enable: false
+              endpoint: "unused"
+              access_key_id: "unused"
+              secret_access_key: "unused"
+              bucket_name: "unused"
 
         inv_addons:
           import: false
