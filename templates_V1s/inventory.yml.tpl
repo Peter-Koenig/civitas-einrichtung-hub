@@ -69,18 +69,25 @@ all:
             default_password: "PLACEHOLDER_PGADMIN_PASSWORD"
           kyverno_operator:
             enable: false
+          # Befristet deaktiviert — siehe ai-runs/2026-08-31-v1s-docker-purge-cleanup-bugfix:
+          # 05_addons.sh installiert keinen Prometheus-Operator, daher fehlen die
+          # monitoring.coreos.com/v1-CRDs (ServiceMonitor etc.). Mit aktivem Monitoring
+          # rendert das APISIX-Helm-Chart metrics.serviceMonitor.enabled: true und
+          # scheitert beim Deploy an der fehlenden ServiceMonitor-CRD.
+          # Nachrüstung von Prometheus/kube-prometheus-stack ist als offene Aufgabe
+          # in ptf-roadmap-2026-2027.md dokumentiert.
           monitoring:
-            enable: true
+            enable: false
             prometheus:
-              enable: true
+              enable: false
             grafana:
-              enable: true
+              enable: false
             alertmanager:
-              enable: true
+              enable: false
             loki:
-              enable: true
+              enable: false
             alloy:
-              enable: true
+              enable: false
 
           velero:
             enable: false
