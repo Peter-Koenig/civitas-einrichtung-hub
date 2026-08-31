@@ -121,11 +121,17 @@ build_geoportal_backend_image() {
     log_warn "k3s nicht gefunden — containerd-Import übersprungen (V1s-Build ohne Cluster?)"
     log_warn "  Image bleibt lokal in Docker erhalten: ${V1S_IMAGE_REF}"
   else
-    log "Exportiere Image und importiere in containerd …"
+    # WICHTIG: `-n k8s.io` ist zwingend. Ohne Namespace-Angabe importiert
+    # `k3s ctr` in den Containerd-Namespace `default`, während kubelet/CRI
+    # Images ausschließlich im Namespace `k8s.io` sucht — das lokal gebaute
+    # Image wäre sonst für Pods unsichtbar (ImagePullBackOff statt Start).
+    # Beleg: ai-runs/2026-08-31-v1s-installationsskript-lauffaehig
+    #   perplexity/003-perplexity-followup-containerd-namespace-belege-*.md
+    log "Exportiere Image und importiere in containerd (Namespace k8s.io) …"
     docker image save "${V1S_IMAGE_REF}" \
-      | k3s ctr images import - \
-      || { log_error "k3s ctr images import fehlgeschlagen — Abbruch"; exit 1; }
-    log_ok "Image in containerd importiert: ${V1S_IMAGE_REF}"
+      | k3s ctr -n k8s.io images import - \
+      || { log_error "k3s ctr -n k8s.io images import fehlgeschlagen — Abbruch"; exit 1; }
+    log_ok "Image in containerd importiert (Namespace k8s.io): ${V1S_IMAGE_REF}"
   fi
 
   # ── 7. Docker ggf. wieder deinstallieren ────────────────────────────────
