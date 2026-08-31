@@ -112,7 +112,7 @@ V1S_IMAGE_REF="geoportal_backend:${V1S_IMAGE_TAG}"     # Vollständige Image-Ref
 V1S_DOCKER_INSTALLED_BY_SCRIPT="false"                 # Laufzeit-Flag: Docker vom Skript installiert? (steuert Deinstallation)
 
 # ── Timeouts ─────────────────────────────────────────────────────────────────
-TIMEOUT_CC_CLI_EXEC=1800             # Sekunden für cc_cli exec
+TIMEOUT_CC_CLI_EXEC=2700             # Sekunden für cc_cli exec (45 Min; Monitoring-Reaktivierung Turn 5 lädt zusätzliche Helm-Charts)
 TIMEOUT_POD_READY=300               # Sekunden für kubectl wait
 
 
