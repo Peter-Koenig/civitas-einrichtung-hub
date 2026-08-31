@@ -102,14 +102,21 @@ run_in_vm() {
     exit 1
   fi
 
-  if [[ -f "${SCRIPT_DIR}/.env.local" ]]; then
+  local env_file=""
+  if [[ -f "${SCRIPT_DIR}/.env-v1s.local" ]]; then
+    env_file="${SCRIPT_DIR}/.env-v1s.local"
+  elif [[ -f "${SCRIPT_DIR}/.env.local" ]]; then
+    env_file="${SCRIPT_DIR}/.env.local"
+  fi
+
+  if [[ -n "${env_file}" ]]; then
     scp -o StrictHostKeyChecking=no \
-      "${SCRIPT_DIR}/.env.local" \
+      "${env_file}" \
       "root@${VM_IP_STATIC}:${VM_REMOTE_INSTALL_DIR}/.env.local" \
-      || { log_error "scp .env.local fehlgeschlagen"; exit 1; }
-    log_ok ".env.local nach ${VM_REMOTE_INSTALL_DIR} kopiert"
+      || { log_error "scp $(basename "${env_file}") fehlgeschlagen"; exit 1; }
+    log_ok "$(basename "${env_file}") nach ${VM_REMOTE_INSTALL_DIR}/.env.local kopiert"
   else
-    log_warn ".env.local nicht gefunden — alle Secrets müssen als Umgebungsvariablen gesetzt sein"
+    log_warn ".env-v1s.local/.env.local nicht gefunden — alle Secrets müssen als Umgebungsvariablen gesetzt sein"
   fi
 
   if [[ -f "${SCRIPT_DIR}/le-certs-backup.yaml" ]]; then
