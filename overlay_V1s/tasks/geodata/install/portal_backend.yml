@@ -1,0 +1,266 @@
+# overlay_V1s/tasks/geodata/install/portal_backend.yml
+#
+# Overlay-Fix für den Portal-Backend-Image-Referenz-Bug.
+#
+# Abweichung vom Upstream-Task
+# (CiCo_V1-ressources/tasks/geodata/install/portal_backend.yml):
+#   1. `image:` — Registry-Teil samt Trenner-Slash wird nur eingefügt, wenn
+#      tatsächlich eine Registry konfiguriert ist. Der Upstream-Task fügt den
+#      Slash unbedingt ein; bei leerer Registry (V1s-Buildvariante, lokal
+#      gebautes Image ohne Registry) entstand so die ungültige Referenz
+#      "/geoportal_backend:<tag>" (InvalidImageName).
+#   2. `imagePullPolicy:` — bei lokal gebautem Image ohne Registry wird
+#      "IfNotPresent" verwendet (kubelet nutzt das bereits lokal importierte
+#      Image, statt einen Registry-Pull zu versuchen), sonst "Always".
+#
+# Lauf-Referenz: ai-runs/2026-08-31-v1s-installationsskript-lauffaehig
+#   perplexity/002-perplexity-followup-portal-backend-image-referenz-*.md
+---
+- name: "Portal Backend: Get Admin credentials"
+  kubernetes.core.k8s_info:
+    namespace: "{{ inv_access.ns_name | lower }}"
+    kubeconfig: "{{ k8s_config }}"
+    context: "{{ k8s_context }}"
+    kind: Secret
+    name: "{{ inv_access.platform.k8s_secret_name }}"
+  register: admin_credentials
+
+- name: "Portal Backend: Store IDM Credentials"
+  set_fact:
+    ADMIN_USERNAME: "{{ admin_credentials.resources[0].data.MASTER_USERNAME | b64decode }}"
+    ADMIN_PASSWORD: "{{ admin_credentials.resources[0].data.MASTER_PASSWORD | b64decode }}"
+    cacheable: yes
+
+- name: "Portal Backend: Re-Login to keycloak"
+  uri:
+    method: POST
+    url: "{{ inv_access.platform.hostname}}/realms/master/protocol/openid-connect/token"
+    return_content: yes
+    ca_path: "{{ inv_k8s.ingress.ca_path }}"
+    body_format: form-urlencoded
+    body:
+      grant_type: "password"
+      client_id: "admin-cli"
+      username: "{{ ADMIN_USERNAME }}"
+      password: "{{ ADMIN_PASSWORD }}"
+    status_code: 200
+  register: keycloak_login
+
+- name: "Portal Backend: Get OIDC Values"
+  uri:
+    method: GET
+    url: "{{ inv_access.platform.hostname}}/realms/{{ inv_access.tenant.realm_name }}/.well-known/openid-configuration"
+    return_content: yes
+    ca_path: "{{ inv_k8s.ingress.ca_path }}"
+    headers:
+      Accept: application/json
+      Authorization: Bearer {{ keycloak_login.json.access_token }}
+    status_code: 200
+  register: keycloak_oidc_response
+
+- name: "Portal Backend: Get OIDC Values"
+  uri:
+    method: GET
+    url: "{{ keycloak_oidc_response.json.jwks_uri }}"
+    return_content: yes
+    ca_path: "{{ inv_k8s.ingress.ca_path }}"
+    headers:
+      Accept: application/json
+      Authorization: Bearer {{ keycloak_login.json.access_token }}
+    status_code: 200
+  register: keycloak_certs_response
+
+# - name: "Get keycloak public signing key."
+#   set_fact:
+#     public_signing_key: "{{ keycloak_certs_response.json['keys'] | json_query(query) }}"
+#   vars:
+#     query: "[?use == `sig`].x5c[0] | [0]"
+
+- name: "Portal Backend: Get OIDC Values"
+  uri:
+    method: GET
+    url: "{{ inv_access.platform.hostname}}/realms/{{ inv_access.tenant.realm_name }}"
+    return_content: yes
+    ca_path: "{{ inv_k8s.ingress.ca_path }}"
+    headers:
+      Accept: application/json
+      Authorization: Bearer {{ keycloak_login.json.access_token }}
+    status_code: 200
+  register: keycloak_key_response
+
+- name: "Portal Backend: Get keycloak public signing key."
+  set_fact:
+    public_signing_key: "{{ keycloak_key_response.json.public_key }}"
+
+- name: "Portal Backend: Create cacert ConfigMap"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ k8s_config }}"
+    context: "{{ k8s_context }}"
+    namespace: "{{ k8s_namespace }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: cacert
+      data:
+        cacert.crt: |
+          {{ lookup('file', inv_k8s.ingress.ca_path) }}
+  when: inv_k8s.ingress.ca_path is defined and inv_k8s.ingress.ca_path | length > 0
+
+- name: "Portal Backend: Create the deployment for portal backend"
+  include_tasks: tasks/templates/k8s.yml
+  vars:
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: "portal-backend"
+        labels:
+          app: "portal-backend"
+        annotations:
+          keel.sh/match-tag: "true"
+          keel.sh/policy: force
+          keel.sh/pollSchedule: "@every 5m"
+          keel.sh/trigger: poll
+      spec:
+        replicas: 1
+        selector:
+          matchLabels:
+            app: "portal-backend"
+        template:
+          metadata:
+            labels:
+              app: "portal-backend"
+          spec:
+            securityContext:
+              runAsUser: 999
+              runAsNonRoot: true
+              seccompProfile:
+                type: RuntimeDefault
+            containers:
+              - name: "portal-backend"
+                image: "{% set _registry = inv_op_stack.private_registry.registry_full_url | default(software.stack_gd.portal_backend.registry, true) | default('', true) %}{{ (_registry ~ '/') if _registry else '' }}{{ software.stack_gd.portal_backend.repository }}:{{ software.stack_gd.portal_backend.tag }}"
+                imagePullPolicy: "{% set _registry = inv_op_stack.private_registry.registry_full_url | default(software.stack_gd.portal_backend.registry, true) | default('', true) %}{{ 'IfNotPresent' if not _registry else 'Always' }}"
+                ports:
+                  - containerPort: 8101
+                resources: "{{ inv_gd.portal_backend.resources }}"
+                securityContext:
+                  readOnlyRootFilesystem: false
+                  allowPrivilegeEscalation: false
+                  privileged: false
+                  capabilities:
+                    drop: ["ALL"]
+                env:
+                  - name: PORT
+                    value: "8101"
+                  - name: DEBUG_MODE
+                    value: "1"
+                  - name: KEYCLOAK_HOST
+                    value: "{{ gd_idm_host }}"
+                  - name: KEYCLOAK_GRANT_TYPE
+                    value: "password"
+                  - name: KEYCLOAK_REALM
+                    value: "{{ gd_idm_realm_name }}"
+                  - name: KEYCLOAK_CLIENT_ID
+                    value: "{{ gd_idm_client }}"
+                  - name: KEYCLOAK_CLIENT_SECRET
+                    value: "{{ gd_idm_client_secret }}"
+                  - name: KEYCLOAK_AUTHORIZATION_HEADER
+                    value: "1"
+                  - name: INPUT_FILE_PATH
+                    value: "input"
+                  - name: SERVICE_INTERNET_INPUT_FILE
+                    value: "services"
+                  - name: REST_SERVICES_INTERNET_INPUT_FILE
+                    value: "rest-services"
+                  - name: CONFIG_INPUT_FILE
+                    value: "config"
+                  - name: INPUT_FILES_EXTENSION
+                    value: ".json"
+                  - name: OUTPUT_FILES_EXTENSION
+                    value: ".json"
+                  - name: OUTPUT_FILE_PATH
+                    value: "output"
+                  - name: LOG_LEVEL
+                    value: DEBUG
+                  - name: TEST_MODE
+                    value: "FALSE"
+                  - name: PUBLIC_ROLE
+                    value: "{{ inv_access.open_data_dataspace }}"
+                  - name: COOKIE_TOKEN_NAME
+                    value: token
+                  - name: KEYCLOAK_PUBLIC_KEY
+                    value: "{{ public_signing_key}}"
+                  - name: S3_ENABLED
+                    value: "{{ 'true' if inv_gd.portal_backend.s3_backend and inv_gd.portal_backend.s3_backend.enable == true else 'false' }}"
+                  - name: S3_ENDPOINT
+                    value: "{{ inv_gd.portal_backend.s3_backend.endpoint if inv_gd.portal_backend.s3_backend.endpoint is defined else '' }}"
+                  - name: S3_ACCESS_KEY_ID
+                    value: "{{ inv_gd.portal_backend.s3_backend.access_key_id if inv_gd.portal_backend.s3_backend.access_key_id is defined else '' }}"
+                  - name: S3_SECRET_ACCESS_KEY
+                    value: "{{ inv_gd.portal_backend.s3_backend.secret_access_key if inv_gd.portal_backend.s3_backend.secret_access_key is defined else '' }}"
+                  - name: S3_REGION
+                    value: "{{ inv_gd.portal_backend.s3_backend.region if inv_gd.portal_backend.s3_backend.region is defined else '' }}"
+                  - name: S3_BUCKET_NAME
+                    value: "{{ inv_gd.portal_backend.s3_backend.bucket_name if inv_gd.portal_backend.s3_backend.bucket_name is defined else '' }}"
+                  - name: S3_FORCE_PATH_STYLE
+                    value: "{{ 'true' if inv_gd.portal_backend.s3_backend.force_path_style is defined and inv_gd.portal_backend.s3_backend.force_path_style == true else 'false' }}"
+            imagePullSecrets:
+              - name: private-registry-pull-secret
+
+- name: "Portal Backend: Add Root CA Certs to deployment"
+  include_tasks: tasks/templates/k8s.yml
+  vars:
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: portal-backend
+      spec:
+        template:
+          spec:
+            containers:
+              - name: portal-backend
+                env:
+                  - name: NODE_EXTRA_CA_CERTS
+                    value: /etc/ssl/certs/extra-ca.crt
+                  - name: SSL_CERT_FILE
+                    value: /etc/ssl/certs/extra-ca.crt
+                  - name: REQUESTS_CA_BUNDLE
+                    value: /etc/ssl/certs/extra-ca.crt
+                volumeMounts:
+                  - name: cacert-volume
+                    mountPath: /etc/ssl/certs/extra-ca.crt
+                    subPath: cacert.crt
+                    readOnly: true
+            volumes:
+              - name: cacert-volume
+                configMap:
+                  name: cacert
+  when: inv_k8s.ingress.ca_path is defined and inv_k8s.ingress.ca_path | length > 0
+
+- name: "Portal Backend: [Check] Run pod health check"
+  include_tasks: tasks/templates/check_deployment_health.yml
+  vars:
+    label_selectors:
+      - "app=portal-backend"
+
+- name: "Portal Backend: Create the service for portal backend"
+  include_tasks: tasks/templates/k8s.yml
+  vars:
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        creationTimestamp: null
+        labels:
+          app: "portal-backend"
+        name: "portal-backend"
+      spec:
+        ports:
+          - name: "http"
+            port: 80
+            targetPort: 8101
+        selector:
+          app: "portal-backend"
