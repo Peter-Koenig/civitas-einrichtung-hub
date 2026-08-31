@@ -161,6 +161,7 @@ EOF
   cat >> "${env_file}" << EOF
 GEOSERVER_USER=${geoserver_user}
 GEOSERVER_PASSWORD=${geoserver_pass}
+QUANTUMLEAP_DB_PASSWORD=unused   # Platzhalter: Fixture verlangt den Wert, QuantumLeap ist in V1s deaktiviert
 EOF
 
   log_ok "Test-.env generiert: ${env_file}"
