@@ -115,6 +115,13 @@ all:
 
         inv_access:
           enable: true
+          # V1s importiert keine externen APIs (konsistent mit inv_addons.import: false).
+          # cc_cli validate (semantic_rules.yaml, Regel "Ensure that Prometheus and Loki are
+          # enabled if APIs are enabled and imported") verlangt inv_access.apis.import == false,
+          # solange Monitoring (Prometheus/Loki) befristet deaktiviert ist -- sonst bricht
+          # validate ab. Siehe ai-runs/2026-08-31-v1s-installationsskript-lauffaehig.
+          apis:
+            import: false
           platform:
             admin_first_name: Admin
             admin_surname: Admin
