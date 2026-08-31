@@ -69,23 +69,22 @@ all:
             default_password: "PLACEHOLDER_PGADMIN_PASSWORD"
           kyverno_operator:
             enable: false
-          # Befristet deaktiviert — siehe ai-runs/2026-08-31-v1s-docker-purge-cleanup-bugfix:
-          # 05_addons.sh installiert keinen Prometheus-Operator, daher fehlen die
-          # monitoring.coreos.com/v1-CRDs (ServiceMonitor etc.). Mit aktivem Monitoring
-          # rendert das APISIX-Helm-Chart metrics.serviceMonitor.enabled: true und
-          # scheitert beim Deploy an der fehlenden ServiceMonitor-CRD.
-          # Nachrüstung von Prometheus/kube-prometheus-stack ist als offene Aufgabe
-          # in ptf-roadmap-2026-2027.md dokumentiert.
+          # Monitoring produktiv aktiviert — siehe ai-runs/2026-08-31-v1s-installationsskript-lauffaehig (Turn 5).
+          # Der kube-prometheus-stack-Helm-Chart (tasks/operation/monitoring.yml) installiert
+          # bei Erstinstall seine eigenen CRDs (inkl. Prometheus-Operator) über den
+          # k8s-helm.yml-Mechanismus; kein separater Vorbereitungsschritt nötig.
+          # Erfüllt die cc_cli validate-Regel "Prometheus/Loki enabled if APIs imported"
+          # über den zweiten ODER-Zweig (prometheus.enable && loki.enable).
           monitoring:
-            enable: false
+            enable: true
             prometheus:
-              enable: false
+              enable: true
             grafana:
-              enable: false
+              enable: true   # PFLICHT: Health-Check "Grafana reachable" ist nicht gegated
             alertmanager:
               enable: false
             loki:
-              enable: false
+              enable: true
             alloy:
               enable: false
 
@@ -115,13 +114,12 @@ all:
 
         inv_access:
           enable: true
-          # V1s importiert keine externen APIs (konsistent mit inv_addons.import: false).
-          # cc_cli validate (semantic_rules.yaml, Regel "Ensure that Prometheus and Loki are
-          # enabled if APIs are enabled and imported") verlangt inv_access.apis.import == false,
-          # solange Monitoring (Prometheus/Loki) befristet deaktiviert ist -- sonst bricht
-          # validate ab. Siehe ai-runs/2026-08-31-v1s-installationsskript-lauffaehig.
+          # APIs importieren: reaktiviert die Apisix-Routen-Erzeugung (u. a. portalBackend),
+          # die bei import: false unbeabsichtigt mit deaktiviert wurde. Die cc_cli validate-Regel
+          # "Prometheus/Loki enabled if APIs imported" wird jetzt über den zweiten ODER-Zweig
+          # erfüllt (Monitoring oben aktiviert). Siehe ai-runs/2026-08-31-v1s-installationsskript-lauffaehig.
           apis:
-            import: false
+            import: true
           platform:
             admin_first_name: Admin
             admin_surname: Admin
