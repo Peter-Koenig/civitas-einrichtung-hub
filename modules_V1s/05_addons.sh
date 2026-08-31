@@ -35,6 +35,8 @@ install_addons() {
   setup_ca_trust              # CA in System-Store + certifi (vor nginx)
   install_cico_utils          # cico-shutdown / cico-uncordon
 
+  install_prometheus_operator_crds   # CRDs vor cc_cli exec (APISIX ServiceMonitor)
+
   install_nginx_ingress
   verify_storage_class
 }
@@ -82,6 +84,31 @@ install_gateway_api_crds() {
     fi
   done
   log_ok "Gateway API CRDs installiert (${GATEWAY_API_VERSION})"
+}
+
+# ── Prometheus-Operator CRDs ──────────────────────────────────────────────────
+install_prometheus_operator_crds() {
+  log "Installiere Prometheus-Operator-CRDs (v0.89.0) …"
+
+  if kubectl get crd servicemonitors.monitoring.coreos.com &>/dev/null; then
+    log_ok "Prometheus-Operator-CRDs bereits installiert"
+    return 0
+  fi
+
+  kubectl apply --server-side -f \
+    "https://github.com/prometheus-operator/prometheus-operator/releases/download/v0.89.0/stripped-down-crds.yaml" \
+    || { log_error "Prometheus-Operator-CRDs Installation fehlgeschlagen"; exit 1; }
+
+  local waited=0
+  until kubectl get crd servicemonitors.monitoring.coreos.com &>/dev/null; do
+    sleep 3
+    waited=$((waited + 3))
+    if [[ $waited -ge 30 ]]; then
+      log_error "ServiceMonitor-CRD nicht nach 30s registriert"
+      exit 1
+    fi
+  done
+  log_ok "Prometheus-Operator-CRDs installiert (v0.89.0)"
 }
 
 # ── cert-manager ──────────────────────────────────────────────────────────────
