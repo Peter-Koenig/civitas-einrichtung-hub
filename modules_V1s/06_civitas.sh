@@ -403,6 +403,11 @@ SUPERSET_PASSWORD="${pw_superset_admin}"
 GRAFANA_PASSWORD="${pw_grafana}"
 APISIX_DASHBOARD_USER="admin@${DOMAIN}"
 APISIX_DASHBOARD_PASSWORD="${pw_apisix_dashboard_pass}"
+APISIX_ADMIN_ROLE_KEY="${pw_apisix_admin_role}"
+APISIX_VIEWER_ROLE_KEY="${pw_apisix_viewer_role}"
+SUPERSET_DB_SECRET="${pw_superset_db}"
+SUPERSET_REDIS_PASSWORD="${pw_superset_redis}"
+PIVAU_PASSWORD="${pw_pivau}"
 CREDENTIALS_EOF
   chmod 600 "${CREDENTIALS_OUTPUT_PATH}"
   log_ok "Credentials gespeichert: ${CREDENTIALS_OUTPUT_PATH}"
@@ -464,7 +469,7 @@ run_cc_cli_exec() {
       log_error "DIAGNOSE: Pruefe Passwort-Integritaet im gerenderten Inventory ..."
       local inventory_intakt=true
       if [[ -n "${CONFIG_YAML_PATH:-}" && -f "${CONFIG_YAML_PATH}" && -n "${CREDENTIALS_OUTPUT_PATH:-}" && -f "${CREDENTIALS_OUTPUT_PATH}" ]]; then
-        local pw_checks=("PGADMIN_PASSWORD" "GEOSERVER_PASSWORD" "SUPERSET_PASSWORD" "GRAFANA_PASSWORD" "APISIX_DASHBOARD_PASSWORD")
+        local pw_checks=("PGADMIN_PASSWORD" "GEOSERVER_PASSWORD" "SUPERSET_PASSWORD" "SUPERSET_DB_SECRET" "SUPERSET_REDIS_PASSWORD" "GRAFANA_PASSWORD" "APISIX_DASHBOARD_PASSWORD" "APISIX_ADMIN_ROLE_KEY" "APISIX_VIEWER_ROLE_KEY" "PIVAU_PASSWORD")
         for pw_name in "${pw_checks[@]}"; do
           local pw_value
           pw_value="$(grep -oP "(?<=^${pw_name}=).*" "${CREDENTIALS_OUTPUT_PATH}" 2>/dev/null || true)"
