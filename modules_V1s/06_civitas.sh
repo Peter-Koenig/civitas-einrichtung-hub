@@ -342,10 +342,10 @@ render_inventory() {
     -e "s|PLACEHOLDER_STORAGECLASS_RWX|${STORAGECLASS_RWX:-local-path}|g" \
     -e "s|PLACEHOLDER_STORAGECLASS_LOC|${STORAGECLASS_LOC:-local-path}|g" \
     -e "s|PLACEHOLDER_CERTMANAGER_ISSUER|${CERT_MANAGER_ISSUER:-selfsigned-issuer}|g" \
-    -e "s|PLACEHOLDER_APISIX_DASHBOARD|${APISIX_DASHBOARD:-false}|g" \
     -e "s|PLACEHOLDER_APISIX_JWT_SECRET|${pw_apisix_dashboard_jwt}|g" \
     -e "s|PLACEHOLDER_APISIX_DASHBOARD_USER|admin@${DOMAIN}|g" \
     -e "s|PLACEHOLDER_APISIX_DASHBOARD_PASS|${pw_apisix_dashboard_pass}|g" \
+    -e "s|PLACEHOLDER_APISIX_DASHBOARD|${APISIX_DASHBOARD:-false}|g" \
     -e "s|PLACEHOLDER_INGRESSCLASS|${INGRESS_CLASS:-nginx}|g" \
     -e "s|PLACEHOLDER_ADMINEMAIL|${ADMIN_EMAIL}|g" \
     -e "s|PLACEHOLDER_SMTP_HOST|${SMTP_HOST}|g" \
