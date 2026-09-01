@@ -355,25 +355,54 @@ install_cico_utils() {
 # Fuehrt einen ordentlichen Shutdown der CIVITAS/CORE-VM durch:
 #   1. kubectl drain (Node cordon + Pod-Eviction)
 #   2. Warten auf Pod-Terminierung (polling loop mit Timeout)
-#   3. k3s-Dienst stoppen
-#   4. sync + shutdown -h now
+#   3. Force-Cleanup verbleibender Pods (VOR dem k3s-Stop!)
+#   4. k3s-Dienst stoppen
+#   5. sync + shutdown -h now
 #
 # Aufruf:
 #   cico-shutdown                     # normaler Shutdown
-#   TIMEOUT=180 cico-shutdown         # laengerer Timeout (Default: 120s)
+#   TIMEOUT=300 cico-shutdown         # laengerer Timeout (Default: 300s)
+#   K3S_NODE=civitas-core-v1s cico-shutdown  # Node-Name explizit erzwingen
+#
+# WICHTIG: K3S_NODE wird per Default aus "hostname" ermittelt, NICHT mehr
+# hart codiert. Nach jeder Umbenennung der VM (z.B. civitas-core ->
+# civitas-core-v1s) muss der Node-Name zur Laufzeit stimmen, sonst
+# drained das Skript ein veraltetes/falsches Node-Objekt und die
+# tatsaechlich laufenden Pods werden nie evictiert (siehe Vorfall
+# 2026-08-31: doppeltes Node-Objekt nach Hostname-Wechsel, dadurch
+# Zombie-Pods nach hartem k3s-Stop).
 #
 # Siehe: installationsphasen-und-abnahme.md, Abschnitt "CIVITAS/CORE-Shutdown"
 
 set -euo pipefail
 
-K3S_NODE="${K3S_NODE:-civitas-core}"
-TIMEOUT="${TIMEOUT:-120}"
+K3S_NODE="${K3S_NODE:-$(hostname)}"
+TIMEOUT="${TIMEOUT:-300}"
 POLL_INTERVAL="${POLL_INTERVAL:-5}"
 
 echo "[cico-shutdown] === CIVITAS/CORE VM — Sauberer Shutdown ==="
 echo "[cico-shutdown] Node:     ${K3S_NODE}"
 echo "[cico-shutdown] Timeout:  ${TIMEOUT}s"
 echo ""
+
+# Sicherheitscheck: existiert der ermittelte Node im Cluster ueberhaupt?
+if ! kubectl get node "${K3S_NODE}" >/dev/null 2>&1; then
+  echo "[cico-shutdown] FEHLER: Node '${K3S_NODE}' nicht im Cluster gefunden."
+  echo "[cico-shutdown] Verfuegbare Nodes:"
+  kubectl get nodes -o wide || true
+  echo "[cico-shutdown] Bitte K3S_NODE explizit setzen, z.B.:"
+  echo "[cico-shutdown]   K3S_NODE=<richtiger-name> cico-shutdown"
+  exit 1
+fi
+
+# Hinweis auf veraltete/zusaetzliche Node-Objekte (z.B. nach Hostname-Wechsel)
+other_nodes=$(kubectl get nodes -o name | grep -v "node/${K3S_NODE}$" || true)
+if [[ -n "${other_nodes}" ]]; then
+  echo "[cico-shutdown] WARN: Weitere Node-Objekte im Cluster vorhanden:"
+  echo "${other_nodes}"
+  echo "[cico-shutdown] WARN: Ggf. veraltete Node-Objekte nach einem frueheren"
+  echo "[cico-shutdown]       Hostname-Wechsel manuell pruefen (kubectl delete node <name>)."
+fi
 
 # Schritt 1: Node drainen
 echo "[cico-shutdown] Drain node ${K3S_NODE} ..."
@@ -408,11 +437,39 @@ while true; do
   elapsed=$((elapsed + POLL_INTERVAL))
 done
 
-# Schritt 3: k3s stoppen
+# Schritt 3: Force-Cleanup verbleibender Pods (VOR dem k3s-Stop!)
+#
+# Wenn nach dem Timeout noch Pods aktiv sind, muessen sie hart geloescht
+# werden, SOLANGE Kubelet/API-Server noch laufen. Sonst bleiben sie mit
+# gesetztem deletionTimestamp in etcd stehen und blockieren nach dem
+# naechsten Boot die Neuerstellung (v.a. StatefulSets mit PVC).
+remaining=$(kubectl get pods -A \
+  --field-selector="spec.nodeName=${K3S_NODE}" \
+  -o name 2>/dev/null || true)
+
+if [[ -n "${remaining}" ]]; then
+  echo "[cico-shutdown] Force-Cleanup verbleibender Pods ..."
+  while IFS= read -r pod; do
+    [[ -z "${pod}" ]] && continue
+    pod_ns_name=$(kubectl get pods -A --field-selector="spec.nodeName=${K3S_NODE}" \
+      -o jsonpath="{range .items[?(@.metadata.name==\"${pod#pod/}\")]}{.metadata.namespace}{end}" 2>/dev/null || true)
+    echo "[cico-shutdown]   force-delete ${pod} (ns: ${pod_ns_name:-unbekannt})"
+    if [[ -n "${pod_ns_name}" ]]; then
+      kubectl delete pod "${pod#pod/}" -n "${pod_ns_name}" --grace-period=0 --force 2>&1 || \
+        echo "[cico-shutdown]   WARN: force-delete fehlgeschlagen fuer ${pod}"
+    fi
+  done <<< "${remaining}"
+
+  echo "[cico-shutdown] Warte kurz auf Bestaetigung der Force-Loeschung ..."
+  sleep 10
+  kubectl get pods -A --field-selector="spec.nodeName=${K3S_NODE}" -o wide 2>/dev/null || true
+fi
+
+# Schritt 4: k3s stoppen
 echo "[cico-shutdown] Stoppe k3s ..."
 systemctl stop k3s || echo "[cico-shutdown] WARN: k3s konnte nicht gestoppt werden"
 
-# Schritt 4: Herunterfahren
+# Schritt 5: Herunterfahren
 echo "[cico-shutdown] sync && shutdown -h now ..."
 sync
 shutdown -h now
