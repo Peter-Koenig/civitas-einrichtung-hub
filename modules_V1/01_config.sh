@@ -38,7 +38,11 @@ K3S_DATA_DIR="/var/lib/rancher/k3s"
 # Traefik wird deaktiviert (nginx-Ingress wird nachinstalliert).
 # local-path-provisioner bleibt aktiv (Default-StorageClass).
 # servicelb und metrics-server bleiben aktiv (k3s-Standardverhalten).
-K3S_EXEC_ARGS="--disable traefik"
+# Node-Name explizit pinnen: verhindert k3s-Geister-Nodes bei Cloud-Init-Hostname-Drift.
+# `hostname` liefert im VM-Kontext (nach Cloud-Init) den finalen VM-Namen;
+# über die Umgebungsvariable K3S_NODE_NAME überschreibbar.
+K3S_NODE_NAME="${K3S_NODE_NAME:-$(hostname)}"
+K3S_EXEC_ARGS="--disable traefik --node-name ${K3S_NODE_NAME}"
 
 # ── Add-ons ──────────────────────────────────────────────────────────────────
 CERT_MANAGER_NAMESPACE="cert-manager"

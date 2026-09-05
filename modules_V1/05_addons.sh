@@ -528,7 +528,7 @@ CICO_SCRIPT
 # Wird automatisch durch cico-uncordon.service nach k3s-Start ausgefuehrt.
 #
 # Aufruf:
-#   cico-uncordon                    # Knoten "civitas-core" (Default)
+#   cico-uncordon                    # Knotenname aus "hostname" ermittelt (Default)
 #   K3S_NODE=my-node cico-uncordon   # Abweichender Knotenname
 #
 # Exit-Codes:
@@ -537,7 +537,7 @@ CICO_SCRIPT
 
 set -euo pipefail
 
-K3S_NODE="${K3S_NODE:-civitas-core}"
+K3S_NODE="${K3S_NODE:-$(hostname)}"
 TIMEOUT="${TIMEOUT:-180}"
 
 echo "[cico-uncordon] Warte auf k3s-API (Node ${K3S_NODE}) ..."

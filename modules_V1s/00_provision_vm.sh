@@ -135,6 +135,21 @@ provision_vm() {
   done
   log_ok "VM erreichbar unter ${VM_IP_STATIC}"
 
+  # ── Schritt 8b: Cloud-Init-Hostname stabilisieren ────────────────────────
+  # Debian-Cloud-Images führen cloud-init bei jedem Boot aus. Ohne
+  # preserve_hostname würde ein Hostname-Drift (z. B. bei Re-Provisionierung)
+  # k3s-Geister-Nodes und PV-nodeAffinity-Konflikte erzeugen (Root Cause des
+  # Vorfalls 2026-08-31/2026-09-05). Die k3s-Node selbst wird separat über
+  # --node-name (01_config.sh) gepinnt.
+  log "Stabilisiere Cloud-Init-Hostname (preserve_hostname) ..."
+  ssh -o StrictHostKeyChecking=no -o BatchMode=yes root@"${VM_IP_STATIC}" \
+    'if grep -q "^preserve_hostname:" /etc/cloud/cloud.cfg 2>/dev/null; then
+       sed -i "s/^preserve_hostname:.*/preserve_hostname: true/" /etc/cloud/cloud.cfg
+     else
+       echo "preserve_hostname: true" >> /etc/cloud/cloud.cfg
+     fi'
+  log_ok "Cloud-Init-Hostname stabilisiert (preserve_hostname: true)"
+
   # ── Abschlussmeldung ──────────────────────────────────────────────────────
   log ""
   log "  ┌────────────────────────────────────────────────────────────────────┐"
