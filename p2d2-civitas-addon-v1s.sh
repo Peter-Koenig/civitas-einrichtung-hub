@@ -108,7 +108,7 @@ run_in_vm_addon() {
   echo "  ssh root@${VM_IP_STATIC}"
   echo "  cd ${VM_REMOTE_INSTALL_DIR}"
   echo "  set -a; source ../.env.p2d2-addon; set +a"
-  echo "  GIT_TOKEN=<github-token> ./overlay_addon_V1s/k8s/frontend/build-de1.sh"
+  echo "  ./overlay_addon_V1s/k8s/frontend/build-de1.sh   # nutzt P2D2_GITHUB_TOKEN aus der .env"
   echo ""
   echo "  # später (3 fertige Bausteine) bzw. Rückbau:"
   echo "  ADDON_CONTEXT=vm ./p2d2-civitas-addon-v1s.sh"

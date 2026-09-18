@@ -7,10 +7,11 @@
 #         -> docker build (Dockerfile) -> docker save | k3s ctr images import
 #
 # Aufruf (auf dem k3s-Node, als User mit docker-/k3s-ctr-Zugriff):
-#   GIT_TOKEN=<github-token> ./build-de1.sh
+#   set -a; source ../.env.p2d2-addon; set +a   # liefert P2D2_GITHUB_TOKEN
+#   ./build-de1.sh
 #
-# Hinweis: GIT_TOKEN wird hier als env übergeben (nicht als Build-Arg), damit es
-# nicht im Image-History landet. Für Produktion ggf. BuildKit --secret nutzen.
+# Hinweis: Das Token wird als env übergeben (nicht als Build-Arg), damit es nicht
+# im Image-History landet. Für Produktion ggf. BuildKit --secret nutzen.
 set -euo pipefail
 
 IMAGE="p2d2-frontend-de1"
@@ -20,6 +21,13 @@ GIT_HOST="github.com"
 GIT_REPO_PATH="Peter-Koenig/p2d2-hub.git"
 GIT_BRANCH="feature/team-de1/main"
 BUILD_COMMAND="npm run build:de1"
+
+# GitHub-Token: P2D2_GITHUB_TOKEN (aus .env.p2d2-addon) bevorzugt, sonst GIT_TOKEN.
+GIT_TOKEN="${GIT_TOKEN:-${P2D2_GITHUB_TOKEN:-}}"
+if [[ -z "${GIT_TOKEN}" ]]; then
+  echo "Fehler: P2D2_GITHUB_TOKEN (bzw. GIT_TOKEN) nicht gesetzt." >&2
+  exit 1
+fi
 
 # Client-seitig eingebackene (public) Build-Variablen für de1.
 PUBLIC_SITE_URL="https://f-de1.udp.data-dna.eu"
