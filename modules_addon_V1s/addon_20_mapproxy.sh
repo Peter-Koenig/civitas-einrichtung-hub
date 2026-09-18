@@ -33,3 +33,21 @@ install_addon_mapproxy() {
 
   log_ok "AddOn 20 MapProxy abgeschlossen (rudimentär, nicht idempotent)"
 }
+
+# uninstall_addon_mapproxy — Rückbau (K8s-Ressourcen + APISIX-Routing).
+uninstall_addon_mapproxy() {
+  log "=== Uninstall AddOn 20: MapProxy ==="
+
+  local ns="${ADDON_NS}"
+
+  kubectl -n "$ns" delete deployment mapproxy --ignore-not-found || true
+  kubectl -n "$ns" delete service mapproxy --ignore-not-found || true
+  kubectl -n "$ns" delete configmap mapproxy-config --ignore-not-found || true
+  kubectl -n "$ns" delete pvc mapproxy-cache --ignore-not-found || true
+
+  # APISIX-Routing /mapserver: Route + Upstream löschen (Admin-API).
+  # TODO: Admin-Key + IDs analog zur Install-Seite (mapserver-route, mapserver-upstream).
+  log "  APISIX-Route/Upstream: TODO — mapserver-route + mapserver-upstream löschen"
+
+  log_ok "Uninstall AddOn 20 MapProxy abgeschlossen"
+}

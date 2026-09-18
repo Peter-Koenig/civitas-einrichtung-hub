@@ -54,3 +54,36 @@ install_addon_postgresql() {
 
   log_ok "AddOn 00 PostgreSQL abgeschlossen (rudimentär, nicht idempotent)"
 }
+
+# uninstall_addon_postgresql — Rückbau (DROP SCHEMA + ROLE je Stage, umgekehrte Reihenfolge).
+# Schützt den Superuser: nur die P2D2-*-Rollen werden entfernt, nie der Superuser selbst.
+uninstall_addon_postgresql() {
+  log "=== Uninstall AddOn 00: PostgreSQL (Schemata/Rollen entfernen) ==="
+
+  local db_ns="${ADDON_DB_NS}"
+  local db_name="p2d2"
+  local secret="postgres.central-db.credentials.postgresql.acid.zalan.do"
+  local superuser
+  superuser="$(kubectl -n "$db_ns" get secret "$secret" -o jsonpath='{.data.username}' | base64 -d)"
+
+  local stage role schema
+  for stage in FV DE2 DE1 DEVELOP MAIN; do
+    case "$stage" in
+      MAIN)    role="P2D2-MAIN";    schema="p2d2_main" ;;
+      DEVELOP) role="P2D2-DEVELOP"; schema="p2d2_develop" ;;
+      DE1)     role="P2D2-DE1";     schema="p2d2_de1" ;;
+      DE2)     role="P2D2-DE2";     schema="p2d2_de2" ;;
+      FV)      role="P2D2-FV";      schema="p2d2_fv" ;;
+    esac
+
+    log "  Stage ${stage}: Schema ${schema} + Rolle ${role} entfernen"
+    kubectl -n "$db_ns" exec central-db-0 -- \
+      psql -v ON_ERROR_STOP=0 -U "$superuser" -d "$db_name" -c \
+      "DROP SCHEMA IF EXISTS \"${schema}\" CASCADE;" || log_warn "    Schema ${schema} evtl. schon entfernt"
+    kubectl -n "$db_ns" exec central-db-0 -- \
+      psql -v ON_ERROR_STOP=0 -U "$superuser" -d "$db_name" -c \
+      "DROP ROLE IF EXISTS \"${role}\";" || log_warn "    Rolle ${role} evtl. schon entfernt"
+  done
+
+  log_ok "Uninstall AddOn 00 PostgreSQL abgeschlossen"
+}

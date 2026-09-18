@@ -62,3 +62,31 @@ install_addon_geoserver() {
 
   log_ok "AddOn 10 GeoServer abgeschlossen (rudimentär, nicht idempotent)"
 }
+
+# uninstall_addon_geoserver — Rückbau (Workspaces löschen, recurse=true).
+# Schützt den Admin: nur die p2d2-Workspaces werden entfernt, nie Admin-User/-Rollen.
+uninstall_addon_geoserver() {
+  log "=== Uninstall AddOn 10: GeoServer (Workspaces entfernen) ==="
+
+  local ns="${ADDON_NS}"
+  local domain="${ADDON_DOMAIN}"
+  local admin_user admin_pw
+  admin_user="$(kubectl -n "$ns" get secret geoserver-geoserver -o jsonpath='{.data.geoserver-user}' | base64 -d)"
+  admin_pw="$(kubectl -n "$ns" get secret geoserver-geoserver -o jsonpath='{.data.geoserver-password}' | base64 -d)"
+  local rest="https://geoportal.${domain}/geoserver/rest"
+
+  # DELETE /rest/workspaces/<ws>?recurse=true entfernt Workspace + Datastores + FeatureTypes.
+  # Liste spiegelbildlich zur Install-Seite: fv de2 de1 dev main (Vektor) + friedhofsplaene
+  # (GeoTIFF-Mosaic). ACHTUNG: die Mosaic-Anlage (Install-Seite Abschnitt 9) ist noch TODO —
+  # friedhofsplaene wird hier entfernt, von einem Re-Install aber (noch) NICHT wieder angelegt.
+  # Bewusst als dokumentierte Asymmetrie belassen, bis Abschnitt 9 implementiert ist.
+  # TODO: p2d2-Nutzer/Rollen/ACL/Secrets (die die Install-Seite als TODO markiert) später ergänzen.
+  local ws
+  for ws in friedhofsplaene fv de2 de1 dev main; do
+    log "  Workspace ${ws} entfernen"
+    curl -sS -u "${admin_user}:${admin_pw}" -X DELETE \
+      "${rest}/workspaces/${ws}?recurse=true" || log_warn "    Workspace ${ws} evtl. schon entfernt"
+  done
+
+  log_ok "Uninstall AddOn 10 GeoServer abgeschlossen"
+}

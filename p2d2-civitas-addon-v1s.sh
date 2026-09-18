@@ -4,10 +4,11 @@
 #
 # p2d2-civitas-addon-v1s.sh — p2d2-AddOn für CIVITAS/CORE V1s
 #
-# Rudimentäres Skript-Skelett (Schritt 1 von 2). Installiert die drei FERTIGEN
-# Bausteine (PostgreSQL, GeoServer, MapProxy) in der manuell verifizierten
-# Reihenfolge; Frontend ist ein klar markierter Platzhalter (Baustein noch nicht
-# fertig, siehe addon_30_frontend.sh).
+# Rudimentäres Skript (Schritt 1+2 von 2 abgeschlossen). Installiert die drei
+# FERTIGEN Bausteine (PostgreSQL, GeoServer, MapProxy) in der manuell
+# verifizierten Reihenfolge und baut sie per --uninstall spiegelbildlich wieder
+# ab; Frontend ist ein klar markierter Platzhalter (Baustein noch nicht fertig,
+# siehe addon_30_frontend.sh).
 #
 # V1s-Kopplung: dieses AddOn setzt auf CIVITAS/CORE V1s auf (nicht V1, nicht V2).
 #
@@ -17,6 +18,10 @@
 # TODO (später, NICHT jetzt): Stage-Scope-Parameter `--stage=main|all`. Die Module
 # iterieren intern bereits über alle bekannten Stages — dort lässt sich der Scope
 # später ohne Grundumbau nachrüsten.
+#
+# Aufruf:
+#   ./p2d2-civitas-addon-v1s.sh             # Installation (PostgreSQL → GeoServer → MapProxy → Frontend)
+#   ./p2d2-civitas-addon-v1s.sh --uninstall # Uninstall (nur die 3 fertigen Bausteine, umgekehrte Reihenfolge)
 
 set -euo pipefail
 
@@ -49,12 +54,24 @@ log " Domain:       ${ADDON_DOMAIN}"
 log "============================================"
 
 # ── Bausteine in Reihenfolge ────────────────────────────────────────────────────
-install_addon_postgresql
-install_addon_geoserver
-install_addon_mapproxy
-install_addon_frontend
+# Uninstall: Frontend bewusst AUSGENOMMEN (Platzhalter kann es nicht wiederherstellen).
+if [[ "${1:-}" == "--uninstall" ]]; then
+  log "Modus: Uninstall (umgekehrte Reihenfolge, Frontend ausgenommen)"
+  uninstall_addon_mapproxy
+  uninstall_addon_geoserver
+  uninstall_addon_postgresql
+else
+  install_addon_postgresql
+  install_addon_geoserver
+  install_addon_mapproxy
+  install_addon_frontend
+fi
 
 log ""
 log "============================================"
-log " p2d2-AddOn (V1s) — Installation abgeschlossen."
+if [[ "${1:-}" == "--uninstall" ]]; then
+  log " p2d2-AddOn (V1s) — Uninstall abgeschlossen."
+else
+  log " p2d2-AddOn (V1s) — Installation abgeschlossen."
+fi
 log "============================================"

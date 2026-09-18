@@ -22,3 +22,18 @@ install_addon_frontend() {
   log_warn "AddOn 30 Frontend übersprungen (Platzhalter) — kein Installationsschritt ausgeführt"
   return 0
 }
+
+# uninstall_addon_frontend_DANGER — NICHT in den Standard-Uninstall eingebunden!
+# Grund: addon_30_frontend.sh (install) ist nur ein Platzhalter und würde die hier
+# gelöschten Ressourcen NICHT wiederherstellen. Nur explizit und einzeln aufrufen:
+#   source modules_addon_V1s/addon_30_frontend.sh && uninstall_addon_frontend_DANGER
+uninstall_addon_frontend_DANGER() {
+  log_error "WARNUNG: Frontend-Uninstall entfernt Ressourcen, die der Install-Platzhalter NICHT wiederherstellt!"
+  log_error "  Nur bewusst und einzeln aufrufen — niemals im normalen Uninstall-Durchlauf."
+  local ns="${ADDON_NS}"
+
+  # TODO: p2d2-base-config/-secret, 5 Stage-ConfigMaps/Secrets, Webhook-Controller
+  #       (Deployment/Service/RBAC), 5 Stage-Deployments/Services/PVCs (bzw. de1-Image-Deployment).
+  log "  Frontend-Ressourcen löschen: TODO — bewusst NICHT automatisiert"
+  return 0
+}
