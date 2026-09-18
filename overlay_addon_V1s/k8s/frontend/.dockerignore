@@ -1,0 +1,11 @@
+# Aus dem Docker-Build-Kontext ausschliessen:
+#   .git          — enthält das Git-Token in der Remote-URL (Host-Clone); darf nicht
+#                   ins Image / in den Build-Cache gelangen.
+#   node_modules  — wird im Container frisch via npm ci erzeugt.
+#   dist          — wird im Container frisch via npm run build:de1 erzeugt.
+#   Dockerfile / .dockerignore — Build-Metadaten, nicht in COPY . . aufnehmen.
+.git
+node_modules
+dist
+Dockerfile
+.dockerignore
