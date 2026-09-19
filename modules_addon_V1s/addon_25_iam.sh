@@ -346,12 +346,15 @@ ensure_p2d2_demo_accounts() {
     return 1
   fi
 
-  local entry username email first_name last_name roles user_id
+  local entry username email first_name last_name roles email_enc user_id
   for entry in "${ADDON_IAM_DEMO_USERS[@]}"; do
     IFS='|' read -r username email first_name last_name roles <<< "${entry}"
+    # Realm erzwingt "E-Mail als Username" -> der stabile Lookup-Schluessel ist die
+    # E-Mail (nicht der Kurzname aus dem Array). @uri-codiert, damit '@' sauber bleibt.
+    email_enc=$(jq -rn --arg e "${email}" '$e|@uri')
 
     user_id=$(curl -sk --max-time 15 \
-      "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users?username=${username}&exact=true" \
+      "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users?email=${email_enc}&exact=true" \
       -H "Authorization: Bearer ${token}" 2>/dev/null | jq -r '.[0].id // empty')
 
     if [[ -z "${user_id}" ]]; then
@@ -372,7 +375,7 @@ ensure_p2d2_demo_accounts() {
         log_warn "User ${username} anlegen fehlgeschlagen (HTTP ${create_code} — $(_iam_http_hint "${create_code}")): ${create_body}"
       fi
       user_id=$(curl -sk --max-time 15 \
-        "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users?username=${username}&exact=true" \
+        "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users?email=${email_enc}&exact=true" \
         -H "Authorization: Bearer ${token}" 2>/dev/null | jq -r '.[0].id // empty')
     fi
 
