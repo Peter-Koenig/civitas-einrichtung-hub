@@ -42,7 +42,7 @@ ADDON_IAM_DEV_ORIGIN="http://localhost:4321"
 
 # 6 Demo-Accounts (finale Daten aus Turn 37 B; username|email|rollen space-getrennt).
 ADDON_IAM_DEMO_USERS=(
-  "hans|p_koenig@web.de|editor verwaltung"
+  "hans|hans.muster@nospam.scanea.de|editor verwaltung"
   "jule|jule.kovalenko@nospam.scanea.de|verwaltung osm"
   "Chisom|chisom.eze@nospam.scanea.de|verwaltung"
   "arman|arman.ekov@nospam.scanea.de|verwaltung"
@@ -335,11 +335,19 @@ ensure_p2d2_demo_accounts() {
       -H "Authorization: Bearer ${token}" 2>/dev/null | jq -r '.[0].id // empty')
 
     if [[ -z "${user_id}" ]]; then
-      curl -sk --max-time 15 -o /dev/null -w "%{http_code}" \
+      local create_payload create_resp create_body create_code
+      create_payload=$(jq -nc --arg u "${username}" --arg e "${email}" \
+        '{username:$u,email:$e,enabled:true}')
+      create_resp=$(curl -sk --max-time 15 -w $'\n%{http_code}' \
         -X POST "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users" \
         -H "Authorization: Bearer ${token}" \
         -H "Content-Type: application/json" \
-        -d "{\"username\":\"${username}\",\"email\":\"${email}\",\"enabled\":true}" >/dev/null 2>&1 || true
+        -d "${create_payload}" 2>/dev/null || true)
+      create_code=$(printf '%s' "${create_resp}" | tail -1)
+      create_body=$(printf '%s' "${create_resp}" | sed '$d')
+      if [[ "${create_code}" != "201" ]]; then
+        log_warn "User ${username} anlegen fehlgeschlagen (HTTP ${create_code}): ${create_body}"
+      fi
       user_id=$(curl -sk --max-time 15 \
         "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users?username=${username}" \
         -H "Authorization: Bearer ${token}" 2>/dev/null | jq -r '.[0].id // empty')
