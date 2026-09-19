@@ -40,14 +40,14 @@ ADDON_IAM_HOSTS=(
 )
 ADDON_IAM_DEV_ORIGIN="http://localhost:4321"
 
-# 6 Demo-Accounts (finale Daten aus Turn 37 B; username|email|rollen space-getrennt).
+# 6 Demo-Accounts (Turn 43; username|email|vorname|nachname|rollen space-getrennt).
 ADDON_IAM_DEMO_USERS=(
-  "hans|hans.muster@nospam.scanea.de|editor verwaltung"
-  "jule|jule.kovalenko@nospam.scanea.de|verwaltung osm"
-  "Chisom|chisom.eze@nospam.scanea.de|verwaltung"
-  "arman|arman.ekov@nospam.scanea.de|verwaltung"
-  "meera|meera.pillai@nospam.scanea.de|osm qs1_reviewer"
-  "valentina|valentina.cruz@nospam.scanea.de|qs2_reviewer qs1_reviewer osm export_admin"
+  "hans|hans.muster@nospam.scanea.de|Hans|Meier|editor verwaltung"
+  "jule|jule.kovalenko@nospam.scanea.de|Jule|Kovalenko|verwaltung osm"
+  "Chisom|chisom.eze@nospam.scanea.de|Chisom|Eze|verwaltung"
+  "arman|arman.ekov@nospam.scanea.de|Arman|Ekov|verwaltung"
+  "meera|meera.pillai@nospam.scanea.de|Meera|Pillai|osm qs1_reviewer"
+  "valentina|valentina.cruz@nospam.scanea.de|Valentina|Cruz|qs2_reviewer qs1_reviewer osm export_admin"
 )
 
 # ── Helfer ─────────────────────────────────────────────────────────────────────
@@ -87,6 +87,18 @@ _iam_get_client_uid() {
     "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/clients" \
     -H "Authorization: Bearer ${token}" 2>/dev/null \
     | jq -r ".[] | select(.clientId==\"${ADDON_IAM_CLIENT_ID}\") | .id" 2>/dev/null | head -1 || true
+}
+
+# Keycloak-HTTP-Fehlercode in Klartext uebersetzen (fuer klare Log-Meldungen).
+_iam_http_hint() {
+  case "$1" in
+    400) printf 'ungueltige Anfrage (z. B. Passwort erfuellt Policy nicht)' ;;
+    401) printf 'nicht autorisiert (Token abgelaufen?)' ;;
+    403) printf 'fehlende Berechtigung' ;;
+    404) printf 'nicht gefunden' ;;
+    409) printf 'Konflikt (z. B. E-Mail/Username bereits vergeben)' ;;
+    *)   printf 'unbekannter Fehler' ;;
+  esac
 }
 
 # ── 1. OIDC-Client ─────────────────────────────────────────────────────────────
@@ -324,20 +336,31 @@ ensure_p2d2_demo_accounts() {
     return 1
   fi
 
-  local entry username email roles user_id
+  # Mindestkriterium vorab pruefen, damit ein Policy-Verstoss (z. B. fehlender
+  # Grossbuchstabe) nicht erst still beim reset-password auffaellt.
+  if [[ ${#demo_pass} -lt 8 ]] \
+     || [[ ! "${demo_pass}" =~ [A-Z] ]] \
+     || [[ ! "${demo_pass}" =~ [a-z] ]] \
+     || [[ ! "${demo_pass}" =~ [0-9] ]]; then
+    log_error "P2D2_DEMO_PASSWORD erfuellt die Mindestanforderungen nicht (>= 8 Zeichen, Gross-/Kleinbuchstabe, Ziffer)"
+    return 1
+  fi
+
+  local entry username email first_name last_name roles user_id
   for entry in "${ADDON_IAM_DEMO_USERS[@]}"; do
-    username="${entry%%|*}"
-    email="${entry#*|}"; email="${email%%|*}"
-    roles="${entry##*|}"
+    IFS='|' read -r username email first_name last_name roles <<< "${entry}"
 
     user_id=$(curl -sk --max-time 15 \
-      "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users?username=${username}" \
+      "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users?username=${username}&exact=true" \
       -H "Authorization: Bearer ${token}" 2>/dev/null | jq -r '.[0].id // empty')
 
     if [[ -z "${user_id}" ]]; then
       local create_payload create_resp create_body create_code
+      # emailVerified=true + requiredActions=[] + Vor-/Nachname direkt beim Anlegen,
+      # damit der erste Login ohne E-Mail-Verifikation und ohne Profil-Ergaenzung klappt.
       create_payload=$(jq -nc --arg u "${username}" --arg e "${email}" \
-        '{username:$u,email:$e,enabled:true}')
+        --arg fn "${first_name}" --arg ln "${last_name}" \
+        '{username:$u,email:$e,enabled:true,emailVerified:true,requiredActions:[],firstName:$fn,lastName:$ln}')
       create_resp=$(curl -sk --max-time 15 -w $'\n%{http_code}' \
         -X POST "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users" \
         -H "Authorization: Bearer ${token}" \
@@ -346,10 +369,10 @@ ensure_p2d2_demo_accounts() {
       create_code=$(printf '%s' "${create_resp}" | tail -1)
       create_body=$(printf '%s' "${create_resp}" | sed '$d')
       if [[ "${create_code}" != "201" ]]; then
-        log_warn "User ${username} anlegen fehlgeschlagen (HTTP ${create_code}): ${create_body}"
+        log_warn "User ${username} anlegen fehlgeschlagen (HTTP ${create_code} — $(_iam_http_hint "${create_code}")): ${create_body}"
       fi
       user_id=$(curl -sk --max-time 15 \
-        "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users?username=${username}" \
+        "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users?username=${username}&exact=true" \
         -H "Authorization: Bearer ${token}" 2>/dev/null | jq -r '.[0].id // empty')
     fi
 
@@ -360,13 +383,18 @@ ensure_p2d2_demo_accounts() {
 
     # Passwort setzen (nicht temporaer). JSON via jq, damit Sonderzeichen im Passwort
     # korrekt escaped werden (nicht roh in -d interpolieren).
-    local pw_payload
+    local pw_payload pw_resp pw_code pw_body
     pw_payload=$(jq -nc --arg pw "${demo_pass}" '{type:"password",value:$pw,temporary:false}')
-    curl -sk --max-time 15 -o /dev/null -w "%{http_code}" \
+    pw_resp=$(curl -sk --max-time 15 -w $'\n%{http_code}' \
       -X PUT "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users/${user_id}/reset-password" \
       -H "Authorization: Bearer ${token}" \
       -H "Content-Type: application/json" \
-      -d "${pw_payload}" >/dev/null 2>&1 || true
+      -d "${pw_payload}" 2>/dev/null || true)
+    pw_code=$(printf '%s' "${pw_resp}" | tail -1)
+    pw_body=$(printf '%s' "${pw_resp}" | sed '$d')
+    if [[ "${pw_code}" != "204" && "${pw_code}" != "200" ]]; then
+      log_warn "Passwort setzen (${username}) fehlgeschlagen (HTTP ${pw_code} — $(_iam_http_hint "${pw_code}")): ${pw_body}"
+    fi
 
     # Client-Rollen zuweisen (idempotent).
     if [[ -n "${client_uid}" ]]; then
