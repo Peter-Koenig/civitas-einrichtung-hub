@@ -68,10 +68,10 @@ _iam_get_token() {
   fi
   token=$(curl -sk --max-time 15 \
     "${ADDON_IAM_IDM_BASE}/realms/master/protocol/openid-connect/token" \
-    -d "client_id=admin-cli" \
-    -d "username=${master_user}" \
-    -d "password=${master_pass}" \
-    -d "grant_type=password" 2>/dev/null | jq -r '.access_token // empty' 2>/dev/null || true)
+    --data-urlencode "client_id=admin-cli" \
+    --data-urlencode "username=${master_user}" \
+    --data-urlencode "password=${master_pass}" \
+    --data-urlencode "grant_type=password" 2>/dev/null | jq -r '.access_token // empty' 2>/dev/null || true)
   if [[ -z "${token}" ]]; then
     log_error "Keycloak-Master-Token nicht erhalten (Keycloak evtl. noch nicht bereit)"
     return 1
@@ -351,12 +351,15 @@ ensure_p2d2_demo_accounts() {
       continue
     fi
 
-    # Passwort setzen (nicht temporaer).
+    # Passwort setzen (nicht temporaer). JSON via jq, damit Sonderzeichen im Passwort
+    # korrekt escaped werden (nicht roh in -d interpolieren).
+    local pw_payload
+    pw_payload=$(jq -nc --arg pw "${demo_pass}" '{type:"password",value:$pw,temporary:false}')
     curl -sk --max-time 15 -o /dev/null -w "%{http_code}" \
       -X PUT "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users/${user_id}/reset-password" \
       -H "Authorization: Bearer ${token}" \
       -H "Content-Type: application/json" \
-      -d "{\"type\":\"password\",\"value\":\"${demo_pass}\",\"temporary\":false}" >/dev/null 2>&1 || true
+      -d "${pw_payload}" >/dev/null 2>&1 || true
 
     # Client-Rollen zuweisen (idempotent).
     if [[ -n "${client_uid}" ]]; then
