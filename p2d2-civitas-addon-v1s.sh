@@ -4,11 +4,12 @@
 #
 # p2d2-civitas-addon-v1s.sh — p2d2-AddOn für CIVITAS/CORE V1s
 #
-# Rudimentäres Skript (Schritt 1+2 von 2 abgeschlossen). Installiert die drei
-# FERTIGEN Bausteine (PostgreSQL, GeoServer, MapProxy) in der manuell
-# verifizierten Reihenfolge und baut sie per --uninstall spiegelbildlich wieder
-# ab; Frontend ist ein klar markierter Platzhalter (Baustein noch nicht fertig,
-# siehe addon_30_frontend.sh).
+# Rudimentäres Skript (Schritt 1+2 von 2 abgeschlossen). Installiert die
+# FERTIGEN Bausteine (PostgreSQL, GeoServer, MapProxy) plus IAM/Keycloak-
+# Provisionierung (addon_25) in der manuell verifizierten Reihenfolge und baut
+# sie per --uninstall spiegelbildlich wieder ab (IAM bewusst AUSGENOMMEN, da
+# geteilte Infrastruktur); Frontend ist ein klar markierter Platzhalter (Baustein
+# noch nicht fertig, siehe addon_30_frontend.sh).
 #
 # V1s-Kopplung: dieses AddOn setzt auf CIVITAS/CORE V1s auf (nicht V1, nicht V2).
 #
@@ -57,6 +58,7 @@ log_error() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✗ $*" >&2; }
 source "${SCRIPT_DIR}/modules_addon_V1s/addon_00_postgresql.sh"
 source "${SCRIPT_DIR}/modules_addon_V1s/addon_10_geoserver.sh"
 source "${SCRIPT_DIR}/modules_addon_V1s/addon_20_mapproxy.sh"
+source "${SCRIPT_DIR}/modules_addon_V1s/addon_25_iam.sh"
 source "${SCRIPT_DIR}/modules_addon_V1s/addon_30_frontend.sh"
 
 # ── Funktion: Selbstkopie auf die Ziel-VM (mit Stopp-Punkt, KEIN Auto-Run) ─────
@@ -146,6 +148,7 @@ else
   install_addon_postgresql
   install_addon_geoserver
   install_addon_mapproxy
+  install_addon_iam
   install_addon_frontend
 fi
 
