@@ -79,16 +79,23 @@ _iam_get_token() {
   printf '%s' "${token}"
 }
 
+# Client-UID zuverlässig ermitteln. Der clientId-Query-Filter filtert je nach
+# Keycloak-Version nicht zuverlässig, daher volle Liste + clientseitig filtern.
+_iam_get_client_uid() {
+  local token="$1"
+  curl -sk --max-time 15 \
+    "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/clients" \
+    -H "Authorization: Bearer ${token}" 2>/dev/null \
+    | jq -r ".[] | select(.clientId==\"${ADDON_IAM_CLIENT_ID}\") | .id" 2>/dev/null | head -1 || true
+}
+
 # ── 1. OIDC-Client ─────────────────────────────────────────────────────────────
 ensure_p2d2_oidc_client() {
   log "=== AddOn 25: Keycloak OIDC-Client ${ADDON_IAM_CLIENT_ID} (Realm ${ADDON_IAM_REALM}) ==="
   local token client_id_json client_uid http_code
   token=$(_iam_get_token) || return 1
 
-  client_id_json=$(curl -sk --max-time 15 \
-    "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/clients?clientId=${ADDON_IAM_CLIENT_ID}" \
-    -H "Authorization: Bearer ${token}" 2>/dev/null || echo "[]")
-  client_uid=$(printf '%s' "${client_id_json}" | jq -r '.[0].id // empty' 2>/dev/null || true)
+  client_uid=$(_iam_get_client_uid "${token}")
 
   if [[ -n "${client_uid}" ]]; then
     log_ok "OIDC-Client ${ADDON_IAM_CLIENT_ID} existiert bereits (id ${client_uid})"
@@ -125,9 +132,7 @@ ensure_p2d2_oidc_client() {
       -d "${payload}" 2>/dev/null || true)
     if [[ "${http_code}" == "201" ]]; then
       log_ok "OIDC-Client ${ADDON_IAM_CLIENT_ID} angelegt"
-      client_uid=$(curl -sk --max-time 15 \
-        "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/clients?clientId=${ADDON_IAM_CLIENT_ID}" \
-        -H "Authorization: Bearer ${token}" 2>/dev/null | jq -r '.[0].id // empty')
+      client_uid=$(_iam_get_client_uid "${token}")
     else
       log_warn "OIDC-Client anlegen fehlgeschlagen (HTTP ${http_code})"
     fi
@@ -158,9 +163,7 @@ ensure_p2d2_client_roles() {
   log "=== AddOn 25: Keycloak Client-Rollen (6) ==="
   local token client_uid roles_json
   token=$(_iam_get_token) || return 1
-  client_uid=$(curl -sk --max-time 15 \
-    "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/clients?clientId=${ADDON_IAM_CLIENT_ID}" \
-    -H "Authorization: Bearer ${token}" 2>/dev/null | jq -r '.[0].id // empty')
+  client_uid=$(_iam_get_client_uid "${token}")
   if [[ -z "${client_uid}" ]]; then
     log_error "OIDC-Client ${ADDON_IAM_CLIENT_ID} nicht gefunden — zuerst ensure_p2d2_oidc_client"
     return 1
@@ -195,9 +198,7 @@ ensure_p2d2_role_token_mapper() {
   log "=== AddOn 25: Rollen-Token-Mapper (ID-Token) ==="
   local token client_uid mappers_json
   token=$(_iam_get_token) || return 1
-  client_uid=$(curl -sk --max-time 15 \
-    "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/clients?clientId=${ADDON_IAM_CLIENT_ID}" \
-    -H "Authorization: Bearer ${token}" 2>/dev/null | jq -r '.[0].id // empty')
+  client_uid=$(_iam_get_client_uid "${token}")
   if [[ -z "${client_uid}" ]]; then
     log_error "OIDC-Client ${ADDON_IAM_CLIENT_ID} nicht gefunden"
     return 1
@@ -315,9 +316,7 @@ ensure_p2d2_demo_accounts() {
   log "=== AddOn 25: Demo-Accounts (6) ==="
   local token client_uid demo_pass
   token=$(_iam_get_token) || return 1
-  client_uid=$(curl -sk --max-time 15 \
-    "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/clients?clientId=${ADDON_IAM_CLIENT_ID}" \
-    -H "Authorization: Bearer ${token}" 2>/dev/null | jq -r '.[0].id // empty')
+  client_uid=$(_iam_get_client_uid "${token}")
 
   demo_pass="${P2D2_DEMO_PASSWORD:-}"
   if [[ -z "${demo_pass}" ]]; then
