@@ -64,13 +64,13 @@ ensure_keycloak_admin_user() {
     return 0
   fi
 
-  # Master-Token holen
+  # Master-Token holen (--data-urlencode: Sonderzeichen in Username/Passwort sicher codieren)
   token=$(curl -sk --max-time 10 \
     "${idm_base}/realms/master/protocol/openid-connect/token" \
-    -d "client_id=admin-cli" \
-    -d "username=${master_user}" \
-    -d "password=${master_pass}" \
-    -d "grant_type=password" 2>/dev/null | jq -r '.access_token' 2>/dev/null || true)
+    --data-urlencode "client_id=admin-cli" \
+    --data-urlencode "username=${master_user}" \
+    --data-urlencode "password=${master_pass}" \
+    --data-urlencode "grant_type=password" 2>/dev/null | jq -r '.access_token' 2>/dev/null || true)
 
   if [[ -z "${token}" || "${token}" == "null" ]]; then
     log_warn "Keycloak-Master-Token nicht erhalten — überspringe Admin-User-Prüfung"
@@ -96,13 +96,14 @@ ensure_keycloak_admin_user() {
 
   # Admin-User anlegen
   log "Lege Admin-User ${ADMIN_EMAIL} in Realm ${realm} an …"
-  local http_code
+  local http_code user_payload
+  user_payload=$(jq -nc --arg email "${ADMIN_EMAIL}" '{email:$email,username:$email,enabled:true}')
   http_code=$(curl -sk --max-time 10 -w "%{http_code}" -o /dev/null \
     "${idm_base}/admin/realms/${realm}/users" \
     -X POST \
     -H "Authorization: Bearer ${token}" \
     -H "Content-Type: application/json" \
-    -d "{\"email\":\"${ADMIN_EMAIL}\",\"username\":\"${ADMIN_EMAIL}\",\"enabled\":true}" 2>/dev/null || true)
+    -d "${user_payload}" 2>/dev/null || true)
 
   if [[ "${http_code}" == "201" ]]; then
     log_ok "Admin-User ${ADMIN_EMAIL} in Realm ${realm} angelegt"
@@ -136,13 +137,14 @@ set_user_password() {
   local idm_base="$1" token="$2" realm="$3" user_id="$4"
 
   log "Setze Passwort für User ${user_id} in Realm ${realm} …"
-  local http_code
+  local http_code pw_payload
+  pw_payload=$(jq -nc --arg pw "${ADMIN_PASS}" '{type:"password",value:$pw,temporary:false}')
   http_code=$(curl -sk --max-time 10 -w "%{http_code}" -o /dev/null \
     "${idm_base}/admin/realms/${realm}/users/${user_id}/reset-password" \
     -X PUT \
     -H "Authorization: Bearer ${token}" \
     -H "Content-Type: application/json" \
-    -d "{\"type\":\"password\",\"value\":\"${ADMIN_PASS}\",\"temporary\":false}" 2>/dev/null || true)
+    -d "${pw_payload}" 2>/dev/null || true)
 
   if [[ "${http_code}" == "204" ]]; then
     log_ok "Passwort für ${ADMIN_EMAIL} gesetzt (nicht temporär)"
