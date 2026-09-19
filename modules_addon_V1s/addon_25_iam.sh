@@ -23,6 +23,10 @@ ADDON_IAM_NS="${ADDON_IAM_NS:-cc-prd-access-stack}"                # Namespace d
 ADDON_IAM_ADMIN_SECRET="${ADDON_IAM_ADMIN_SECRET:-cc-prd-keycloak-admin}"
 ADDON_IAM_CLIENT_ID="${ADDON_IAM_CLIENT_ID:-p2d2}"                 # == OIDC_CLIENT_ID (P2D2_BASE_OIDC_CLIENT_ID)
 ADDON_IAM_IDM_BASE="https://idm.${ADDON_DOMAIN}"                   # Keycloak-Basis (idm.udp.data-dna.eu)
+# TLS: idm.<DOMAIN> nutzt ein Zertifikat aus cert-manager selfsigned-issuer (interne CA),
+# das curl's Default-Trust-Store nicht kennt -> daher unten curl -sk, analog zu
+# modules_V1s/06b_idm_provisioning.sh. Sauberere Variante: --cacert mit der CA aus dem
+# Secret idm.<DOMAIN>-tls (Namespace <env>-access-stack, Key tls.crt).
 # Ausgabedatei für das generierte Client-Secret (chmod 600), analog credentials.env.
 ADDON_IAM_CREDENTIALS_FILE="${ADDON_IAM_CREDENTIALS_FILE:-/root/civitas-install/p2d2-addon-credentials.env}"
 
@@ -141,7 +145,7 @@ ensure_p2d2_oidc_client() {
         echo "# p2d2-AddOn Keycloak-Client (generiert)"
         echo "P2D2_BASE_OIDC_CLIENT_ID=${ADDON_IAM_CLIENT_ID}"
         echo "P2D2_BASE_OIDC_CLIENT_SECRET=${secret}"
-      } >> "${ADDON_IAM_CREDENTIALS_FILE}"
+      } > "${ADDON_IAM_CREDENTIALS_FILE}"
       log_ok "Client-Secret nach ${ADDON_IAM_CREDENTIALS_FILE} geschrieben (chmod 600)"
     else
       log_warn "Client-Secret nicht auslesbar — manuell pruefen"
@@ -224,6 +228,30 @@ ensure_p2d2_role_token_mapper() {
   fi
 }
 
+# ── Helfer: IdP-Mapper idempotent anlegen ───────────────────────────────────────
+_iam_ensure_idp_mapper() {
+  local token="$1" alias="$2" name="$3" payload="$4"
+  local mappers_json
+  mappers_json=$(curl -sk --max-time 15 \
+    "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/identity-provider/instances/${alias}/mappers" \
+    -H "Authorization: Bearer ${token}" 2>/dev/null || echo "[]")
+  if printf '%s' "${mappers_json}" | jq -e ".[] | select(.name==\"${name}\")" >/dev/null 2>&1; then
+    log_ok "IdP-Mapper ${name} existiert bereits"
+    return 0
+  fi
+  local http_code
+  http_code=$(curl -sk --max-time 15 -o /dev/null -w "%{http_code}" \
+    -X POST "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/identity-provider/instances/${alias}/mappers" \
+    -H "Authorization: Bearer ${token}" \
+    -H "Content-Type: application/json" \
+    -d "${payload}" 2>/dev/null || true)
+  if [[ "${http_code}" == "201" ]]; then
+    log_ok "IdP-Mapper ${name} angelegt"
+  else
+    log_warn "IdP-Mapper ${name} anlegen fehlgeschlagen (HTTP ${http_code}) — Mapper-Typ/Feldnamen gegen Keycloak-Version pruefen"
+  fi
+}
+
 # ── 4. OSM-IdP-Broker ──────────────────────────────────────────────────────────
 ensure_osm_identity_provider() {
   log "=== AddOn 25: OSM-IdP-Broker (Alias osm) ==="
@@ -244,35 +272,42 @@ ensure_osm_identity_provider() {
     -H "Authorization: Bearer ${token}" 2>/dev/null || true)
   if [[ "${http_code}" == "200" ]]; then
     log_ok "OSM-IdP (osm) existiert bereits"
-    return 0
-  fi
-
-  # OSM ist reines OAuth2 (kein OIDC). Userinfo als JSON: /api/0.6/user/details.json
-  # (liefert user.id / user.display_name, kein Standard sub/email -> Mapper noetig, s.u.).
-  local payload
-  payload=$(jq -nc \
-    --arg alias "osm" \
-    --arg clientId "${osm_client_id}" \
-    --arg clientSecret "${osm_client_secret}" \
-    '{alias:$alias,providerId:"oauth2",enabled:true,storeToken:false,addReadTokenRoleOnCreate:false,config:{
-      clientId:$clientId,clientSecret:$clientSecret,
-      authorizationUrl:"https://www.openstreetmap.org/oauth2/authorize",
-      tokenUrl:"https://www.openstreetmap.org/oauth2/token",
-      userInfoUrl:"https://api.openstreetmap.org/api/0.6/user/details.json",
-      defaultScope:"read_prefs"}}')
-
-  local http_code
-  http_code=$(curl -sk --max-time 15 -o /dev/null -w "%{http_code}" \
-    -X POST "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/identity-provider/instances" \
-    -H "Authorization: Bearer ${token}" \
-    -H "Content-Type: application/json" \
-    -d "${payload}" 2>/dev/null || true)
-  if [[ "${http_code}" == "201" ]]; then
-    log_ok "OSM-IdP (osm) angelegt"
-    log_warn "OSM-Userinfo ist nicht OIDC-konform (user.id/display_name) — Username-Template-/Attribute-Mapper pruefen"
   else
-    log_warn "OSM-IdP anlegen fehlgeschlagen (HTTP ${http_code})"
+    # OSM ist reines OAuth2 (kein OIDC). Userinfo als JSON: /api/0.6/user/details.json
+    # (liefert user.id / user.display_name, kein Standard sub/email -> Mapper noetig, s.u.).
+    local payload
+    payload=$(jq -nc \
+      --arg alias "osm" \
+      --arg clientId "${osm_client_id}" \
+      --arg clientSecret "${osm_client_secret}" \
+      '{alias:$alias,providerId:"oauth2",enabled:true,storeToken:false,addReadTokenRoleOnCreate:false,config:{
+        clientId:$clientId,clientSecret:$clientSecret,
+        authorizationUrl:"https://www.openstreetmap.org/oauth2/authorize",
+        tokenUrl:"https://www.openstreetmap.org/oauth2/token",
+        userInfoUrl:"https://api.openstreetmap.org/api/0.6/user/details.json",
+        defaultScope:"read_prefs"}}')
+    http_code=$(curl -sk --max-time 15 -o /dev/null -w "%{http_code}" \
+      -X POST "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/identity-provider/instances" \
+      -H "Authorization: Bearer ${token}" \
+      -H "Content-Type: application/json" \
+      -d "${payload}" 2>/dev/null || true)
+    if [[ "${http_code}" == "201" ]]; then
+      log_ok "OSM-IdP (osm) angelegt"
+    else
+      log_warn "OSM-IdP anlegen fehlgeschlagen (HTTP ${http_code})"
+      return 1
+    fi
   fi
+
+  # Mapper: eindeutige Kennung user.id (Username-Template) + Anzeigename user.display_name
+  # (Attribute-Importer). Punktnotation auf verschachteltes user.* (OSM-Userinfo).
+  local username_payload display_payload
+  username_payload=$(jq -nc --arg name "OSM username" --arg tpl '${CLAIM.user.id}' \
+    '{name:$name,identityProviderMapper:"oidc-username-idp-mapper",identityProviderAlias:"osm",config:{template:$tpl}}')
+  display_payload=$(jq -nc --arg name "OSM display_name" --arg claim "user.display_name" --arg attr "displayName" \
+    '{name:$name,identityProviderMapper:"oidc-user-attribute-idp-mapper",identityProviderAlias:"osm",config:{claim:$claim,"user.attribute":$attr,jsonType:"String",syncMode:"INHERIT"}}')
+  _iam_ensure_idp_mapper "${token}" "osm" "OSM username" "${username_payload}"
+  _iam_ensure_idp_mapper "${token}" "osm" "OSM display_name" "${display_payload}"
 }
 
 # ── 5. Demo-Accounts ───────────────────────────────────────────────────────────
