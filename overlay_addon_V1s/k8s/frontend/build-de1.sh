@@ -36,6 +36,7 @@ PUBLIC_SITE_URL="https://f-de1.udp.data-dna.eu"
 PUBLIC_WFST_ENDPOINT="https://geoportal.udp.data-dna.eu/geoserver/ows"
 PUBLIC_WFST_WORKSPACE="de1"
 PUBLIC_MAPSERVER_URL="https://geoportal.udp.data-dna.eu/mapserver"
+DEFAULT_CATEGORY_ICON="Fahnenmasten.svg"
 
 WORKDIR_TMP="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR_TMP"' EXIT
@@ -61,6 +62,7 @@ docker build \
   --build-arg PUBLIC_WFST_ENDPOINT="${PUBLIC_WFST_ENDPOINT}" \
   --build-arg PUBLIC_WFST_WORKSPACE="${PUBLIC_WFST_WORKSPACE}" \
   --build-arg PUBLIC_MAPSERVER_URL="${PUBLIC_MAPSERVER_URL}" \
+  --build-arg DEFAULT_CATEGORY_ICON="${DEFAULT_CATEGORY_ICON}" \
   -t "${IMAGE}:${TAG}" "$APP_DIR"
 
 echo ">> k3s ctr images import"
