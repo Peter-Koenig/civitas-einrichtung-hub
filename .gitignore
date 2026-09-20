@@ -13,3 +13,6 @@
 # limitations under the Licence.
 
 supplement/*
+# Diagnose-/Hilfsskripte unter supplement/ sind Code und werden versioniert
+# (nur Daten wie GeoTIFFs bleiben ignoriert).
+!supplement/*.sh

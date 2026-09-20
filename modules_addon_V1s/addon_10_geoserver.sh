@@ -181,12 +181,19 @@ uninstall_addon_geoserver() {
   # (GeoTIFF-Mosaic). Install und Uninstall sind symmetrisch: Abschnitt 9
   # (install_addon_geoserver_mosaic) legt die Mosaic aus dem Supplement-Ordner an,
   # hier wird sie wieder entfernt.
+  # Turn 72: HTTP-Statuscode separat abfragen (curl liefert bei 404 Exit 0 und sonst
+  # den rohen Tomcat-HTML-Body ins Log) — je Code log_ok statt Fehlerseite.
   # TODO: p2d2-Nutzer/Rollen/ACL (die die Install-Seite als TODO markiert) später ergänzen.
-  local ws
+  local ws http_code
   for ws in friedhofsplaene fv de2 de1 dev main; do
     log "  Workspace ${ws} entfernen"
-    curl -sS -u "${admin_user}:${admin_pw}" -X DELETE \
-      "${rest}/workspaces/${ws}?recurse=true" || log_warn "    Workspace ${ws} evtl. schon entfernt"
+    http_code=$(curl -sS -o /dev/null -w "%{http_code}" -u "${admin_user}:${admin_pw}" -X DELETE \
+      "${rest}/workspaces/${ws}?recurse=true" 2>/dev/null || true)
+    case "${http_code}" in
+      200|201|202) log_ok "    Workspace ${ws} entfernt" ;;
+      404)         log_ok "    Workspace ${ws} bereits entfernt (übersprungen)" ;;
+      *)           log_warn "    Workspace ${ws} löschen fehlgeschlagen (HTTP ${http_code})" ;;
+    esac
   done
 
   # Turn 71 Fund 2: physische Raster-Dateien im GeoServer-Pod-PVC entfernen.
