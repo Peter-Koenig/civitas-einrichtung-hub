@@ -17,6 +17,27 @@ if [[ -z "${ADDON_NS:-}" || -z "${ADDON_DOMAIN:-}" ]]; then
   return 1 2>/dev/null || exit 1
 fi
 
+# _gs_rest <user> <pw> <method> <url> <json_body> <ok_codes space-getrennt>
+# GeoServer-REST-Aufruf mit HTTP-Statuscode-Prüfung. Gibt 0 (ok) oder 1 (Fehler)
+# zurück; bei Fehler wird der Response-Body in log_warn geschrieben (kein roher
+# Body mehr auf stdout — Turn 74 Fund A).
+_gs_rest() {
+  local user="$1" pw="$2" method="$3" url="$4" body="$5" ok_codes="$6"
+  local resp code resp_body ok=0 c
+  resp=$(curl -sS -w $'\n%{http_code}' -u "${user}:${pw}" -X "${method}" \
+    -H 'Content-Type: application/json' -d "${body}" "${url}" 2>/dev/null || true)
+  code=$(printf '%s' "${resp}" | tail -1)
+  resp_body=$(printf '%s' "${resp}" | sed '$d')
+  for c in ${ok_codes}; do
+    [[ "${code}" == "${c}" ]] && ok=1
+  done
+  if [[ "${ok}" == "1" ]]; then
+    return 0
+  fi
+  log_warn "      ${method} ${url} → HTTP ${code}: ${resp_body}"
+  return 1
+}
+
 install_addon_geoserver() {
   log "=== AddOn 10: GeoServer (Workspaces/Datastores/FeatureTypes) ==="
 
@@ -117,55 +138,67 @@ install_addon_geoserver_mosaic() {
   rest="https://geoportal.${domain}/geoserver/rest"
 
   # 9.2) Workspace/Namespace (einmal, für alle Städte; erzeugt den Workspace mit).
-  curl -sS -u "${admin_user}:${admin_pw}" -X POST \
-    -H 'Content-Type: application/json' \
-    -d '{"namespace":{"prefix":"friedhofsplaene","uri":"urn:data-dna:tiffdata"}}' \
-    "${rest}/namespaces" || log_warn "    Namespace friedhofsplaene evtl. schon vorhanden (409 tolerieren)"
+  _gs_rest "${admin_user}" "${admin_pw}" POST "${rest}/namespaces" \
+    '{"namespace":{"prefix":"friedhofsplaene","uri":"urn:data-dna:tiffdata"}}' \
+    "201 409 200" \
+    || log_warn "    Namespace friedhofsplaene nicht angelegt — Folge-Schritte werden fehlschlagen"
 
   # Je Stadt: Granules verteilen + Coveragestore + Coverage + Metadata + ACL.
-  local pod_target coveragestore coverage
+  local pod_target coveragestore coverage body fail
+  local ok_cities=0
   for stadt in "${cities[@]}"; do
     pod_target="/opt/geoserver/data_dir/data/geotiffs/${stadt}"
     coveragestore="friedhofsplaene_${stadt}_mosaic"
     coverage="friedhoefe_${stadt}"
+    fail=0
     log "    Stadt ${stadt}: Coveragestore ${coveragestore} / Coverage ${coverage}"
 
     # 9.1) Raster-Granules ins Pod-Data-Dir (kubectl cp, am Ingress vorbei — große TIFFs).
     # kubectl cp nutzt intern tar und legt das Zielverzeichnis NICHT selbst an —
-    # deshalb vorher mkdir -p (Turn 73: sonst bricht ein frischer Install nach dem
-    # Uninstall ab, weil data/geotiffs/ entfernt wurde).
+    # deshalb vorher mkdir -p (Turn 73).
     kubectl -n "$ns" exec "${geoserver_pod}" -- mkdir -p "${pod_target}" \
-      || { log_warn "mkdir ${pod_target} im Pod fehlgeschlagen — ${stadt} übersprungen"; continue; }
+      || { log_warn "    mkdir ${pod_target} im Pod fehlgeschlagen — ${stadt} übersprungen"; continue; }
     log "      kubectl cp ${geotiff_dir}/${stadt}/. → ${geoserver_pod}:${pod_target}/"
     kubectl -n "$ns" cp "${geotiff_dir}/${stadt}/." "${geoserver_pod}:${pod_target}/" \
-      || { log_warn "kubectl cp für ${stadt} fehlgeschlagen — übersprungen"; continue; }
+      || { log_warn "    kubectl cp für ${stadt} fehlgeschlagen — übersprungen"; continue; }
 
-    # 9.3) Coveragestore (ImageMosaic; legt KEINE Coverage an).
-    curl -sS -u "${admin_user}:${admin_pw}" -X POST \
-      -H 'Content-Type: application/json' \
-      -d "{\"coverageStore\":{\"name\":\"${coveragestore}\",\"type\":\"ImageMosaic\",\"url\":\"file:data/geotiffs/${stadt}\"}}" \
-      "${rest}/workspaces/friedhofsplaene/coveragestores" || log_warn "    Coveragestore ${coveragestore} evtl. schon vorhanden (409 tolerieren)"
+    # 9.3) Coveragestore (ImageMosaic; legt KEINE Coverage an). Turn 74: explizites
+    #      workspace-Feld im Body nötig, sonst "Store must be part of a workspace".
+    body=$(jq -nc --arg name "${coveragestore}" --arg ws "friedhofsplaene" --arg url "file:data/geotiffs/${stadt}" \
+      '{coverageStore:{name:$name,type:"ImageMosaic",workspace:{name:$ws},url:$url}}')
+    _gs_rest "${admin_user}" "${admin_pw}" POST "${rest}/workspaces/friedhofsplaene/coveragestores" "${body}" "201 409 200" \
+      || fail=1
 
     # 9.4) Coverage (explizit; nativeCoverageName = Mosaic-TypeName = Ordnername).
-    curl -sS -u "${admin_user}:${admin_pw}" -X POST \
-      -H 'Content-Type: application/json' \
-      -d "{\"coverage\":{\"name\":\"${coverage}\",\"nativeCoverageName\":\"${stadt}\",\"title\":\"Friedhöfe ${stadt}\",\"srs\":\"EPSG:25832\",\"projectionPolicy\":\"REPROJECT_TO_DECLARED\"}}" \
-      "${rest}/workspaces/friedhofsplaene/coveragestores/${coveragestore}/coverages" || log_warn "    Coverage ${coverage} evtl. schon vorhanden (409 tolerieren)"
+    body=$(jq -nc --arg name "${coverage}" --arg native "${stadt}" --arg title "Friedhöfe ${stadt}" \
+      '{coverage:{name:$name,nativeCoverageName:$native,title:$title,srs:"EPSG:25832",projectionPolicy:"REPROJECT_TO_DECLARED"}}')
+    _gs_rest "${admin_user}" "${admin_pw}" POST "${rest}/workspaces/friedhofsplaene/coveragestores/${coveragestore}/coverages" "${body}" "201 200" \
+      || fail=1
 
     # 9.5) ImageMosaic-Kernparameter (Feld heißt metadata, NICHT parameters).
-    curl -sS -u "${admin_user}:${admin_pw}" -X PUT \
-      -H 'Content-Type: application/json' \
-      -d '{"coverageStore":{"metadata":{"MergeBehavior":"FLAT","SUGGESTED_TILE_SIZE":"512,512","FootprintBehavior":"Transparent","ExcessGranuleRemoval":"NONE","USE_JAI_IMAGEREAD":"true","RescalePixels":"true","AllowMultithreading":"false"}}}' \
-      "${rest}/workspaces/friedhofsplaene/coveragestores/${coveragestore}" || log_warn "    Metadata-PUT fehlgeschlagen"
+    _gs_rest "${admin_user}" "${admin_pw}" PUT "${rest}/workspaces/friedhofsplaene/coveragestores/${coveragestore}" \
+      '{"coverageStore":{"metadata":{"MergeBehavior":"FLAT","SUGGESTED_TILE_SIZE":"512,512","FootprintBehavior":"Transparent","ExcessGranuleRemoval":"NONE","USE_JAI_IMAGEREAD":"true","RescalePixels":"true","AllowMultithreading":"false"}}}' \
+      "200 201" || fail=1
 
     # 9.6) ACL: offene Lese-Regel (keine Write-Regel für Raster).
-    curl -sS -u "${admin_user}:${admin_pw}" -X POST \
-      -H 'Content-Type: application/json' \
-      -d "{\"friedhofsplaene.${coverage}.r\":\"ROLE_ANONYMOUS,ROLE_AUTHENTICATED,ADMIN\"}" \
-      "${rest}/security/acl/layers" || log_warn "    ACL evtl. schon vorhanden (409 tolerieren)"
+    body=$(jq -nc --arg rule "friedhofsplaene.${coverage}.r" \
+      '{($rule):"ROLE_ANONYMOUS,ROLE_AUTHENTICATED,ADMIN"}')
+    _gs_rest "${admin_user}" "${admin_pw}" POST "${rest}/security/acl/layers" "${body}" "200 201 409" \
+      || fail=1
+
+    if [[ "${fail}" == "0" ]]; then
+      log_ok "    Stadt ${stadt}: Mosaic angelegt"
+      ok_cities=$((ok_cities + 1))
+    else
+      log_warn "    Stadt ${stadt}: Mosaic NICHT vollständig angelegt (siehe Fehler oben)"
+    fi
   done
 
-  log_ok "  Mosaic 'friedhofsplaene' angelegt (${#cities[@]} Stadt/Städte)"
+  if [[ "${ok_cities}" -eq "${#cities[@]}" ]]; then
+    log_ok "  Mosaic 'friedhofsplaene' angelegt (${ok_cities}/${#cities[@]} Städte)"
+  else
+    log_warn "  Mosaic 'friedhofsplaene' nur teilweise angelegt (${ok_cities}/${#cities[@]} Städte — siehe Fehler oben)"
+  fi
 }
 
 # uninstall_addon_geoserver — Rückbau (Workspaces + WFS-Secrets + Raster-Dateien).

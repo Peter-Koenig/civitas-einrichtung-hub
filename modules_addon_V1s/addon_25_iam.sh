@@ -110,7 +110,7 @@ _iam_http_hint() {
 # ── 1. OIDC-Client ─────────────────────────────────────────────────────────────
 ensure_p2d2_oidc_client() {
   log "=== AddOn 25: Keycloak OIDC-Client ${ADDON_IAM_CLIENT_ID} (Realm ${ADDON_IAM_REALM}) ==="
-  local token client_id_json client_uid http_code
+  local token client_id_json client_uid http_code create_resp create_code create_body
   token=$(_iam_get_token) || return 1
 
   client_uid=$(_iam_get_client_uid "${token}")
@@ -143,16 +143,18 @@ ensure_p2d2_oidc_client() {
       --arg postLogout "${post_logout}" \
       '{clientId:$clientId,enabled:true,protocol:"openid-connect",publicClient:false,standardFlowEnabled:true,directAccessGrantsEnabled:false,serviceAccountsEnabled:false,redirectUris:$redirectUris,webOrigins:$webOrigins,attributes:{"post.logout.redirect.uris":$postLogout}}')
 
-    http_code=$(curl -sk --max-time 15 -o /dev/null -w "%{http_code}" \
+    create_resp=$(curl -sk --max-time 15 -w $'\n%{http_code}' \
       -X POST "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/clients" \
       -H "Authorization: Bearer ${token}" \
       -H "Content-Type: application/json" \
       -d "${payload}" 2>/dev/null || true)
-    if [[ "${http_code}" == "201" ]]; then
+    create_code=$(printf '%s' "${create_resp}" | tail -1)
+    create_body=$(printf '%s' "${create_resp}" | sed '$d')
+    if [[ "${create_code}" == "201" ]]; then
       log_ok "OIDC-Client ${ADDON_IAM_CLIENT_ID} angelegt"
       client_uid=$(_iam_get_client_uid "${token}")
     else
-      log_warn "OIDC-Client anlegen fehlgeschlagen (HTTP ${http_code})"
+      log_warn "OIDC-Client anlegen fehlgeschlagen (HTTP ${create_code}): ${create_body}"
     fi
   fi
 
