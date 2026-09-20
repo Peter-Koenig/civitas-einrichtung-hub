@@ -1,0 +1,32 @@
+# p2d2-AddOn Frontend — Ingress für Stage de1 (f-de1.udp.data-dna.eu)
+# Vorlage: idmkeycloak-Ingress (Klasse nginx, cluster-issuer letsencrypt-prod).
+# TLS-Secret f-de1.udp.data-dna.eu-tls wird von cert-manager automatisch ausgestellt.
+#
+# Anwendung (Cluster-Admin nötig, da der Installer-SA keine Ingress-Rechte hat):
+#   kubectl apply -f overlay_addon_V1s/k8s/ingress/de1.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: p2d2-f-de1
+  namespace: cc-prd-geodata-stack
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/backend-protocol: HTTP
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: f-de1.udp.data-dna.eu
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: p2d2-f-de1
+            port:
+              number: 80
+  tls:
+  - hosts:
+    - f-de1.udp.data-dna.eu
+    secretName: f-de1.udp.data-dna.eu-tls
