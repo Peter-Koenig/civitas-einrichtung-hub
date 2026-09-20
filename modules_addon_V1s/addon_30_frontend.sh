@@ -26,6 +26,86 @@ if [[ -z "${ADDON_NS:-}" || -z "${ADDON_DOMAIN:-}" ]]; then
   return 1 2>/dev/null || exit 1
 fi
 
+# ── Env-Vars-Pipeline (.env.p2d2-addon → Secrets) ─────────────────────────────
+# Turn 59: .env.p2d2-addon ist die einzige Quelle der Wahrheit für mandantenabhängige
+# Werte (Domains, User-IDs, Secrets). Diese Funktionen lesen die P2D2_*-Variablen
+# (vom Hauptskript exportiert) und schreiben die Basis-/Stage-Secrets atomar.
+
+# _addon_get <name> — liest eine Variable indirekt über ihren Namen (leer wenn ungesetzt).
+_addon_get() {
+  printf '%s' "${!1:-}"
+}
+
+# _addon_ensure_secret <namespace> <name> <key=value>...
+# Legt das Secret NUR bei Erstanlage an (existiert es, wird es NICHT überschrieben).
+# Fail-fast: leere/CHANGEME-Werte brechen ab, bevor irgendein Secret geschrieben wird.
+_addon_ensure_secret() {
+  local ns="$1" name="$2"; shift 2
+  local kv k v args=()
+  for kv in "$@"; do
+    k="${kv%%=*}"
+    v="${kv#*=}"
+    if [[ -z "${v}" || "${v}" == "CHANGEME" ]]; then
+      log_error "Secret ${name}: Wert für '${k}' fehlt oder ist CHANGEME — bitte in .env.p2d2-addon setzen (P2D2_*)."
+      return 1
+    fi
+    args+=(--from-literal="${k}=${v}")
+  done
+  if kubectl -n "${ns}" get secret "${name}" &>/dev/null; then
+    log_ok "Secret ${name} existiert bereits — wird NICHT überschrieben"
+    return 0
+  fi
+  kubectl -n "${ns}" create secret generic "${name}" "${args[@]}" \
+    || { log_error "Secret ${name} konnte nicht angelegt werden"; return 1; }
+  log_ok "Secret ${name} angelegt (${#args[@]} Keys, atomar)"
+}
+
+# apply_addon_secrets — befüllt Basis- + 5 Stage-Secrets aus .env.p2d2-addon.
+apply_addon_secrets() {
+  local ns="${ADDON_NS}"
+  local iam_creds="${ADDON_IAM_CREDENTIALS_FILE:-/root/civitas-install/p2d2-addon-credentials.env}"
+
+  # OIDC: bevorzugt aus .env.p2d2-addon; Fallback aus dem IAM-credentials-File,
+  # das ensure_p2d2_oidc_client() (Turn 40) generiert — vermeidet doppelte Pflege.
+  local oidc_issuer oidc_client_id oidc_client_secret
+  oidc_issuer="$(_addon_get P2D2_BASE_OIDC_ISSUER)"
+  oidc_client_id="$(_addon_get P2D2_BASE_OIDC_CLIENT_ID)"
+  oidc_client_secret="$(_addon_get P2D2_BASE_OIDC_CLIENT_SECRET)"
+  if [[ -f "${iam_creds}" ]]; then
+    [[ -z "${oidc_client_id}" ]]     && oidc_client_id="$(sed -n 's/^P2D2_BASE_OIDC_CLIENT_ID=//p' "${iam_creds}" | head -n1)"
+    [[ -z "${oidc_client_secret}" ]] && oidc_client_secret="$(sed -n 's/^P2D2_BASE_OIDC_CLIENT_SECRET=//p' "${iam_creds}" | head -n1)"
+    [[ -z "${oidc_issuer}" ]]        && oidc_issuer="$(sed -n 's/^P2D2_BASE_OIDC_ISSUER=//p' "${iam_creds}" | head -n1)"
+  fi
+
+  # Basis-Secret (5 Keys).
+  _addon_ensure_secret "${ns}" "p2d2-base-secret" \
+    "ALTCHA_HMAC_KEY=$(_addon_get P2D2_BASE_ALTCHA_HMAC_KEY)" \
+    "SMTP_PASS=$(_addon_get P2D2_BASE_SMTP_PASS)" \
+    "OIDC_ISSUER=${oidc_issuer}" \
+    "OIDC_CLIENT_ID=${oidc_client_id}" \
+    "OIDC_CLIENT_SECRET=${oidc_client_secret}" || return 1
+
+  # Stage-Secrets (4 Keys je Stage).
+  local key secret suffix
+  for key in MAIN DEVELOP DE1 DE2 FV; do
+    case "${key}" in
+      MAIN)    secret="p2d2-main-secret";   suffix="MAIN" ;;
+      DEVELOP) secret="p2d2-dev-secret";    suffix="DEVELOP" ;;
+      DE1)     secret="p2d2-f-de1-secret";  suffix="DE1" ;;
+      DE2)     secret="p2d2-f-de2-secret";  suffix="DE2" ;;
+      FV)      secret="p2d2-f-fv-secret";   suffix="FV" ;;
+    esac
+    _addon_ensure_secret "${ns}" "${secret}" \
+      "DB_PASSWORD=$(_addon_get "P2D2_${key}_DB_PASSWORD")" \
+      "WFST_PASSWORD=$(_addon_get "P2D2_${key}_WFST_PASSWORD")" \
+      "WFST_PW_${suffix}=$(_addon_get "P2D2_${key}_WFST_PW")" \
+      "SESSION_SECRET=$(_addon_get "P2D2_${key}_SESSION_SECRET")" || return 1
+  done
+
+  log_ok "Basis- + Stage-Secrets aus .env.p2d2-addon befüllt (nur Erstanlage)"
+  return 0
+}
+
 # ── Ingress (idempotent, je Stage) ─────────────────────────────────────────────
 # Turn 45: de1-Pod läuft, aber es fehlte ein Ingress. Legt für eine Stage ein
 # Ingress nach der funktionierenden idmkeycloak-Vorlage an (Klasse nginx,
@@ -99,19 +179,15 @@ install_addon_frontend() {
   local overlay_dir
   overlay_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../overlay_addon_V1s/k8s" && pwd)"
 
-  # Basis-ConfigMap + Basis-Secret. WICHTIG: p2d2-base-secret enthält ALLE 5 Keys
-  # (ALTCHA_HMAC_KEY, SMTP_PASS, OIDC_ISSUER, OIDC_CLIENT_ID, OIDC_CLIENT_SECRET) und
-  # wird atomar (nie als Teilmenge) angelegt — Datenverlust vermeiden. Die CHANGEME-
-  # Platzhalter werden von Peter NACH der Erst-Anlage mit echten Werten befüllt.
-  if kubectl -n "${ns}" get secret p2d2-base-secret &>/dev/null; then
-    log_ok "p2d2-base-secret existiert bereits — wird NICHT überschrieben (echte Werte bleiben)"
-  else
-    kubectl apply -f "${overlay_dir}/base.yaml" \
-      || { log_error "kubectl apply base.yaml fehlgeschlagen"; return 1; }
-    log_ok "Basis-ConfigMap + Basis-Secret angelegt (p2d2-base-config, p2d2-base-secret, 5 Keys)"
-  fi
+  # 1) Secrets aus .env.p2d2-addon befüllen (Basis + 5 Stages, atomar, nur Erstanlage).
+  apply_addon_secrets || return 1
 
-  # Stage-Manifeste (ConfigMap + Secret + Deployment + Service je Stage, image-basiert).
+  # 2) Basis-ConfigMap (nicht-sensibel; Secret wird von apply_addon_secrets verwaltet).
+  kubectl apply -f "${overlay_dir}/base.yaml" \
+    || { log_error "kubectl apply base.yaml fehlgeschlagen"; return 1; }
+  log_ok "Basis-ConfigMap angewendet (p2d2-base-config)"
+
+  # 3) Stage-Manifeste (ConfigMap + Deployment + Service je Stage, image-basiert).
   local stage
   for stage in main dev de1 de2 fv; do
     local manifest="${overlay_dir}/stages/${stage}.yaml"
@@ -124,14 +200,13 @@ install_addon_frontend() {
     fi
   done
 
-  # Ingress je Stage (RBAC-Selbstprüfung + Peter-Handoff in ensure_addon_frontend_ingress).
+  # 4) Ingress je Stage (RBAC-Selbstprüfung + Peter-Handoff in ensure_addon_frontend_ingress).
   for stage in main dev de1 de2 fv; do
     ensure_addon_frontend_ingress "${stage}" \
       || log_warn "Ingress ${stage} nicht angelegt — bitte manuell (siehe Ausgabe oben)"
   done
 
-  # Image-Build ist ein Node-Schritt (Docker/k3s-ctr existieren nur auf dem k3s-Node,
-  # nicht auf sdt) — daher als Hinweis ausgeben statt automatisch ausführen.
+  # 5) Image-Build ist ein Node-Schritt (Docker/k3s-ctr existieren nur auf dem k3s-Node).
   echo ""
   log "  Image-Build pro Stage manuell auf dem k3s-Node ausführen:"
   echo "    set -a; source ../.env.p2d2-addon; set +a"
@@ -139,7 +214,7 @@ install_addon_frontend() {
   echo "    # Wrapper: build-main.sh / build-dev.sh / build-de1.sh / build-de2.sh / build-fv.sh"
   echo "    kubectl -n ${ns} rollout restart deployment/<deployment>"
   echo ""
-  log_ok "AddOn 30 Frontend: Manifeste + Ingress angewendet; Image-Build pro Stage manuell (Node)"
+  log_ok "AddOn 30 Frontend: Secrets + Manifeste + Ingress angewendet; Image-Build pro Stage manuell (Node)"
   return 0
 }
 

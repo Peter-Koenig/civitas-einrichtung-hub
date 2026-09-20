@@ -13,21 +13,7 @@ data:
   WFST_ENDPOINT_DEVELOP: https://geoportal.udp.data-dna.eu/geoserver/dev/ows
   WFST_USERNAME: p2d2_wfst_develop
   WFST_USER_DEVELOP: p2d2_wfst_develop
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: p2d2-dev-secret
-  namespace: cc-prd-geodata-stack
-type: Opaque
-stringData:
-  # K3: Cluster-DB-Rolle P2D2-DEVELOP (Rotation durch Peter)
-  DB_PASSWORD: CHANGEME
-  # K1: GeoServer-WFS-T-Secret p2d2-geoserver-wfst-develop
-  WFST_PASSWORD: CHANGEME
-  WFST_PW_DEVELOP: CHANGEME
-  # K2: zufällig generiert, bleibt
-  SESSION_SECRET: CHANGEME
+# Secret p2d2-dev-secret: wird von apply_addon_secrets() aus .env.p2d2-addon befüllt.
 ---
 apiVersion: apps/v1
 kind: Deployment

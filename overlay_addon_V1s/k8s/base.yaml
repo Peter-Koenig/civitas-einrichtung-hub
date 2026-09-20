@@ -33,18 +33,5 @@ data:
   SMTP_USER: p2d2-prod@scanea.de
   CONTACT_EMAIL_TO: peter.koenig@scanea.de
   CONTACT_EMAIL_FROM: p2d2-prod@scanea.de
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: p2d2-base-secret
-  namespace: cc-prd-geodata-stack
-type: Opaque
-stringData:
-  # K1: echte Werte aus Standalone-.env.base (Peter trägt sie nach)
-  ALTCHA_HMAC_KEY: CHANGEME
-  SMTP_PASS: CHANGEME
-  # K3/K4: ein gemeinsamer Keycloak-OIDC-Client für alle 5 Stages (Peter/Keycloak)
-  OIDC_ISSUER: CHANGEME
-  OIDC_CLIENT_ID: CHANGEME
-  OIDC_CLIENT_SECRET: CHANGEME
+# Das Secret p2d2-base-secret wird NICHT mehr hier verwaltet — apply_addon_secrets()
+# (modules_addon_V1s/addon_30_frontend.sh) befüllt es aus .env.p2d2-addon (P2D2_BASE_*).

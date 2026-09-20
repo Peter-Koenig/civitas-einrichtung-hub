@@ -13,21 +13,7 @@ data:
   WFST_ENDPOINT_FV: https://geoportal.udp.data-dna.eu/geoserver/fv/ows
   WFST_USERNAME: p2d2_wfst_fv
   WFST_USER_FV: p2d2_wfst_fv
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: p2d2-f-fv-secret
-  namespace: cc-prd-geodata-stack
-type: Opaque
-stringData:
-  # K3: Cluster-DB-Rolle P2D2-FV (Rotation durch Peter)
-  DB_PASSWORD: CHANGEME
-  # K1: GeoServer-WFS-T-Secret p2d2-geoserver-wfst-fv
-  WFST_PASSWORD: CHANGEME
-  WFST_PW_FV: CHANGEME
-  # K2: zufällig generiert, bleibt
-  SESSION_SECRET: CHANGEME
+# Secret p2d2-f-fv-secret: wird von apply_addon_secrets() aus .env.p2d2-addon befüllt.
 ---
 apiVersion: apps/v1
 kind: Deployment
