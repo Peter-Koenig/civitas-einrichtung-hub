@@ -140,11 +140,12 @@ else
   note_reste "GeoServer-Admin-Secret nicht lesbar — Workspaces manuell prüfen"
 fi
 
-# Physische Raster-Dateien im Pod
+# Physische Raster-Dateien im Pod (-A zeigt nur echte Inhalte; das Verzeichnis
+# geotiffs/ selbst bleibt laut Turn 73 stehen und ist kein Rest).
 gs_pod=$(kubectl -n "$NS" get pods -o jsonpath='{.items[*].metadata.name}' 2>/dev/null \
   | tr ' ' '\n' | grep '^geoserver-geoserver-' | head -1 || true)
 if [[ -n "$gs_pod" ]]; then
-  ls_out=$(kubectl -n "$NS" exec "$gs_pod" -- sh -c 'ls -la /opt/geoserver/data_dir/data/geotiffs 2>/dev/null' 2>/dev/null || true)
+  ls_out=$(kubectl -n "$NS" exec "$gs_pod" -- sh -c 'ls -A /opt/geoserver/data_dir/data/geotiffs 2>/dev/null' 2>/dev/null || true)
   if [[ -z "$ls_out" ]]; then
     log_ok "keine Raster-Dateien unter data/geotiffs/ im GeoServer-Pod"
   else

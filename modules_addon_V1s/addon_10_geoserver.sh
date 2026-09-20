@@ -131,6 +131,11 @@ install_addon_geoserver_mosaic() {
     log "    Stadt ${stadt}: Coveragestore ${coveragestore} / Coverage ${coverage}"
 
     # 9.1) Raster-Granules ins Pod-Data-Dir (kubectl cp, am Ingress vorbei — große TIFFs).
+    # kubectl cp nutzt intern tar und legt das Zielverzeichnis NICHT selbst an —
+    # deshalb vorher mkdir -p (Turn 73: sonst bricht ein frischer Install nach dem
+    # Uninstall ab, weil data/geotiffs/ entfernt wurde).
+    kubectl -n "$ns" exec "${geoserver_pod}" -- mkdir -p "${pod_target}" \
+      || { log_warn "mkdir ${pod_target} im Pod fehlgeschlagen — ${stadt} übersprungen"; continue; }
     log "      kubectl cp ${geotiff_dir}/${stadt}/. → ${geoserver_pod}:${pod_target}/"
     kubectl -n "$ns" cp "${geotiff_dir}/${stadt}/." "${geoserver_pod}:${pod_target}/" \
       || { log_warn "kubectl cp für ${stadt} fehlgeschlagen — übersprungen"; continue; }
@@ -199,12 +204,14 @@ uninstall_addon_geoserver() {
   # Turn 71 Fund 2: physische Raster-Dateien im GeoServer-Pod-PVC entfernen.
   # DELETE workspace entfernt nur den Katalogeintrag (Workspace/Coveragestore/Coverage),
   # nicht die per kubectl cp hineinkopierten GeoTIFFs unter data/geotiffs/.
+  # Turn 73: NUR den Inhalt unterhalb von geotiffs/ entfernen — das Verzeichnis
+  # geotiffs/ selbst gehört zum GeoServer und bleibt stehen (kein rm -rf auf den Ordner).
   local geoserver_pod
   geoserver_pod="$(kubectl -n "$ns" get pods -o jsonpath='{.items[*].metadata.name}' 2>/dev/null \
     | tr ' ' '\n' | grep '^geoserver-geoserver-' | head -1 || true)"
   if [[ -n "${geoserver_pod}" ]]; then
-    if kubectl -n "$ns" exec "${geoserver_pod}" -- sh -c 'rm -rf /opt/geoserver/data_dir/data/geotiffs' 2>/dev/null; then
-      log_ok "  Raster-Dateien unter data/geotiffs/ im GeoServer-Pod entfernt"
+    if kubectl -n "$ns" exec "${geoserver_pod}" -- sh -c 'rm -rf /opt/geoserver/data_dir/data/geotiffs/*' 2>/dev/null; then
+      log_ok "  Raster-Dateien unter data/geotiffs/ im GeoServer-Pod entfernt (Verzeichnis bleibt)"
     else
       log_warn "  Raster-Dateien im GeoServer-Pod konnten nicht entfernt werden (manuell prüfen)"
     fi

@@ -215,7 +215,8 @@ UID2=$(curl -sk -H "X-API-KEY: $AK" "https://api-admin.$DOMAIN/apisix/admin/upst
 - WFS-T-Secrets `p2d2-geoserver-wfs-user`, `p2d2-geoserver-wfst-{main,develop,de1,de2,fv}`
   (Turn 71 Fund 1; Namensmuster `p2d2-geoserver-*`).
 - Physische Raster-Dateien im GeoServer-Pod unter
-  `/opt/geoserver/data_dir/data/geotiffs/` (Turn 71 Fund 2).
+  `/opt/geoserver/data_dir/data/geotiffs/` (Turn 71 Fund 2). **Nur der Inhalt** wird
+  entfernt — das Verzeichnis `geotiffs/` selbst bleibt stehen (gehört zum GeoServer).
 
 ### 4.2 Prüfbefehl (Reste erkennen)
 
@@ -229,9 +230,9 @@ curl -sS -u "$ADMIN_USER:$ADMIN_PW" "https://geoportal.$DOMAIN/geoserver/rest/wo
 # WFS-T-Secrets (Turn 71 Fund 1):
 kubectl -n "$NS" get secret -o name | grep '^secret/p2d2-geoserver-'
 
-# Physische Raster-Dateien (Turn 71 Fund 2):
+# Physische Raster-Dateien (Turn 71 Fund 2; -A zeigt nur echte Inhalte, nicht ./.):
 GS_POD=$(kubectl -n "$NS" get pods -o name | grep 'geoserver-geoserver-' | head -1)
-[ -n "$GS_POD" ] && kubectl -n "$NS" exec "${GS_POD#pod/}" -- ls -la /opt/geoserver/data_dir/data/geotiffs/ 2>/dev/null
+[ -n "$GS_POD" ] && kubectl -n "$NS" exec "${GS_POD#pod/}" -- ls -A /opt/geoserver/data_dir/data/geotiffs/ 2>/dev/null
 ```
 
 ### 4.3 Manueller Löschbefehl (falls Reste gefunden)
@@ -246,9 +247,9 @@ done
 kubectl -n "$NS" get secrets -o name | sed 's|.*/||' | grep '^p2d2-geoserver-' \
   | xargs -r -I{} kubectl -n "$NS" delete secret {} --ignore-not-found
 
-# Physische Raster-Dateien (Turn 71 Fund 2):
+# Physische Raster-Dateien (Turn 71 Fund 2): nur Inhalt, Verzeichnis bleibt stehen.
 GS_POD=$(kubectl -n "$NS" get pods -o name | grep 'geoserver-geoserver-' | head -1)
-[ -n "$GS_POD" ] && kubectl -n "$NS" exec "${GS_POD#pod/}" -- sh -c 'rm -rf /opt/geoserver/data_dir/data/geotiffs'
+[ -n "$GS_POD" ] && kubectl -n "$NS" exec "${GS_POD#pod/}" -- sh -c 'rm -rf /opt/geoserver/data_dir/data/geotiffs/*'
 ```
 
 ### 4.4 Ausdrücklich NICHT anfassen
