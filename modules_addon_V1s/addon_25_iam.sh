@@ -384,6 +384,20 @@ ensure_p2d2_demo_accounts() {
       continue
     fi
 
+    # Profil idempotent sicherstellen (auch fuer bereits existierende Accounts, damit
+    # frueher angelegte mit emailVerified=false auf den korrekten Zustand konvergieren).
+    local profile_payload profile_code
+    profile_payload=$(jq -nc --arg fn "${first_name}" --arg ln "${last_name}" \
+      '{emailVerified:true,requiredActions:[],firstName:$fn,lastName:$ln}')
+    profile_code=$(curl -sk --max-time 15 -o /dev/null -w "%{http_code}" \
+      -X PUT "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users/${user_id}" \
+      -H "Authorization: Bearer ${token}" \
+      -H "Content-Type: application/json" \
+      -d "${profile_payload}" 2>/dev/null || true)
+    if [[ "${profile_code}" != "204" && "${profile_code}" != "200" ]]; then
+      log_warn "Profil (${username}) aktualisieren fehlgeschlagen (HTTP ${profile_code})"
+    fi
+
     # Passwort setzen (nicht temporaer). JSON via jq, damit Sonderzeichen im Passwort
     # korrekt escaped werden (nicht roh in -d interpolieren).
     local pw_payload pw_resp pw_code pw_body
@@ -396,7 +410,11 @@ ensure_p2d2_demo_accounts() {
     pw_code=$(printf '%s' "${pw_resp}" | tail -1)
     pw_body=$(printf '%s' "${pw_resp}" | sed '$d')
     if [[ "${pw_code}" != "204" && "${pw_code}" != "200" ]]; then
-      log_warn "Passwort setzen (${username}) fehlgeschlagen (HTTP ${pw_code} — $(_iam_http_hint "${pw_code}")): ${pw_body}"
+      if [[ "${pw_body}" == *invalidPasswordHistoryMessage* ]]; then
+        log_ok "Passwort (${username}) unveraendert (bereits gesetzt, Passwort-Historie)"
+      else
+        log_warn "Passwort setzen (${username}) fehlgeschlagen (HTTP ${pw_code} — $(_iam_http_hint "${pw_code}")): ${pw_body}"
+      fi
     fi
 
     # Client-Rollen zuweisen (idempotent).
