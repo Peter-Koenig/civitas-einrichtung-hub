@@ -28,7 +28,12 @@ ENV PUBLIC_SITE_URL=${PUBLIC_SITE_URL} \
 WORKDIR /app
 
 # Abhängigkeiten zuerst (Layer-Cache für npm ci).
+# p2d2 ist ein npm-Workspaces-Monorepo: vor `npm ci` auch die package.json des
+# Workspace-Pakets bereitstellen, sonst scheitert die `workspace:*`-Auflösung
+# (EUNSUPPORTEDPROTOCOL). Das Root-package.json deklariert genau ein Workspace:
+# `workspaces: ["packages/core"]`.
 COPY package*.json ./
+COPY packages/core/package.json ./packages/core/
 RUN npm ci
 
 # Quellen kopieren und die Stage bauen.
