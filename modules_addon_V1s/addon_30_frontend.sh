@@ -95,10 +95,14 @@ apply_addon_secrets() {
       DE2)     secret="p2d2-f-de2-secret";  suffix="DE2" ;;
       FV)      secret="p2d2-f-fv-secret";   suffix="FV" ;;
     esac
+    # WFST_PASSWORD (plain) und WFST_PW_<KEY> (suffigiert) sind derselbe Wert
+    # (GeoServer-WFS-T-Passwort) — einmal aus .env lesen, nicht doppelt pflegen.
+    local wfst_password
+    wfst_password="$(_addon_get "P2D2_${key}_WFST_PASSWORD")"
     _addon_ensure_secret "${ns}" "${secret}" \
       "DB_PASSWORD=$(_addon_get "P2D2_${key}_DB_PASSWORD")" \
-      "WFST_PASSWORD=$(_addon_get "P2D2_${key}_WFST_PASSWORD")" \
-      "WFST_PW_${suffix}=$(_addon_get "P2D2_${key}_WFST_PW")" \
+      "WFST_PASSWORD=${wfst_password}" \
+      "WFST_PW_${suffix}=${wfst_password}" \
       "SESSION_SECRET=$(_addon_get "P2D2_${key}_SESSION_SECRET")" || return 1
   done
 
