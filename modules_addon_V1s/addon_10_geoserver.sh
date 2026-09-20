@@ -163,10 +163,11 @@ install_addon_geoserver_mosaic() {
   log_ok "  Mosaic 'friedhofsplaene' angelegt (${#cities[@]} Stadt/Städte)"
 }
 
-# uninstall_addon_geoserver — Rückbau (Workspaces löschen, recurse=true).
-# Schützt den Admin: nur die p2d2-Workspaces werden entfernt, nie Admin-User/-Rollen.
+# uninstall_addon_geoserver — Rückbau (Workspaces + WFS-Secrets + Raster-Dateien).
+# Schützt den Admin: nur die p2d2-Workspaces/-Secrets/-Dateien werden entfernt,
+# nie Admin-User/-Rollen oder die geteilte GeoServer-Instanz.
 uninstall_addon_geoserver() {
-  log "=== Uninstall AddOn 10: GeoServer (Workspaces entfernen) ==="
+  log "=== Uninstall AddOn 10: GeoServer (Workspaces + Secrets + Raster) ==="
 
   local ns="${ADDON_NS}"
   local domain="${ADDON_DOMAIN}"
@@ -177,16 +178,41 @@ uninstall_addon_geoserver() {
 
   # DELETE /rest/workspaces/<ws>?recurse=true entfernt Workspace + Datastores + FeatureTypes.
   # Liste spiegelbildlich zur Install-Seite: fv de2 de1 dev main (Vektor) + friedhofsplaene
-  # (GeoTIFF-Mosaic). Install und Uninstall sind jetzt symmetrisch: Abschnitt 9
+  # (GeoTIFF-Mosaic). Install und Uninstall sind symmetrisch: Abschnitt 9
   # (install_addon_geoserver_mosaic) legt die Mosaic aus dem Supplement-Ordner an,
   # hier wird sie wieder entfernt.
-  # TODO: p2d2-Nutzer/Rollen/ACL/Secrets (die die Install-Seite als TODO markiert) später ergänzen.
+  # TODO: p2d2-Nutzer/Rollen/ACL (die die Install-Seite als TODO markiert) später ergänzen.
   local ws
   for ws in friedhofsplaene fv de2 de1 dev main; do
     log "  Workspace ${ws} entfernen"
     curl -sS -u "${admin_user}:${admin_pw}" -X DELETE \
       "${rest}/workspaces/${ws}?recurse=true" || log_warn "    Workspace ${ws} evtl. schon entfernt"
   done
+
+  # Turn 71 Fund 2: physische Raster-Dateien im GeoServer-Pod-PVC entfernen.
+  # DELETE workspace entfernt nur den Katalogeintrag (Workspace/Coveragestore/Coverage),
+  # nicht die per kubectl cp hineinkopierten GeoTIFFs unter data/geotiffs/.
+  local geoserver_pod
+  geoserver_pod="$(kubectl -n "$ns" get pods -o jsonpath='{.items[*].metadata.name}' 2>/dev/null \
+    | tr ' ' '\n' | grep '^geoserver-geoserver-' | head -1 || true)"
+  if [[ -n "${geoserver_pod}" ]]; then
+    if kubectl -n "$ns" exec "${geoserver_pod}" -- sh -c 'rm -rf /opt/geoserver/data_dir/data/geotiffs' 2>/dev/null; then
+      log_ok "  Raster-Dateien unter data/geotiffs/ im GeoServer-Pod entfernt"
+    else
+      log_warn "  Raster-Dateien im GeoServer-Pod konnten nicht entfernt werden (manuell prüfen)"
+    fi
+  else
+    log_warn "  GeoServer-Pod nicht gefunden — Raster-Dateien im Pod manuell prüfen"
+  fi
+
+  # Turn 71 Fund 1: GeoServer-WFS-T-Secrets aus der früheren manuellen Einrichtung
+  # (p2d2-geoserver-wfs-user, p2d2-geoserver-wfst-<stage>). Alle p2d2-geoserver-*
+  # Secrets entfernen — das Kern-Secret heißt geoserver-geoserver (ohne p2d2-Präfix).
+  local gs_secret
+  while read -r gs_secret; do
+    [[ -n "${gs_secret}" ]] && kubectl -n "$ns" delete secret "${gs_secret}" --ignore-not-found || true
+  done < <(kubectl -n "$ns" get secrets -o jsonpath='{.items[*].metadata.name}' 2>/dev/null \
+    | tr ' ' '\n' | grep '^p2d2-geoserver-' || true)
 
   log_ok "Uninstall AddOn 10 GeoServer abgeschlossen"
 }
