@@ -127,7 +127,11 @@ ensure_p2d2_oidc_client() {
       --arg fv "https://f-fv.${ADDON_DOMAIN}/api/auth/callback" \
       --arg devlocal "${ADDON_IAM_DEV_ORIGIN}/api/auth/callback" \
       '[$main,$dev,$de1,$de2,$fv,$devlocal]')
-    post_logout="https://www.${ADDON_DOMAIN}/ https://dev.${ADDON_DOMAIN}/ https://f-de1.${ADDON_DOMAIN}/ https://f-de2.${ADDON_DOMAIN}/ https://f-fv.${ADDON_DOMAIN}/"
+    # Mehrere Werte in post.logout.redirect.uris werden mit '##' getrennt (Turn 75),
+    # NICHT mit Leerzeichen — sonst validiert Keycloak den ganzen String als EINE
+    # URI und liefert HTTP 400 ("A post-logout redirect URI is not a valid URI").
+    # Analog zu redirectUris/webOrigins ist auch die lokale Dev-Origin enthalten.
+    post_logout="https://www.${ADDON_DOMAIN}/##https://dev.${ADDON_DOMAIN}/##https://f-de1.${ADDON_DOMAIN}/##https://f-de2.${ADDON_DOMAIN}/##https://f-fv.${ADDON_DOMAIN}/##${ADDON_IAM_DEV_ORIGIN}/"
     web_origins=$(jq -nc \
       --arg main "https://www.${ADDON_DOMAIN}" \
       --arg dev "https://dev.${ADDON_DOMAIN}" \
