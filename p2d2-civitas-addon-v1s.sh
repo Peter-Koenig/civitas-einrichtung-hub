@@ -36,13 +36,41 @@
 
 set -euo pipefail
 
+# ── Argumente früh abfangen (Turn 70): --help/-h und unbekannte Argumente ──────
+# Gültig sind nur: (leer) = Install, --uninstall = Rückbau. Alles andere darf
+# keinen Install-Lauf auslösen (bisher fiel z. B. --help in den Install-Zweig).
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  cat <<'USAGE'
+p2d2-AddOn für CIVITAS/CORE V1s — Installation & Rückbau
+
+Aufruf:
+  ./p2d2-civitas-addon-v1s.sh              # Installation
+  ./p2d2-civitas-addon-v1s.sh --uninstall  # Rückbau
+  ./p2d2-civitas-addon-v1s.sh --help       # diese Hilfe
+
+Kontext (Env ADDON_CONTEXT):
+  host (Default)  Selbstkopie auf die Ziel-VM + automatischer Lauf dort
+  vm              Install-/Uninstall-Phasen direkt in der VM ausführen
+USAGE
+  exit 0
+fi
+if [[ -n "${1:-}" && "${1:-}" != "--uninstall" ]]; then
+  echo "FEHLER: unbekanntes Argument '${1}'. Gültig: --uninstall, --help/-h." >&2
+  echo "Aufruf: $0 [--uninstall|--help]" >&2
+  exit 1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ── Config (rudimentär; später aus inventory/01_config.sh) ─────────────────────
 export ADDON_NS="${ADDON_NS:-cc-prd-geodata-stack}"
 export ADDON_DB_NS="${ADDON_DB_NS:-cc-prd-database-stack}"
 export ADDON_DOMAIN="${ADDON_DOMAIN:-udp.data-dna.eu}"
-export KUBECONFIG="${KUBECONFIG:-${HOME}/.kube/p2d2-addon-installer.kubeconfig}"
+# KUBECONFIG: Standard-Datei jeder CIVITAS/CORE-VM (volle Cluster-Rechte). Der
+# eingeschränkte SA-Kubeconfig der geteilten sdt-Testumgebung
+# (~/.kube/p2d2-addon-installer.kubeconfig) wird NICHT mehr als Default erzwungen,
+# sondern bleibt über `KUBECONFIG=… ./p2d2-civitas-addon-v1s.sh` ansteuerbar (Turn 70).
+export KUBECONFIG="${KUBECONFIG:-${HOME}/.kube/config}"
 
 # ── Host→VM-Selbstkopie (analog install_civitas_core_V1s.sh) ──────────────────
 export ADDON_CONTEXT="${ADDON_CONTEXT:-host}"
