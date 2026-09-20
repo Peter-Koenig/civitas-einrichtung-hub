@@ -176,6 +176,33 @@ EOF
   log_ok "Ingress ${svc} angelegt (${host} -> ${svc}:80; TLS-Secret ${secret} via cert-manager)"
 }
 
+# install_addon_frontend_build — baut die Runtime-Images aller 5 Stages auf dem
+# k3s-Node (Docker + k3s ctr import) über build-stage.sh. Eigener, im VM-Kontext
+# automatisch aufgerufener Teilschritt (Turn 63/65) — läuft VOR install_addon_frontend,
+# damit die image-basierten Deployments die Images lokal vorfinden (IfNotPresent).
+# Token kommen aus der bereits geladenen .env.p2d2-addon (P2D2_GITHUB_TOKEN/P2D2_GITLAB_TOKEN).
+install_addon_frontend_build() {
+  log "=== AddOn 30: Frontend-Image-Build (5 Stages, k3s-Node) ==="
+
+  local overlay_dir
+  overlay_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../overlay_addon_V1s/k8s" && pwd)"
+  local build_script="${overlay_dir}/frontend/build-stage.sh"
+  if [[ ! -x "${build_script}" ]]; then
+    log_error "build-stage.sh nicht gefunden/ausführbar: ${build_script}"
+    return 1
+  fi
+
+  local stage
+  for stage in main dev de1 de2 fv; do
+    log "  Image-Build ${stage} (${build_script} ${stage}) …"
+    "${build_script}" "${stage}" \
+      || { log_error "Image-Build ${stage} fehlgeschlagen — Abbruch"; return 1; }
+  done
+
+  log_ok "Frontend-Images für alle 5 Stages gebaut + in k3s importiert"
+  return 0
+}
+
 install_addon_frontend() {
   log "=== AddOn 30: Frontend (5 Stages, image-basiert) ==="
 
@@ -210,29 +237,72 @@ install_addon_frontend() {
       || log_warn "Ingress ${stage} nicht angelegt — bitte manuell (siehe Ausgabe oben)"
   done
 
-  # 5) Image-Build ist ein Node-Schritt (Docker/k3s-ctr existieren nur auf dem k3s-Node).
-  echo ""
-  log "  Image-Build pro Stage manuell auf dem k3s-Node ausführen:"
-  echo "    set -a; source ../.env.p2d2-addon; set +a"
-  echo "    ./overlay_addon_V1s/k8s/frontend/build-stage.sh <stage>   # main|dev|de1|de2|fv"
-  echo "    # Wrapper: build-main.sh / build-dev.sh / build-de1.sh / build-de2.sh / build-fv.sh"
-  echo "    kubectl -n ${ns} rollout restart deployment/<deployment>"
-  echo ""
-  log_ok "AddOn 30 Frontend: Secrets + Manifeste + Ingress angewendet; Image-Build pro Stage manuell (Node)"
+  # 5) Image-Build ist bereits als vorgelagerter Teilschritt gelaufen
+  #     (install_addon_frontend_build, vom Hauptskript vor diesem Modul aufgerufen).
+  #     Für manuelle Einzel-Builds auf dem k3s-Node:
+  #       ./overlay_addon_V1s/k8s/frontend/build-stage.sh <stage>   # main|dev|de1|de2|fv
+  log "  Image-Build: bereits durch install_addon_frontend_build erfolgt (vorgelagerter Schritt)"
+  log_ok "AddOn 30 Frontend: Secrets + Manifeste + Ingress angewendet"
   return 0
 }
 
-# uninstall_addon_frontend_DANGER — NICHT in den Standard-Uninstall eingebunden!
-# Grund: addon_30_frontend.sh (install) ist nur ein Platzhalter und würde die hier
-# gelöschten Ressourcen NICHT wiederherstellen. Nur explizit und einzeln aufrufen:
-#   source modules_addon_V1s/addon_30_frontend.sh && uninstall_addon_frontend_DANGER
-uninstall_addon_frontend_DANGER() {
-  log_error "WARNUNG: Frontend-Uninstall entfernt Ressourcen, die der Install-Platzhalter NICHT wiederherstellt!"
-  log_error "  Nur bewusst und einzeln aufrufen — niemals im normalen Uninstall-Durchlauf."
-  local ns="${ADDON_NS}"
+# uninstall_addon_frontend — regulärer Uninstall (Turn 65): entfernt alle vom AddOn
+# angelegten Frontend-Ressourcen rückstandsfrei, spiegelbildlich zu install_addon_frontend.
+# Löst den früheren DANGER-Sonderfall ab (der Install-Platzhalter ist seit Turn 45-62
+# produktiv und kann die Ressourcen wiederherstellen).
+#
+# Gelöscht wird je Stage: Deployment, Service, ConfigMap, Secret, Ingress, TLS-Secret
+# (<host>-tls via cert-manager) sowie Alt-PVCs aus der PVC-basierten Vorversion.
+# Basis: p2d2-base-config + p2d2-base-secret. Webhook-Controller (Deployment/Service/
+# SA/Role/RoleBinding) + Builder-Jobs. Shared-Infra-Secrets p2d2-builder-git-auth +
+# p2d2-webhook-secrets (Turn 65: NICHT erhalten — ohne AddOn reines Legacy).
+uninstall_addon_frontend() {
+  log "=== Uninstall AddOn 30: Frontend (5 Stages, Ingress, Shared-Infra) ==="
 
-  # TODO: p2d2-base-config/-secret, 5 Stage-ConfigMaps/Secrets, Webhook-Controller
-  #       (Deployment/Service/RBAC), 5 Stage-Deployments/Services/PVCs (bzw. de1-Image-Deployment).
-  log "  Frontend-Ressourcen löschen: TODO — bewusst NICHT automatisiert"
-  return 0
+  local ns="${ADDON_NS}"
+  local stage svc host cm secret
+  for stage in main dev de1 de2 fv; do
+    case "${stage}" in
+      main) svc="p2d2-main";    cm="p2d2-main-config";    secret="p2d2-main-secret";    host="www.${ADDON_DOMAIN}" ;;
+      dev)  svc="p2d2-dev";     cm="p2d2-dev-config";     secret="p2d2-dev-secret";     host="dev.${ADDON_DOMAIN}" ;;
+      de1)  svc="p2d2-f-de1";   cm="p2d2-f-de1-config";   secret="p2d2-f-de1-secret";   host="f-de1.${ADDON_DOMAIN}" ;;
+      de2)  svc="p2d2-f-de2";   cm="p2d2-f-de2-config";   secret="p2d2-f-de2-secret";   host="f-de2.${ADDON_DOMAIN}" ;;
+      fv)   svc="p2d2-f-fv";    cm="p2d2-f-fv-config";    secret="p2d2-f-fv-secret";    host="f-fv.${ADDON_DOMAIN}" ;;
+    esac
+
+    log "  Stage ${stage}: Deployment/Service/ConfigMap/Secret/Ingress/TLS/PVC entfernen"
+    kubectl -n "${ns}" delete deployment "${svc}" --ignore-not-found || true
+    kubectl -n "${ns}" delete service    "${svc}" --ignore-not-found || true
+    kubectl -n "${ns}" delete configmap  "${cm}" --ignore-not-found || true
+    kubectl -n "${ns}" delete secret     "${secret}" --ignore-not-found || true
+    kubectl -n "${ns}" delete ingress    "${svc}" --ignore-not-found || true
+    kubectl -n "${ns}" delete secret     "${host}-tls" --ignore-not-found || true
+    # Alt-PVC aus der PVC-basierten Vorversion (image-basiert heute ohne PVC).
+    kubectl -n "${ns}" delete pvc        "${svc}-code" --ignore-not-found || true
+  done
+
+  # Basis-ConfigMap/-Secret
+  kubectl -n "${ns}" delete configmap p2d2-base-config --ignore-not-found || true
+  kubectl -n "${ns}" delete secret p2d2-base-secret --ignore-not-found || true
+
+  # Webhook-Controller (Deployment/Service/ServiceAccount/Role/RoleBinding)
+  kubectl -n "${ns}" delete deployment p2d2-webhook-controller --ignore-not-found || true
+  kubectl -n "${ns}" delete service p2d2-webhook-controller --ignore-not-found || true
+  kubectl -n "${ns}" delete serviceaccount p2d2-webhook-controller --ignore-not-found || true
+  kubectl -n "${ns}" delete role p2d2-webhook-controller-role --ignore-not-found || true
+  kubectl -n "${ns}" delete rolebinding p2d2-webhook-controller-binding --ignore-not-found || true
+
+  # Builder-Jobs (Referenz-Job p2d2-builder-* + dynamische p2d2-<stage>-builder-* des
+  # Webhook-Controllers). Nur p2d2-Builder-Jobs anfassen, nie fremde Jobs.
+  local job
+  while read -r job; do
+    [[ -n "${job}" ]] && kubectl -n "${ns}" delete job "${job}" --ignore-not-found || true
+  done < <(kubectl -n "${ns}" get jobs -o jsonpath='{.items[*].metadata.name}' 2>/dev/null \
+    | tr ' ' '\n' | grep -E '^p2d2-.*builder' || true)
+
+  # Shared-Infra-Secrets (Turn 65: löschen, nicht erhalten)
+  kubectl -n "${ns}" delete secret p2d2-builder-git-auth --ignore-not-found || true
+  kubectl -n "${ns}" delete secret p2d2-webhook-secrets --ignore-not-found || true
+
+  log_ok "Uninstall AddOn 30 Frontend abgeschlossen"
 }

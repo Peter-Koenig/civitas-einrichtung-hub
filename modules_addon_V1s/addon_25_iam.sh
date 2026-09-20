@@ -456,3 +456,77 @@ install_addon_iam() {
   ensure_p2d2_demo_accounts
   log_ok "AddOn 25 IAM abgeschlossen"
 }
+
+# uninstall_addon_iam — Rückbau (Turn 65): entfernt die vom AddOn angelegten
+# Keycloak-Realm-Objekte. Umgekehrte Reihenfolge zur Install-Seite:
+#   Demo-User (Rollen-Grants hängen an den Usern) → OSM-IdP-Broker (inkl. IdP-Mapper)
+#   → OIDC-Client p2d2 (entfernt Client-Rollen + Token-Mapper mit).
+# Es existieren KEINE Realm-Groups (das AddOn legt keine an) — nichts zu entfernen.
+uninstall_addon_iam() {
+  log "=== Uninstall AddOn 25: IAM/Keycloak-Rückbau ==="
+  local token client_uid http_code
+  token=$(_iam_get_token) || return 1
+
+  # 1) Demo-Accounts (6) — Lookup per E-Mail (Realm erzwingt E-Mail-als-Username).
+  local entry username email email_enc user_id
+  for entry in "${ADDON_IAM_DEMO_USERS[@]}"; do
+    IFS='|' read -r username email _ _ _ <<< "${entry}"
+    email_enc=$(jq -rn --arg e "${email}" '$e|@uri')
+    user_id=$(curl -sk --max-time 15 \
+      "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users?email=${email_enc}&exact=true" \
+      -H "Authorization: Bearer ${token}" 2>/dev/null | jq -r '.[0].id // empty')
+    if [[ -z "${user_id}" ]]; then
+      log_ok "Demo-User ${email} nicht vorhanden — übersprungen"
+      continue
+    fi
+    http_code=$(curl -sk --max-time 15 -o /dev/null -w "%{http_code}" -X DELETE \
+      "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users/${user_id}" \
+      -H "Authorization: Bearer ${token}" 2>/dev/null || true)
+    if [[ "${http_code}" == "204" || "${http_code}" == "200" ]]; then
+      log_ok "Demo-User ${email} gelöscht"
+    else
+      log_warn "Demo-User ${email} löschen fehlgeschlagen (HTTP ${http_code} — $(_iam_http_hint "${http_code}"))"
+    fi
+  done
+
+  # 2) OSM-IdP-Broker osm (entfernt zugehörige IdP-Mapper mit).
+  http_code=$(curl -sk --max-time 15 -o /dev/null -w "%{http_code}" \
+    "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/identity-provider/instances/osm" \
+    -H "Authorization: Bearer ${token}" 2>/dev/null || true)
+  if [[ "${http_code}" == "200" ]]; then
+    http_code=$(curl -sk --max-time 15 -o /dev/null -w "%{http_code}" -X DELETE \
+      "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/identity-provider/instances/osm" \
+      -H "Authorization: Bearer ${token}" 2>/dev/null || true)
+    if [[ "${http_code}" == "204" || "${http_code}" == "200" ]]; then
+      log_ok "OSM-IdP-Broker osm gelöscht"
+    else
+      log_warn "OSM-IdP-Broker osm löschen fehlgeschlagen (HTTP ${http_code})"
+    fi
+  else
+    log_ok "OSM-IdP-Broker osm nicht vorhanden — übersprungen"
+  fi
+
+  # 3) OIDC-Client p2d2 (entfernt Client-Rollen + Token-Mapper mit).
+  client_uid=$(_iam_get_client_uid "${token}")
+  if [[ -n "${client_uid}" ]]; then
+    http_code=$(curl -sk --max-time 15 -o /dev/null -w "%{http_code}" -X DELETE \
+      "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/clients/${client_uid}" \
+      -H "Authorization: Bearer ${token}" 2>/dev/null || true)
+    if [[ "${http_code}" == "204" || "${http_code}" == "200" ]]; then
+      log_ok "OIDC-Client ${ADDON_IAM_CLIENT_ID} gelöscht"
+    else
+      log_warn "OIDC-Client ${ADDON_IAM_CLIENT_ID} löschen fehlgeschlagen (HTTP ${http_code})"
+    fi
+  else
+    log_ok "OIDC-Client ${ADDON_IAM_CLIENT_ID} nicht vorhanden — übersprungen"
+  fi
+
+  # 4) Generierte Credentials-Datei (Client-Secret) entfernen — wird beim Reinstall neu erzeugt.
+  if [[ -f "${ADDON_IAM_CREDENTIALS_FILE}" ]]; then
+    rm -f "${ADDON_IAM_CREDENTIALS_FILE}" \
+      && log_ok "Credentials-Datei ${ADDON_IAM_CREDENTIALS_FILE} entfernt" \
+      || log_warn "Credentials-Datei ${ADDON_IAM_CREDENTIALS_FILE} konnte nicht entfernt werden"
+  fi
+
+  log_ok "Uninstall AddOn 25 IAM abgeschlossen"
+}

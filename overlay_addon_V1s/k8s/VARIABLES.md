@@ -96,7 +96,7 @@ Werte**, sondern nur Name, Ablage, Kategorie, Quelle/Herkunft und Status.
 > `dev`→`p2d2-geoserver-wfst-develop`, `de1`→`p2d2-geoserver-wfst-de1`,
 > `de2`→`p2d2-geoserver-wfst-de2`, `fv`→`p2d2-geoserver-wfst-fv`.
 
-## 6. Shared Infra-Secrets (extern verwaltet, NICHT über Manifeste überschreiben)
+## 6. Git-/Webhook-Secrets (nicht über Manifeste, werden beim Uninstall entfernt)
 
 | Secret | Key | Kategorie | Quelle / Herkunft | Status |
 |---|---|---|---|---|
@@ -107,8 +107,9 @@ Werte**, sondern nur Name, Ablage, Kategorie, Quelle/Herkunft und Status.
 
 > Diese beiden Secrets halten echte Werte und sind deshalb **bewusst aus den
 > Manifesten entfernt** worden (`builder-job.yaml` und `webhook-controller/deployment.yaml`
-> referenzieren sie nur noch). Beim „Löschen + Neuaufbau“ dürfen sie **nicht**
-> gelöscht werden.
+> referenzieren sie nur noch). Sie sind **AddOn-scoped** (nur für Git-/Webhook-Zugriff
+> des AddOns) und werden daher von `uninstall_addon_frontend()` beim Rückbau
+> **mit gelöscht** (Turn 65) — ohne AddOn sind sie reines Legacy.
 
 ---
 

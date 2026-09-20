@@ -4,19 +4,22 @@
 #
 # p2d2-civitas-addon-v1s.sh — p2d2-AddOn für CIVITAS/CORE V1s
 #
-# Rudimentäres Skript (Schritt 1+2 von 2 abgeschlossen). Installiert die
-# FERTIGEN Bausteine (PostgreSQL, GeoServer, MapProxy) plus IAM/Keycloak-
-# Provisionierung (addon_25) in der manuell verifizierten Reihenfolge und baut
-# sie per --uninstall spiegelbildlich wieder ab (IAM bewusst AUSGENOMMEN, da
-# geteilte Infrastruktur); Frontend ist ein klar markierter Platzhalter (Baustein
-# noch nicht fertig, siehe addon_30_frontend.sh).
+# Installiert die Bausteine (PostgreSQL, GeoServer, MapProxy, IAM/Keycloak,
+# Frontend) in der verifizierten Reihenfolge und baut sie per --uninstall
+# spiegelbildlich (frontend -> iam -> mapproxy -> geoserver -> postgresql) wieder
+# ab — rückstandsfrei (Turn 63/65).
+#
+# Vollautonom (Turn 65): ausgehend von diesem Skriptverzeichnis + .env.p2d2-addon
+# (einzige Quelle für mandantenabhängige Werte) läuft ein einziger Aufruf durch —
+# inkl. Image-Builds (install_addon_frontend_build) und Host->VM-Selbstkopie.
 #
 # V1s-Kopplung: dieses AddOn setzt auf CIVITAS/CORE V1s auf (nicht V1, nicht V2).
 #
 # Ausführungskontext (analog install_civitas_core_V1s.sh):
 #   ADDON_CONTEXT=host (Default): auf dem Proxmox-Host/der Workstation das Skript
-#     selbst, modules_addon_V1s/, overlay_addon_V1s/ und die .env-Datei per scp
-#     auf die Ziel-VM kopieren und dann ANHALTEN (kein Auto-Run der Phasen).
+#     selbst, modules_addon_V1s/, overlay_addon_V1s/, supplement/ und die .env-Datei
+#     per scp auf die Ziel-VM kopieren und danach automatisch per SSH die Phasen
+#     in der VM anstoßen (vollautonomer Lauf, kein manueller Zwischenschritt).
 #   ADDON_CONTEXT=vm: in der VM die Install-/Uninstall-Phasen ausführen.
 #
 # TODO (später, NICHT jetzt): Stage-Scope-Parameter `--stage=main|all`. Die Module
@@ -24,10 +27,10 @@
 # später ohne Grundumbau nachrüsten.
 #
 # Aufruf:
-#   # Host (Selbstkopie + Stopp mit Anleitung):
-#   set -a; source ../.env.p2d2-addon; set +a
-#   ./p2d2-civitas-addon-v1s.sh
-#   # VM (Phasen ausführen):
+#   # Host (Selbstkopie + vollautonomer Lauf in der VM):
+#   ./p2d2-civitas-addon-v1s.sh             # Installation
+#   ./p2d2-civitas-addon-v1s.sh --uninstall # Rückbau
+#   # VM (Phasen direkt ausführen):
 #   ADDON_CONTEXT=vm ./p2d2-civitas-addon-v1s.sh              # Installation
 #   ADDON_CONTEXT=vm ./p2d2-civitas-addon-v1s.sh --uninstall  # Rückbau
 
@@ -45,8 +48,13 @@ export KUBECONFIG="${KUBECONFIG:-${HOME}/.kube/p2d2-addon-installer.kubeconfig}"
 export ADDON_CONTEXT="${ADDON_CONTEXT:-host}"
 export VM_IP_STATIC="${VM_IP_STATIC:-192.168.12.139}"
 export VM_REMOTE_INSTALL_DIR="${VM_REMOTE_INSTALL_DIR:-/root/p2d2-addon}"
-# .env liegt laut Konvention im Elternverzeichnis (source ../.env.p2d2-addon).
+# .env liegt laut Konvention im Elternverzeichnis (wird im VM-Kontext gesourct).
 export ADDON_ENV_FILE="${ADDON_ENV_FILE:-${SCRIPT_DIR}/../.env.p2d2-addon}"
+# Supplement-Ordner (GeoTIFF-Mosaic, Git-ignored) + APISIX-/Masterportal-Referenzen.
+export ADDON_SUPPLEMENT_DIR="${ADDON_SUPPLEMENT_DIR:-${SCRIPT_DIR}/supplement}"
+export ADDON_GEOTIFF_DIR="${ADDON_GEOTIFF_DIR:-${ADDON_SUPPLEMENT_DIR}/geotiffs/koeln}"
+export ADDON_APISIX_CREDENTIALS_FILE="${ADDON_APISIX_CREDENTIALS_FILE:-/root/civitas-install/credentials.env}"
+export ADDON_MASTERPORTAL_SERVICE="${ADDON_MASTERPORTAL_SERVICE:-masterportal}"
 
 # ── Log-Helfer (minimal, self-contained; analog modules_V1s/02_lib.sh) ────────
 log()       { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
@@ -61,8 +69,70 @@ source "${SCRIPT_DIR}/modules_addon_V1s/addon_20_mapproxy.sh"
 source "${SCRIPT_DIR}/modules_addon_V1s/addon_25_iam.sh"
 source "${SCRIPT_DIR}/modules_addon_V1s/addon_30_frontend.sh"
 
-# ── Funktion: Selbstkopie auf die Ziel-VM (mit Stopp-Punkt, KEIN Auto-Run) ─────
+# ── Fail-Fast-Vorprüfungen (Turn 63/65) ────────────────────────────────────────
+# _preflight_env — prüft, dass .env.p2d2-addon alle Pflichtvariablen liefert.
+# OIDC_CLIENT_ID/-SECRET sind bewusst NICHT Pflicht (werden von IAM erzeugt).
+_preflight_env() {
+  local missing=() v key
+  for v in \
+    P2D2_BASE_ALTCHA_HMAC_KEY \
+    P2D2_BASE_SMTP_PASS \
+    P2D2_BASE_OIDC_ISSUER \
+    P2D2_DEMO_PASSWORD \
+    P2D2_OSM_IDP_CLIENT_ID \
+    P2D2_OSM_IDP_CLIENT_SECRET \
+    P2D2_GITHUB_TOKEN \
+    P2D2_GITLAB_TOKEN; do
+    [[ -n "${!v:-}" ]] || missing+=("$v")
+  done
+  for key in MAIN DEVELOP DE1 DE2 FV; do
+    for v in "P2D2_${key}_DB_PASSWORD" "P2D2_${key}_WFST_PASSWORD" "P2D2_${key}_SESSION_SECRET"; do
+      [[ -n "${!v:-}" ]] || missing+=("$v")
+    done
+  done
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    log_error ".env.p2d2-addon unvollständig — fehlende Pflichtvariablen:"
+    printf '  - %s\n' "${missing[@]}" >&2
+    return 1
+  fi
+  log_ok ".env.p2d2-addon vollständig (Pflichtvariablen gesetzt)"
+  return 0
+}
+
+# _preflight_masterportal — Masterportal-Service (statisch, Teil von CIVITAS/CORE)
+# muss vorhanden sein. Lose Namenssuche (Muster via ADDON_MASTERPORTAL_SERVICE).
+_preflight_masterportal() {
+  local svc
+  svc="$(kubectl -n "${ADDON_NS}" get services -o name 2>/dev/null | grep -i "${ADDON_MASTERPORTAL_SERVICE}" | head -1 || true)"
+  if [[ -z "${svc}" ]]; then
+    log_error "Masterportal-Service (Muster '${ADDON_MASTERPORTAL_SERVICE}') in ${ADDON_NS} nicht gefunden — ist CIVITAS/CORE (statisches Masterportal) installiert?"
+    return 1
+  fi
+  log_ok "Masterportal-Service gefunden: ${svc}"
+  return 0
+}
+
+# preflight_addon — bricht früh ab, bevor irgendein Teil-Deploy passiert.
+preflight_addon() {
+  log "=== Vorprüfung (Fail-Fast) ==="
+  if ! kubectl get namespace "${ADDON_NS}" &>/dev/null; then
+    log_error "CIVITAS/CORE-Namespace '${ADDON_NS}' nicht vorhanden — ist CIVITAS/CORE installiert?"
+    return 1
+  fi
+  log_ok "Namespace ${ADDON_NS} vorhanden"
+
+  # Für Uninstall ist .env/Masterportal nicht erforderlich (Creds kommen aus k8s).
+  if [[ "${1:-}" != "--uninstall" ]]; then
+    _preflight_env || return 1
+    _preflight_masterportal || return 1
+  fi
+  log_ok "Vorprüfung abgeschlossen"
+  return 0
+}
+
+# ── Funktion: Selbstkopie auf die Ziel-VM (mit automatischem Lauf) ───────────
 run_in_vm_addon() {
+  local mode="${1:-}"
   # Alten SSH-Host-Key entfernen (VM wird bei Scratch-Läufen ggf. neu erstellt).
   ssh-keygen -f "${HOME}/.ssh/known_hosts" -R "${VM_IP_STATIC}" 2>/dev/null || true
 
@@ -90,6 +160,18 @@ run_in_vm_addon() {
     exit 1
   fi
 
+  # Supplement-Verzeichnis (GeoTIFF-Mosaic) — optional, aber mitkopieren, damit die
+  # Mosaic-Anlage im VM-Kontext ihre Daten nachweisbar aus dem Supplement-Ordner bezieht.
+  if [[ -d "${ADDON_SUPPLEMENT_DIR}" ]]; then
+    scp -o StrictHostKeyChecking=no -r \
+      "${ADDON_SUPPLEMENT_DIR}" \
+      "root@${VM_IP_STATIC}:${VM_REMOTE_INSTALL_DIR}/" \
+      || { log_warn "Supplement-Verzeichnis konnte nicht kopiert werden (nicht fatal)"; }
+    log_ok "Supplement-Verzeichnis kopiert"
+  else
+    log_warn "Supplement-Verzeichnis nicht gefunden (${ADDON_SUPPLEMENT_DIR}) — Mosaic wird im VM-Lauf übersprungen"
+  fi
+
   # .env-Datei: auf der VM ins ELTERNVERZEICHNIS des Install-Dirs legen, damit die
   # Konvention `source ../.env.p2d2-addon` dort unverändert funktioniert.
   if [[ -f "${ADDON_ENV_FILE}" ]]; then
@@ -102,34 +184,52 @@ run_in_vm_addon() {
     log_warn ".env.p2d2-addon nicht gefunden (${ADDON_ENV_FILE}) — Werte manuell in der VM setzen"
   fi
 
-  # Stopp-Punkt: NICHT automatisch die Phasen ausführen (Frontend ist noch Platzhalter).
+  # Vollautonomer Lauf (Turn 65): nach Selbstkopie per SSH die Phasen in der VM
+  # anstoßen — kein manueller Zwischenschritt mehr.
+  local remote_cmd
+  if [[ "${mode}" == "--uninstall" ]]; then
+    remote_cmd="ADDON_CONTEXT=vm ./p2d2-civitas-addon-v1s.sh --uninstall"
+  else
+    remote_cmd="ADDON_CONTEXT=vm ./p2d2-civitas-addon-v1s.sh"
+  fi
+
   log ""
   log "============================================"
-  log_ok "Dateien kopiert nach ${VM_REMOTE_INSTALL_DIR} — bitte manuell fortsetzen:"
-  echo ""
-  echo "  ssh root@${VM_IP_STATIC}"
-  echo "  cd ${VM_REMOTE_INSTALL_DIR}"
-  echo "  set -a; source ../.env.p2d2-addon; set +a"
-  echo "  ./overlay_addon_V1s/k8s/frontend/build-de1.sh   # nutzt P2D2_GITHUB_TOKEN aus der .env"
-  echo ""
-  echo "  # später (3 fertige Bausteine) bzw. Rückbau:"
-  echo "  ADDON_CONTEXT=vm ./p2d2-civitas-addon-v1s.sh"
-  echo "  ADDON_CONTEXT=vm ./p2d2-civitas-addon-v1s.sh --uninstall"
+  log "Dateien kopiert nach ${VM_REMOTE_INSTALL_DIR} — starte vollautonomen Lauf:"
+  log "  ssh root@${VM_IP_STATIC} \"cd ${VM_REMOTE_INSTALL_DIR} && ${remote_cmd}\""
   log "============================================"
+  ssh -o StrictHostKeyChecking=no \
+      "root@${VM_IP_STATIC}" \
+      "cd ${VM_REMOTE_INSTALL_DIR} && ${remote_cmd}" \
+    || { log_error "Lauf in der VM fehlgeschlagen — bitte VM-Log prüfen"; exit 1; }
+  log_ok "Lauf in der VM abgeschlossen"
 }
 
-# ── Host-Kontext: nur Selbstkopie + Stopp (kein Auto-Run der Phasen) ───────────
+# ── Host-Kontext: Selbstkopie + vollautonomer Lauf in der VM ──────────────────
 if [[ "${ADDON_CONTEXT}" == "host" ]]; then
   log "============================================"
-  log " p2d2-AddOn (CIVITAS/CORE V1s) — Host → VM Selbstkopie"
+  log " p2d2-AddOn (CIVITAS/CORE V1s) — Host → VM Selbstkopie + Lauf"
   log " Ziel-VM: ${VM_IP_STATIC}"
   log " Remote:  ${VM_REMOTE_INSTALL_DIR}"
+  log " Modus:   $([[ "${1:-}" == "--uninstall" ]] && echo Uninstall || echo Install)"
   log "============================================"
-  run_in_vm_addon
+  run_in_vm_addon "${1:-}"
   exit 0
 fi
 
-# ── Startmeldung (VM-Kontext) ──────────────────────────────────────────────────
+# ── VM-Kontext: .env.p2d2-addon laden (einzige Quelle für mandantenabhängige Werte) ─
+if [[ -f "${ADDON_ENV_FILE}" ]]; then
+  set -a; source "${ADDON_ENV_FILE}"; set +a
+  log_ok ".env.p2d2-addon geladen (${ADDON_ENV_FILE})"
+else
+  log_error ".env.p2d2-addon nicht gefunden (${ADDON_ENV_FILE}) — im Host-Kontext wird sie ins Elternverzeichnis der VM kopiert"
+  exit 1
+fi
+
+# ── Fail-Fast-Vorprüfungen ─────────────────────────────────────────────────────
+preflight_addon "${1:-}" || exit 1
+
+# ── Startmeldung (VM-Kontext) ─────────────────────────────────────────────────
 log "============================================"
 log " p2d2-AddOn (CIVITAS/CORE V1s) — Installation"
 log " Namespace: ${ADDON_NS}"
@@ -137,10 +237,11 @@ log " DB-Namespace: ${ADDON_DB_NS}"
 log " Domain:       ${ADDON_DOMAIN}"
 log "============================================"
 
-# ── Bausteine in Reihenfolge ────────────────────────────────────────────────────
-# Uninstall: Frontend bewusst AUSGENOMMEN (Platzhalter kann es nicht wiederherstellen).
+# ── Bausteine in Reihenfolge ──────────────────────────────────────────────────
 if [[ "${1:-}" == "--uninstall" ]]; then
-  log "Modus: Uninstall (umgekehrte Reihenfolge, Frontend ausgenommen)"
+  log "Modus: Uninstall (frontend -> iam -> mapproxy -> geoserver -> postgresql)"
+  uninstall_addon_frontend
+  uninstall_addon_iam
   uninstall_addon_mapproxy
   uninstall_addon_geoserver
   uninstall_addon_postgresql
@@ -149,6 +250,7 @@ else
   install_addon_geoserver
   install_addon_mapproxy
   install_addon_iam
+  install_addon_frontend_build
   install_addon_frontend
 fi
 

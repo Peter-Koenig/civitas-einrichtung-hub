@@ -34,8 +34,8 @@ Manifeste für die fünf Frontend-Pods (Astro-SSR) im Namespace `cc-prd-geodata-
 - `p2d2-base-secret` + `p2d2-<stage>-secret` sind mit `CHANGEME`-Platzhaltern
   angelegt und werden von Peter befüllt (siehe `VARIABLES.md`, Kategorien K1–K4).
 - Die echten Git-/Webhook-Secrets (`p2d2-builder-git-auth`, `p2d2-webhook-secrets`)
-  werden **nicht** über diese Manifeste angelegt/überschrieben und dürfen beim
-  Löschen+Neuaufbau **nicht** gelöscht werden.
+  werden **nicht** über diese Manifeste angelegt/überschrieben; sie sind AddOn-scoped
+  und werden beim Uninstall (`uninstall_addon_frontend()`) mit entfernt.
 
 ## Anwendung
 
