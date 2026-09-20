@@ -6,7 +6,7 @@
 #
 # Geteilte Plattforminstanz (Helm-Release geoserver-geoserver). Additiv erweitern:
 #   Workspace/Namespace -> Datastore (PostGIS) -> FeatureTypes -> Nutzer/Rollen
-#   -> ACL-Regeln -> Secrets -> Verifikation. Plus GeoTIFF-Mosaic (Köln).
+#   -> ACL-Regeln -> Secrets -> Verifikation. Plus GeoTIFF-Mosaic (kommunen-übergreifend).
 #
 # Quelle: ai-runs/.../geoserver-automatisierungshinweise.md (erprobte REST-Endpunkte).
 # Rudimentär: Sequenz abgebildet, NICHT idempotent (409/201-Toleranz fehlt) — siehe TODO.
@@ -62,39 +62,44 @@ install_addon_geoserver() {
     log "    (FeatureTypes + Nutzer/Rollen + ACL: TODO — REST-Sequenz aus den Automatisierungshinweisen)"
   done
 
-  # 9) GeoTIFF-Mosaic (Köln) — NUR aus dem Supplement-Ordner (kein "magischer" Datenzugang).
+  # 9) GeoTIFF-Mosaic (kommunen-übergreifend) — NUR aus dem Supplement-Ordner (kein "magischer" Datenzugang).
   install_addon_geoserver_mosaic
 
   log_ok "AddOn 10 GeoServer abgeschlossen (rudimentär, nicht idempotent)"
 }
 
-# install_addon_geoserver_mosaic — GeoTIFF-Mosaic "friedhofsplaene" (Köln, ImageMosaic).
-# Turn 65: Daten kommen NUR aus dem Supplement-Ordner (ADDON_GEOTIFF_DIR). GeoTIFFs
-# vorhanden → kubectl cp + Namespace/Coveragestore/Coverage/Metadata/ACL anlegen;
-# nicht vorhanden → sauber übersprungen (kein Fehler, keine unklare Datenherkunft).
-#
-# Turn 68: Supplement-Pfad ist kommunen-übergreifend `geotiffs/` (keine hartkodierte
-# Stadt im Pfad). Die GeoServer-Objektnamen (Workspace `friedhofsplaene`, Coveragestore
-# `friedhofsplaene_koeln_mosaic`, Coverage `friedhoefe_koeln`, Pod-Ziel `geotiffs/koeln`)
-# bleiben für den aktuellen Piloten (Köln) bewusst städtespezifisch — vollständige
-# Mehrkommunen-Fähigkeit (dynamische Namen je Unterordner) ist Backlog.
+# install_addon_geoserver_mosaic — GeoTIFF-Mosaics "friedhofsplaene" (ImageMosaic,
+# kommunen-übergreifend). Turn 65: Daten kommen NUR aus dem Supplement-Ordner.
+# Turn 68/69: Die Ordner-Hierarchie wird abgebildet — je Stadt ein Unterordner
+# `geotiffs/<stadt>/` (z. B. koeln, bonn, berlin). Für jeden Unterordner mit GeoTIFFs
+# wird ein eigenes Mosaic angelegt (gemeinsamer Workspace `friedhofsplaene`,
+# Coveragestore `friedhofsplaene_<stadt>_mosaic`, Coverage `friedhoefe_<stadt>`).
+# nativeCoverageName = Ordnername (Mosaic-TypeName, wie im Kölner Piloten erprobt).
 install_addon_geoserver_mosaic() {
   local ns="${ADDON_NS}"
   local domain="${ADDON_DOMAIN}"
 
-  # Supplement-Ordner für die GeoTIFFs (configurable; Default relativ zum Repo,
-  # kommunen-übergreifend `geotiffs/` — Turn 68).
+  # Supplement-Basisordner für die GeoTIFFs (configurable; Default relativ zum Repo).
   local geotiff_dir="${ADDON_GEOTIFF_DIR:-}"
   [[ -n "${geotiff_dir}" ]] || geotiff_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../supplement/geotiffs" 2>/dev/null && pwd || true)"
 
-  # Kein "magischer" Datenzugang: nur wenn tatsächlich GeoTIFFs bereitliegen.
-  if [[ -z "${geotiff_dir}" || ! -d "${geotiff_dir}" ]] \
-     || [[ -z "$(find "${geotiff_dir}" -maxdepth 2 -type f \( -iname '*.tif' -o -iname '*.tiff' \) -print -quit 2>/dev/null)" ]]; then
-    log_warn "GeoTIFF-Supplement fehlt/leer (${geotiff_dir:-<nicht gesetzt>}) — Mosaic 'friedhofsplaene' wird übersprungen"
+  # Stadt-Unterordner unter geotiffs/ ermitteln (nur solche mit tatsächlichen TIFFs).
+  local cities=() d stadt
+  if [[ -n "${geotiff_dir}" && -d "${geotiff_dir}" ]]; then
+    for d in "${geotiff_dir}"/*/; do
+      [[ -d "${d}" ]] || continue
+      stadt="$(basename "${d}")"
+      [[ -n "$(find "${d}" -maxdepth 1 -type f \( -iname '*.tif' -o -iname '*.tiff' \) -print -quit 2>/dev/null)" ]] \
+        && cities+=("${stadt}")
+    done
+  fi
+
+  if [[ ${#cities[@]} -eq 0 ]]; then
+    log_warn "Keine GeoTIFF-Unterordner mit TIFFs in ${geotiff_dir:-<nicht gesetzt>} — Mosaic 'friedhofsplaene' wird übersprungen"
     return 0
   fi
 
-  log "  GeoTIFF-Mosaic 'friedhofsplaene' aus Supplement: ${geotiff_dir}"
+  log "  GeoTIFF-Mosaic aus Supplement: ${geotiff_dir} (Stadt/Städte: ${cities[*]})"
 
   # GeoServer-Pod ermitteln (Helm-Release geoserver-geoserver → Pod geoserver-geoserver-*).
   local geoserver_pod
@@ -105,49 +110,57 @@ install_addon_geoserver_mosaic() {
     return 0
   fi
 
-  # 9.1) Raster-Granules ins Pod-Data-Dir (kubectl cp, am Ingress vorbei — große TIFFs).
-  local pod_target="/opt/geoserver/data_dir/data/geotiffs/koeln"
-  log "    kubectl cp ${geotiff_dir}/. → ${geoserver_pod}:${pod_target}/"
-  kubectl -n "$ns" cp "${geotiff_dir}/." "${geoserver_pod}:${pod_target}/" \
-    || { log_warn "kubectl cp der GeoTIFFs fehlgeschlagen — Mosaic wird übersprungen"; return 0; }
-
   # Admin-Secret + REST-Basis.
   local admin_user admin_pw rest
   admin_user="$(kubectl -n "$ns" get secret geoserver-geoserver -o jsonpath='{.data.geoserver-user}' | base64 -d)"
   admin_pw="$(kubectl -n "$ns" get secret geoserver-geoserver -o jsonpath='{.data.geoserver-password}' | base64 -d)"
   rest="https://geoportal.${domain}/geoserver/rest"
 
-  # 9.2) Workspace/Namespace (erzeugt den Workspace gleich mit).
+  # 9.2) Workspace/Namespace (einmal, für alle Städte; erzeugt den Workspace mit).
   curl -sS -u "${admin_user}:${admin_pw}" -X POST \
     -H 'Content-Type: application/json' \
     -d '{"namespace":{"prefix":"friedhofsplaene","uri":"urn:data-dna:tiffdata"}}' \
     "${rest}/namespaces" || log_warn "    Namespace friedhofsplaene evtl. schon vorhanden (409 tolerieren)"
 
-  # 9.3) Coveragestore (ImageMosaic; legt KEINE Coverage an).
-  curl -sS -u "${admin_user}:${admin_pw}" -X POST \
-    -H 'Content-Type: application/json' \
-    -d '{"coverageStore":{"name":"friedhofsplaene_koeln_mosaic","type":"ImageMosaic","url":"file:data/geotiffs/koeln"}}' \
-    "${rest}/workspaces/friedhofsplaene/coveragestores" || log_warn "    Coveragestore evtl. schon vorhanden (409 tolerieren)"
+  # Je Stadt: Granules verteilen + Coveragestore + Coverage + Metadata + ACL.
+  local pod_target coveragestore coverage
+  for stadt in "${cities[@]}"; do
+    pod_target="/opt/geoserver/data_dir/data/geotiffs/${stadt}"
+    coveragestore="friedhofsplaene_${stadt}_mosaic"
+    coverage="friedhoefe_${stadt}"
+    log "    Stadt ${stadt}: Coveragestore ${coveragestore} / Coverage ${coverage}"
 
-  # 9.4) Coverage (explizit; nativeCoverageName = Mosaic-TypeName 'koeln').
-  curl -sS -u "${admin_user}:${admin_pw}" -X POST \
-    -H 'Content-Type: application/json' \
-    -d '{"coverage":{"name":"friedhoefe_koeln","nativeCoverageName":"koeln","title":"Kölner Friedhöfe","srs":"EPSG:25832","projectionPolicy":"REPROJECT_TO_DECLARED"}}' \
-    "${rest}/workspaces/friedhofsplaene/coveragestores/friedhofsplaene_koeln_mosaic/coverages" || log_warn "    Coverage evtl. schon vorhanden (409 tolerieren)"
+    # 9.1) Raster-Granules ins Pod-Data-Dir (kubectl cp, am Ingress vorbei — große TIFFs).
+    log "      kubectl cp ${geotiff_dir}/${stadt}/. → ${geoserver_pod}:${pod_target}/"
+    kubectl -n "$ns" cp "${geotiff_dir}/${stadt}/." "${geoserver_pod}:${pod_target}/" \
+      || { log_warn "kubectl cp für ${stadt} fehlgeschlagen — übersprungen"; continue; }
 
-  # 9.5) ImageMosaic-Kernparameter (Feld heißt metadata, NICHT parameters).
-  curl -sS -u "${admin_user}:${admin_pw}" -X PUT \
-    -H 'Content-Type: application/json' \
-    -d '{"coverageStore":{"metadata":{"MergeBehavior":"FLAT","SUGGESTED_TILE_SIZE":"512,512","FootprintBehavior":"Transparent","ExcessGranuleRemoval":"NONE","USE_JAI_IMAGEREAD":"true","RescalePixels":"true","AllowMultithreading":"false"}}}' \
-    "${rest}/workspaces/friedhofsplaene/coveragestores/friedhofsplaene_koeln_mosaic" || log_warn "    Metadata-PUT fehlgeschlagen"
+    # 9.3) Coveragestore (ImageMosaic; legt KEINE Coverage an).
+    curl -sS -u "${admin_user}:${admin_pw}" -X POST \
+      -H 'Content-Type: application/json' \
+      -d "{\"coverageStore\":{\"name\":\"${coveragestore}\",\"type\":\"ImageMosaic\",\"url\":\"file:data/geotiffs/${stadt}\"}}" \
+      "${rest}/workspaces/friedhofsplaene/coveragestores" || log_warn "    Coveragestore ${coveragestore} evtl. schon vorhanden (409 tolerieren)"
 
-  # 9.6) ACL: offene Lese-Regel (keine Write-Regel für Raster).
-  curl -sS -u "${admin_user}:${admin_pw}" -X POST \
-    -H 'Content-Type: application/json' \
-    -d '{"friedhofsplaene.friedhoefe_koeln.r":"ROLE_ANONYMOUS,ROLE_AUTHENTICATED,ADMIN"}' \
-    "${rest}/security/acl/layers" || log_warn "    ACL evtl. schon vorhanden (409 tolerieren)"
+    # 9.4) Coverage (explizit; nativeCoverageName = Mosaic-TypeName = Ordnername).
+    curl -sS -u "${admin_user}:${admin_pw}" -X POST \
+      -H 'Content-Type: application/json' \
+      -d "{\"coverage\":{\"name\":\"${coverage}\",\"nativeCoverageName\":\"${stadt}\",\"title\":\"Friedhöfe ${stadt}\",\"srs\":\"EPSG:25832\",\"projectionPolicy\":\"REPROJECT_TO_DECLARED\"}}" \
+      "${rest}/workspaces/friedhofsplaene/coveragestores/${coveragestore}/coverages" || log_warn "    Coverage ${coverage} evtl. schon vorhanden (409 tolerieren)"
 
-  log_ok "  Mosaic 'friedhofsplaene' angelegt"
+    # 9.5) ImageMosaic-Kernparameter (Feld heißt metadata, NICHT parameters).
+    curl -sS -u "${admin_user}:${admin_pw}" -X PUT \
+      -H 'Content-Type: application/json' \
+      -d '{"coverageStore":{"metadata":{"MergeBehavior":"FLAT","SUGGESTED_TILE_SIZE":"512,512","FootprintBehavior":"Transparent","ExcessGranuleRemoval":"NONE","USE_JAI_IMAGEREAD":"true","RescalePixels":"true","AllowMultithreading":"false"}}}' \
+      "${rest}/workspaces/friedhofsplaene/coveragestores/${coveragestore}" || log_warn "    Metadata-PUT fehlgeschlagen"
+
+    # 9.6) ACL: offene Lese-Regel (keine Write-Regel für Raster).
+    curl -sS -u "${admin_user}:${admin_pw}" -X POST \
+      -H 'Content-Type: application/json' \
+      -d "{\"friedhofsplaene.${coverage}.r\":\"ROLE_ANONYMOUS,ROLE_AUTHENTICATED,ADMIN\"}" \
+      "${rest}/security/acl/layers" || log_warn "    ACL evtl. schon vorhanden (409 tolerieren)"
+  done
+
+  log_ok "  Mosaic 'friedhofsplaene' angelegt (${#cities[@]} Stadt/Städte)"
 }
 
 # uninstall_addon_geoserver — Rückbau (Workspaces löschen, recurse=true).
