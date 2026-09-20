@@ -52,7 +52,7 @@ export VM_REMOTE_INSTALL_DIR="${VM_REMOTE_INSTALL_DIR:-/root/p2d2-addon}"
 export ADDON_ENV_FILE="${ADDON_ENV_FILE:-${SCRIPT_DIR}/../.env.p2d2-addon}"
 # Supplement-Ordner (GeoTIFF-Mosaic, Git-ignored) + APISIX-/Masterportal-Referenzen.
 export ADDON_SUPPLEMENT_DIR="${ADDON_SUPPLEMENT_DIR:-${SCRIPT_DIR}/supplement}"
-export ADDON_GEOTIFF_DIR="${ADDON_GEOTIFF_DIR:-${ADDON_SUPPLEMENT_DIR}/geotiffs/koeln}"
+export ADDON_GEOTIFF_DIR="${ADDON_GEOTIFF_DIR:-${ADDON_SUPPLEMENT_DIR}/geotiffs}"
 export ADDON_APISIX_CREDENTIALS_FILE="${ADDON_APISIX_CREDENTIALS_FILE:-/root/civitas-install/credentials.env}"
 export ADDON_MASTERPORTAL_SERVICE="${ADDON_MASTERPORTAL_SERVICE:-masterportal}"
 

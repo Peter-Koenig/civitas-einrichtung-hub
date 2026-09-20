@@ -136,7 +136,7 @@ im Namespace `cc-prd-access-stack`, Keys `MASTER_USERNAME`/`MASTER_PASSWORD`.)
 ### 2.3 Manueller Löschbefehl (falls Reste gefunden)
 
 ```bash
-# Client p2d2 (UID ermitteln):
+# Client p2d2 (Client-ID ermitteln):
 CID=$(curl -sk "https://idm.$DOMAIN/admin/realms/cc-prd/clients" -H "Authorization: Bearer $TOKEN" \
   | jq -r '.[] | select(.clientId=="p2d2") | .id')
 [ -n "$CID" ] && curl -sk -X DELETE "https://idm.$DOMAIN/admin/realms/cc-prd/clients/$CID" -H "Authorization: Bearer $TOKEN"
@@ -146,9 +146,9 @@ curl -sk -X DELETE "https://idm.$DOMAIN/admin/realms/cc-prd/identity-provider/in
 
 # Demo-User (UID per E-Mail ermitteln, dann löschen):
 for e in hans.muster jule.kovalenko chisom.eze arman.ekov meera.pillai valentina.cruz; do
-  UID=$(curl -sk "https://idm.$DOMAIN/admin/realms/cc-prd/users?email=$e%40nospam.scanea.de&exact=true" \
+  USER_UID=$(curl -sk "https://idm.$DOMAIN/admin/realms/cc-prd/users?email=$e%40nospam.scanea.de&exact=true" \
     -H "Authorization: Bearer $TOKEN" | jq -r '.[0].id // empty')
-  [ -n "$UID" ] && curl -sk -X DELETE "https://idm.$DOMAIN/admin/realms/cc-prd/users/$UID" -H "Authorization: Bearer $TOKEN"
+  [ -n "$USER_UID" ] && curl -sk -X DELETE "https://idm.$DOMAIN/admin/realms/cc-prd/users/$USER_UID" -H "Authorization: Bearer $TOKEN"
 done
 
 rm -f /root/civitas-install/p2d2-addon-credentials.env

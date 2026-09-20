@@ -72,13 +72,20 @@ install_addon_geoserver() {
 # Turn 65: Daten kommen NUR aus dem Supplement-Ordner (ADDON_GEOTIFF_DIR). GeoTIFFs
 # vorhanden → kubectl cp + Namespace/Coveragestore/Coverage/Metadata/ACL anlegen;
 # nicht vorhanden → sauber übersprungen (kein Fehler, keine unklare Datenherkunft).
+#
+# Turn 68: Supplement-Pfad ist kommunen-übergreifend `geotiffs/` (keine hartkodierte
+# Stadt im Pfad). Die GeoServer-Objektnamen (Workspace `friedhofsplaene`, Coveragestore
+# `friedhofsplaene_koeln_mosaic`, Coverage `friedhoefe_koeln`, Pod-Ziel `geotiffs/koeln`)
+# bleiben für den aktuellen Piloten (Köln) bewusst städtespezifisch — vollständige
+# Mehrkommunen-Fähigkeit (dynamische Namen je Unterordner) ist Backlog.
 install_addon_geoserver_mosaic() {
   local ns="${ADDON_NS}"
   local domain="${ADDON_DOMAIN}"
 
-  # Supplement-Ordner für die GeoTIFFs (configurable; Default relativ zum Repo).
+  # Supplement-Ordner für die GeoTIFFs (configurable; Default relativ zum Repo,
+  # kommunen-übergreifend `geotiffs/` — Turn 68).
   local geotiff_dir="${ADDON_GEOTIFF_DIR:-}"
-  [[ -n "${geotiff_dir}" ]] || geotiff_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../supplement/geotiffs/koeln" 2>/dev/null && pwd || true)"
+  [[ -n "${geotiff_dir}" ]] || geotiff_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../supplement/geotiffs" 2>/dev/null && pwd || true)"
 
   # Kein "magischer" Datenzugang: nur wenn tatsächlich GeoTIFFs bereitliegen.
   if [[ -z "${geotiff_dir}" || ! -d "${geotiff_dir}" ]] \
