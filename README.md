@@ -268,7 +268,101 @@ Zielzustand für TLS-Zertifikate anhand folgender Logik ermittelt:
   anhand des Loggings der Ansible-Playbooks (in den Logs unter
   `${CC_V1_REPO_PATH}/logs/`) nachvollziehen.
 
-### 7. Lizenz / Ansprechpartner
+### 8. p2d2-AddOn (V1s)
+
+Das Skript `p2d2-civitas-addon-v1s.sh` im Repository-Wurzelverzeichnis erweitert
+eine bestehende CIVITAS/CORE-V1s-Installation um die p2d2-Komponenten
+(PostgreSQL-Schemata, GeoServer-Workspaces, MapProxy, Keycloak-IAM, Frontend).
+Es ist kein Bestandteil der CIVITAS/CORE-Basisinstallation und setzt eine
+bereits laufende CIVITAS/CORE-V1s-Instanz mit statischem Masterportal voraus.
+
+**Verzeichnisstruktur:**
+
+| Pfad | Inhalt |
+|------|--------|
+| `p2d2-civitas-addon-v1s.sh` | Hauptskript |
+| `modules_addon_V1s/` | Fünf Module: `addon_00_postgresql.sh`, `addon_10_geoserver.sh`, `addon_20_mapproxy.sh`, `addon_25_iam.sh`, `addon_30_frontend.sh` |
+| `overlay_addon_V1s/k8s/` | Kubernetes-Manifeste, Dockerfiles, Build-Skripte, `UNINSTALL-CHECKLIST.md` |
+| `supplement/` | Git-ignorierte Nutzdaten (GeoTIFFs) und versionierte Hilfsskripte (`verify-uninstall.sh`) |
+
+**Ausführungskontext:**
+
+Analog zu `install_civitas_core_V1s.sh` unterscheidet das Skript zwei Kontexte
+über die Umgebungsvariable `ADDON_CONTEXT`:
+
+- `host` (Default): Kopiert sich selbst inklusive Module, Overlay und
+  Supplement-Verzeichnis per `scp` auf die Ziel-VM (`VM_IP_STATIC`) und stößt
+  danach automatisch per SSH den Lauf in der VM an.
+- `vm`: Führt die Install-/Uninstall-Phasen direkt in der VM aus, ohne
+  Selbstkopie.
+
+**Aufruf:**
+
+```bash
+./p2d2-civitas-addon-v1s.sh              # Installation
+./p2d2-civitas-addon-v1s.sh --uninstall  # Rückbau
+./p2d2-civitas-addon-v1s.sh --help       # Usage-Ausgabe
+```
+
+Jedes Argument außer `--uninstall`, `--help` oder `-h` bricht das Skript mit
+Fehlermeldung ab.
+
+**Modul-Reihenfolge:**
+
+Installation: `postgresql → geoserver → mapproxy → iam → frontend-build →
+frontend`. Uninstall läuft in umgekehrter Reihenfolge:
+`frontend → iam → mapproxy → geoserver → postgresql`.
+
+**Vorprüfung (Fail-Fast):**
+
+Vor jeder Aktion prüft `preflight_addon()`, ob der CIVITAS/CORE-Namespace
+(`cc-prd-geodata-stack`) existiert. Vor einer Installation zusätzlich, ob
+`.env.p2d2-addon` alle Pflichtvariablen enthält und ob ein
+Masterportal-Service im Namespace gefunden werden kann. Bei Uninstall genügt
+die Namespace-Prüfung.
+
+**Konfiguration (`.env.p2d2-addon`):**
+
+Die Datei liegt im Elternverzeichnis des Skriptverzeichnisses und ist die
+einzige Quelle für mandantenabhängige Werte (Domains, Passwörter, OIDC-Client-Daten
+je Stage: `MAIN`, `DEVELOP`, `DE1`, `DE2`, `FV`). Sie wird beim Host-Lauf
+automatisch mitkopiert und im VM-Kontext per `set -a; source; set +a` geladen.
+
+**GeoTIFF-Supplement:**
+
+GeoTIFF-Rasterdaten für die GeoServer-Mosaic-Anlage liegen unter
+`supplement/geotiffs/<stadt>/`. Das Verzeichnis ist git-ignoriert (mit Ausnahme
+von `*.sh`-Dateien). Für jeden Unterordner mit `.tif`/`.tiff`-Dateien wird ein
+eigenes Mosaic mit dem Ordnernamen als Stadt-Identifikator angelegt. Fehlt der
+Ordner oder enthält er keine Rasterdaten, wird die Mosaic-Anlage übersprungen.
+
+**Uninstall-Verifikation:**
+
+`supplement/verify-uninstall.sh` prüft nach einem Uninstall-Lauf, ob Ressourcen
+aller fünf Module noch vorhanden sind (Frontend-K8s-Ressourcen,
+Keycloak-Client/IdP/Demo-User, MapProxy-Ressourcen, GeoServer-Workspaces und
+Raster-Dateien, PostgreSQL-Schemata und -Rollen). Das Skript verändert keine
+Ressourcen. `overlay_addon_V1s/k8s/UNINSTALL-CHECKLIST.md` enthält für jedes
+Modul manuelle Prüf- und Löschbefehle für den Fall, dass der automatisierte
+Uninstall abbricht.
+
+**Bekannte Einschränkungen (Entwicklungsstand):**
+
+- `install_addon_postgresql`: Legt Rollen und Schemata an. DDL, Grants und
+  Default-Privileges sind nicht implementiert.
+- `install_addon_geoserver`: Legt Namespaces und Datastores für die fünf
+  Vektor-Workspaces an. FeatureTypes, Nutzer, Rollen und ACL-Regeln sind
+  nicht implementiert.
+- `install_addon_mapproxy`: Image-Build, Kubernetes-Ressourcen und
+  APISIX-Routing sind nicht implementiert.
+- Die REST-Aufrufe in `addon_00`/`addon_10` sind nicht durchgängig idempotent
+  (keine 409-Toleranz an allen Stellen).
+- PostgreSQL-Rollen mit dem Namensschema `P2D2-Admin`, `P2D2-RO`,
+  `P2D2-User-<STAGE>` (abweichend vom aktuellen Schema `P2D2-<STAGE>`) sind
+  nicht Teil des Install-/Uninstall-Scopes. Ihre Herkunft und Funktion ist
+  ungeklärt.
+
+### 9. Lizenz / Ansprechpartner
 
 - **Lizenz:** European Union Public Licence, Version 1.2 (EUPL-1.2).
   Der vollständige Lizenztext ist unter
@@ -537,7 +631,101 @@ target state for TLS certificates based on the following logic:
   and verify successful component installation through the Ansible
   playbook logs (in `${CC_V1_REPO_PATH}/logs/`).
 
-### 7. License / Contact
+### 8. p2d2 Add-on (V1s)
+
+The script `p2d2-civitas-addon-v1s.sh` in the repository root extends an
+existing CIVITAS/CORE V1s installation with the p2d2 components (PostgreSQL
+schemas, GeoServer workspaces, MapProxy, Keycloak IAM, frontend). It is not
+part of the CIVITAS/CORE base installation and requires an already running
+CIVITAS/CORE V1s instance with a static Masterportal.
+
+**Directory structure:**
+
+| Path | Content |
+|------|---------|
+| `p2d2-civitas-addon-v1s.sh` | Main script |
+| `modules_addon_V1s/` | Five modules: `addon_00_postgresql.sh`, `addon_10_geoserver.sh`, `addon_20_mapproxy.sh`, `addon_25_iam.sh`, `addon_30_frontend.sh` |
+| `overlay_addon_V1s/k8s/` | Kubernetes manifests, Dockerfiles, build scripts, `UNINSTALL-CHECKLIST.md` |
+| `supplement/` | Git-ignored payload data (GeoTIFFs) and versioned helper scripts (`verify-uninstall.sh`) |
+
+**Execution context:**
+
+Analogous to `install_civitas_core_V1s.sh`, the script distinguishes two
+contexts via the environment variable `ADDON_CONTEXT`:
+
+- `host` (default): Copies itself, including modules, overlay, and supplement
+  directory, to the target VM (`VM_IP_STATIC`) via `scp`, then automatically
+  triggers the run inside the VM via SSH.
+- `vm`: Runs the install/uninstall phases directly inside the VM without
+  self-copy.
+
+**Invocation:**
+
+```bash
+./p2d2-civitas-addon-v1s.sh              # installation
+./p2d2-civitas-addon-v1s.sh --uninstall  # teardown
+./p2d2-civitas-addon-v1s.sh --help       # usage output
+```
+
+Any argument other than `--uninstall`, `--help`, or `-h` aborts the script
+with an error message.
+
+**Module order:**
+
+Installation: `postgresql → geoserver → mapproxy → iam → frontend-build →
+frontend`. Uninstall runs in reverse order:
+`frontend → iam → mapproxy → geoserver → postgresql`.
+
+**Preflight (fail-fast):**
+
+Before any action, `preflight_addon()` checks whether the CIVITAS/CORE
+namespace (`cc-prd-geodata-stack`) exists. Before an installation it
+additionally checks whether `.env.p2d2-addon` contains all required variables
+and whether a Masterportal service can be found in the namespace. For
+uninstall, the namespace check is sufficient.
+
+**Configuration (`.env.p2d2-addon`):**
+
+The file resides in the parent directory of the script directory and is the
+single source for tenant-specific values (domains, passwords, OIDC client data
+per stage: `MAIN`, `DEVELOP`, `DE1`, `DE2`, `FV`). It is copied automatically
+during the host run and loaded in the VM context via `set -a; source; set +a`.
+
+**GeoTIFF supplement:**
+
+GeoTIFF raster data for GeoServer mosaic creation resides under
+`supplement/geotiffs/<city>/`. The directory is git-ignored except for `*.sh`
+files. For each subdirectory containing `.tif`/`.tiff` files, a separate mosaic
+is created using the directory name as the city identifier. If the directory
+is missing or contains no raster data, mosaic creation is skipped.
+
+**Uninstall verification:**
+
+`supplement/verify-uninstall.sh` checks after an uninstall run whether
+resources from any of the five modules remain (frontend Kubernetes resources,
+Keycloak client/IdP/demo users, MapProxy resources, GeoServer workspaces and
+raster files, PostgreSQL schemas and roles). The script does not modify any
+resources. `overlay_addon_V1s/k8s/UNINSTALL-CHECKLIST.md` provides manual
+verification and deletion commands for each module in case the automated
+uninstall aborts.
+
+**Known limitations (development status):**
+
+- `install_addon_postgresql`: Creates roles and schemas. DDL, grants, and
+  default privileges are not implemented.
+- `install_addon_geoserver`: Creates namespaces and datastores for the five
+  vector workspaces. FeatureTypes, users, roles, and ACL rules are not
+  implemented.
+- `install_addon_mapproxy`: Image build, Kubernetes resources, and APISIX
+  routing are not implemented.
+- REST calls in `addon_00`/`addon_10` are not consistently idempotent (no
+  409 tolerance in all places).
+- PostgreSQL roles following the naming scheme `P2D2-Admin`, `P2D2-RO`,
+  `P2D2-User-<STAGE>` (differing from the current scheme `P2D2-<STAGE>`) are
+  not part of the install/uninstall scope. Their origin and purpose are
+  undetermined.
+
+### 9. License / Contact
 
 - **License:** European Union Public Licence, Version 1.2 (EUPL-1.2).
   The full license text is available at
