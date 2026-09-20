@@ -17,6 +17,12 @@
 # Kontext: wird von p2d2-civitas-addon-v1s.sh gesourct (log/log_ok/log_warn/log_error,
 # ADDON_NS/ADDON_DOMAIN/KUBECONFIG sind dort bereits exportiert).
 
+# Fail-Fast: ohne ADDON_DOMAIN sofort abbrechen (Modul nicht isoliert sourcen).
+if [[ -z "${ADDON_DOMAIN:-}" ]]; then
+  echo "FEHLER: ADDON_DOMAIN nicht gesetzt — addon_25_iam.sh nicht isoliert sourcen (nur über p2d2-civitas-addon-v1s.sh)." >&2
+  return 1 2>/dev/null || exit 1
+fi
+
 # ── Config ─────────────────────────────────────────────────────────────────────
 ADDON_IAM_REALM="${ADDON_IAM_REALM:-cc-prd}"                       # Keycloak-Realm (= Environment)
 ADDON_IAM_NS="${ADDON_IAM_NS:-cc-prd-access-stack}"                # Namespace des Keycloak-Admin-Secrets

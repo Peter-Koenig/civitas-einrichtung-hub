@@ -11,6 +11,12 @@
 # Rudimentär: Image-Build auf dem k3s-Node (extern, hier nur dokumentiert), K8s-Ressourcen
 # per kubectl apply, APISIX-Routing via Admin-API. NICHT idempotent (Existenz-Prüfung fehlt).
 
+# Fail-Fast: ohne ADDON_NS sofort abbrechen (Modul nicht isoliert sourcen).
+if [[ -z "${ADDON_NS:-}" ]]; then
+  echo "FEHLER: ADDON_NS nicht gesetzt — addon_20_mapproxy.sh nicht isoliert sourcen (nur über p2d2-civitas-addon-v1s.sh)." >&2
+  return 1 2>/dev/null || exit 1
+fi
+
 install_addon_mapproxy() {
   log "=== AddOn 20: MapProxy (/mapserver) ==="
 

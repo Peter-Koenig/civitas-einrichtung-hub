@@ -14,6 +14,17 @@
 # Image-Build (k3s-Node, Docker/k3s-ctr):
 #   overlay_addon_V1s/k8s/frontend/build-stage.sh <stage>   # main|dev|de1|de2|fv
 #   Wrapper: build-{main,dev,de1,de2,fv}.sh
+#
+# WICHTIG (Turn 57): Dieses Modul darf NICHT isoliert gesourct werden — ADDON_NS und
+# ADDON_DOMAIN müssen vorher vom Hauptskript (p2d2-civitas-addon-v1s.sh, Zeile 39/41)
+# exportiert sein. Für manuelle Tests: `export ADDON_NS=... ADDON_DOMAIN=...` vorher setzen.
+
+# Fail-Fast: ohne ADDON_NS/ADDON_DOMAIN sofort abbrechen (verhindert stilles Schreiben
+# in die falsche Namespace bzw. Secret-Überschreibung — Incident Turn 57).
+if [[ -z "${ADDON_NS:-}" || -z "${ADDON_DOMAIN:-}" ]]; then
+  echo "FEHLER: ADDON_NS/ADDON_DOMAIN nicht gesetzt — addon_30_frontend.sh nicht isoliert sourcen (nur über p2d2-civitas-addon-v1s.sh)." >&2
+  return 1 2>/dev/null || exit 1
+fi
 
 # ── Ingress (idempotent, je Stage) ─────────────────────────────────────────────
 # Turn 45: de1-Pod läuft, aber es fehlte ein Ingress. Legt für eine Stage ein

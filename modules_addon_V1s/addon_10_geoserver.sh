@@ -11,6 +11,12 @@
 # Quelle: ai-runs/.../geoserver-automatisierungshinweise.md (erprobte REST-Endpunkte).
 # Rudimentär: Sequenz abgebildet, NICHT idempotent (409/201-Toleranz fehlt) — siehe TODO.
 
+# Fail-Fast: ohne ADDON_NS/ADDON_DOMAIN sofort abbrechen (Modul nicht isoliert sourcen).
+if [[ -z "${ADDON_NS:-}" || -z "${ADDON_DOMAIN:-}" ]]; then
+  echo "FEHLER: ADDON_NS/ADDON_DOMAIN nicht gesetzt — addon_10_geoserver.sh nicht isoliert sourcen (nur über p2d2-civitas-addon-v1s.sh)." >&2
+  return 1 2>/dev/null || exit 1
+fi
+
 install_addon_geoserver() {
   log "=== AddOn 10: GeoServer (Workspaces/Datastores/FeatureTypes) ==="
 

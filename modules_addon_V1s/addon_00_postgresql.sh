@@ -11,6 +11,12 @@
 # Rudimentär: Sequenz über psql im central-db-Pod. NICHT idempotent (keine
 # Existenz-Prüfung pro Objekt) und Passwort-Quelle noch Platzhalter — siehe TODO.
 
+# Fail-Fast: ohne ADDON_DB_NS sofort abbrechen (Modul nicht isoliert sourcen).
+if [[ -z "${ADDON_DB_NS:-}" ]]; then
+  echo "FEHLER: ADDON_DB_NS nicht gesetzt — addon_00_postgresql.sh nicht isoliert sourcen (nur über p2d2-civitas-addon-v1s.sh)." >&2
+  return 1 2>/dev/null || exit 1
+fi
+
 install_addon_postgresql() {
   log "=== AddOn 00: PostgreSQL (DB/Schemata/Rollen) ==="
 
