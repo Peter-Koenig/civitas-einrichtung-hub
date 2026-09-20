@@ -21,6 +21,7 @@ ARG PUBLIC_WFST_ENDPOINT
 ARG PUBLIC_WFST_WORKSPACE
 ARG PUBLIC_MAPSERVER_URL
 ARG DEFAULT_CATEGORY_ICON
+ARG BUILD_SCRIPT=build
 ENV PUBLIC_SITE_URL=${PUBLIC_SITE_URL} \
     PUBLIC_WFST_ENDPOINT=${PUBLIC_WFST_ENDPOINT} \
     PUBLIC_WFST_WORKSPACE=${PUBLIC_WFST_WORKSPACE} \
@@ -38,9 +39,10 @@ COPY package*.json ./
 COPY packages/core/package.json ./packages/core/
 RUN npm ci
 
-# Quellen kopieren und die Stage bauen.
+# Quellen kopieren und die Stage bauen (BUILD_SCRIPT je Stage: build, build:develop,
+# build:de1, build:de2, build:fv).
 COPY . .
-RUN npm run build:de1
+RUN npm run "$BUILD_SCRIPT"
 
 # ── Runtime-Stage ────────────────────────────────────────────────────────────
 FROM node:20-slim
