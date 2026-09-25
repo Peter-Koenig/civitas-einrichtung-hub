@@ -733,3 +733,4 @@ uninstall aborts.
   All source files in this repository carry an SPDX header with the
   identifier `SPDX-License-Identifier: EUPL-1.2`.
 - **Contact:** Peter König (external contributor / p2d2)
+2026-09-25
