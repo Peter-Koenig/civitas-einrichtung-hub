@@ -8,10 +8,12 @@
 #   Rollen (P2D2-User-<B>, P2D2-<B>) -> Schema (Owner P2D2-Admin-Role)
 #   -> DDL (schema.sql.j2) -> Grants + ALTER DEFAULT PRIVILEGES
 #   -> optionaler Dump-Import (supplement/db-dumps/<STAGE>.sql).
-#   Idempotent: Rollen/Schema via Existenz-Guards, DDL nur bei leerem Schema
-#   (die CONSTRAINT-Sektion des Templates nutzt DROP+ADD und ist nicht
-#   wiederholbar — PK wird von FK referenziert), Dump-Import nur bei leerem
-#   Ziel (keine Duplikate).
+#   Idempotent: Rollen/Schema via Existenz-Guards, Mitgliedschaft via
+#   separatem idempotentem GRANT (nicht nur IN ROLE im CREATE-Guard — sonst
+#   geht die Mitgliedschaft verloren, wenn die Rolle bereits existiert),
+#   DDL nur bei leerem Schema (die CONSTRAINT-Sektion des Templates nutzt
+#   DROP+ADD und ist nicht wiederholbar — PK wird von FK referenziert),
+#   Dump-Import nur bei leerem Ziel (keine Duplikate).
 #
 # Offen (separate Turns): Minimal-Seed für den „kein Dump"-Fall,
 #   Stage-Scope (`--stage=main|all`), Passwort-Rotation (Phase 2),
@@ -63,16 +65,18 @@ BEGIN
     CREATE ROLE "P2D2-Admin-Role" NOLOGIN;
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'P2D2-Admin') THEN
-    CREATE ROLE "P2D2-Admin" LOGIN PASSWORD 'changeme-admin' IN ROLE "P2D2-Admin-Role";
+    CREATE ROLE "P2D2-Admin" LOGIN PASSWORD 'changeme-admin';
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'P2D2-RO-Role') THEN
     CREATE ROLE "P2D2-RO-Role" NOLOGIN;
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'P2D2-RO') THEN
-    CREATE ROLE "P2D2-RO" LOGIN PASSWORD 'changeme-ro' IN ROLE "P2D2-RO-Role";
+    CREATE ROLE "P2D2-RO" LOGIN PASSWORD 'changeme-ro';
   END IF;
 END
 $$;
+GRANT "P2D2-Admin-Role" TO "P2D2-Admin";
+GRANT "P2D2-RO-Role" TO "P2D2-RO";
 ALTER ROLE "P2D2-Admin" SET search_path = p2d2_main, public;
 SQL
 
@@ -96,10 +100,11 @@ BEGIN
     CREATE ROLE "P2D2-User-${suffix}" NOLOGIN;
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'P2D2-${suffix}') THEN
-    CREATE ROLE "P2D2-${suffix}" LOGIN PASSWORD 'changeme-${suffix}' IN ROLE "P2D2-User-${suffix}";
+    CREATE ROLE "P2D2-${suffix}" LOGIN PASSWORD 'changeme-${suffix}';
   END IF;
 END
 \$\$;
+GRANT "P2D2-User-${suffix}" TO "P2D2-${suffix}";
 ALTER ROLE "P2D2-${suffix}" SET search_path = ${schema}, public;
 CREATE SCHEMA IF NOT EXISTS ${schema};
 ALTER SCHEMA ${schema} OWNER TO "P2D2-Admin-Role";
