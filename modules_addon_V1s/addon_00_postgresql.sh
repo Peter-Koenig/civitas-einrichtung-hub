@@ -7,7 +7,10 @@
 # Schritt 1 (dieser Stand): gemeinsame Rollen + je Stage
 #   Rollen (P2D2-User-<B>, P2D2-<B>) -> Schema (Owner P2D2-Admin-Role)
 #   -> DDL (schema.sql.j2) -> Grants + ALTER DEFAULT PRIVILEGES
-#   -> optionaler Dump-Import (supplement/db-dumps/<STAGE>.sql).
+#   -> optionaler Dump-Import (supplement/db-dumps/<STAGE>.sql)
+#   -> Cross-Schema-Lesezugriff: jede P2D2-User-<B>-Gruppe erhält SELECT
+#      (+ USAGE) auf alle fünf Schemata (P2D2-User-Role ist Legacy, wird
+#      nicht nachgebaut).
 #   Idempotent: Rollen/Schema via Existenz-Guards, Mitgliedschaft via
 #   separatem idempotentem GRANT (nicht nur IN ROLE im CREATE-Guard — sonst
 #   geht die Mitgliedschaft verloren, wenn die Rolle bereits existiert),
@@ -173,7 +176,25 @@ SQL
     } | "${psql_pod[@]}"
   done
 
-  log_ok "AddOn 00 PostgreSQL abgeschlossen (Schritt 1: DDL + Grants + Dump-Import)"
+  # 3) Cross-Schema-Lesezugriff: jede P2D2-User-<STAGE>-Gruppenrolle erhält
+  #    SELECT (+ USAGE auf Schema/Sequenzen) auf alle fünf Schemata, inkl.
+  #    ALTER DEFAULT PRIVILEGES für künftige Objekte. P2D2-User-Role ist
+  #    Legacy und wird bewusst NICHT nachgebaut.
+  log "  Cross-Schema-Lesezugriff (jede P2D2-User-<STAGE> auf alle fünf Schemata)"
+  local cr_suffix cr_schema
+  {
+    for cr_suffix in MAIN DEVELOP DE1 DE2 FV; do
+      for cr_schema in p2d2_main p2d2_develop p2d2_de1 p2d2_de2 p2d2_fv; do
+        printf 'GRANT USAGE ON SCHEMA %s TO "P2D2-User-%s";\n' "${cr_schema}" "${cr_suffix}"
+        printf 'GRANT SELECT ON ALL TABLES IN SCHEMA %s TO "P2D2-User-%s";\n' "${cr_schema}" "${cr_suffix}"
+        printf 'GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA %s TO "P2D2-User-%s";\n' "${cr_schema}" "${cr_suffix}"
+        printf 'ALTER DEFAULT PRIVILEGES FOR ROLE "P2D2-Admin-Role" IN SCHEMA %s GRANT SELECT ON TABLES TO "P2D2-User-%s";\n' "${cr_schema}" "${cr_suffix}"
+        printf 'ALTER DEFAULT PRIVILEGES FOR ROLE "P2D2-Admin-Role" IN SCHEMA %s GRANT USAGE, SELECT ON SEQUENCES TO "P2D2-User-%s";\n' "${cr_schema}" "${cr_suffix}"
+      done
+    done
+  } | "${psql_pod[@]}"
+
+  log_ok "AddOn 00 PostgreSQL abgeschlossen (Schritt 1: DDL + Grants + Dump-Import + Cross-Schema-Read)"
 }
 
 # uninstall_addon_postgresql — Rückbau (DROP SCHEMA + ROLE je Stage, umgekehrte Reihenfolge).
