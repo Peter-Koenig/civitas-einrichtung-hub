@@ -10,8 +10,10 @@
 # laufenden Verifikation (Turn 71/72 bzw. overlay_addon_V1s/k8s/UNINSTALL-CHECKLIST.md)
 # ausgeführt, keine neuen Prüfungen.
 #
-# Fund-3-Rollen (P2D2-Admin / P2D2-RO / P2D2-User-<STAGE>) werden bewusst NICHT
-# geprüft — deren Einordnung läuft noch (Diskrepanz, siehe Turn 71/72).
+# Es werden alle 14 vom Installationsskript verwalteten PostgreSQL-Rollen geprüft
+# (P2D2-Admin/-RO/-Admin-Role/-RO-Role, P2D2-User-<STAGE>, P2D2-<STAGE>). Die frühere
+# "Fund-3"-Ausklammerung ist mit dem ai-run
+# 2026-09-28-p2d2-standalone-addon-modulabgleich (Turns 6–10) geklärt.
 #
 # Aufruf (Defaults passen für civitas-core-V1s, per Env überschreibbar):
 #   ./supplement/verify-uninstall.sh
@@ -173,13 +175,13 @@ if [[ -n "$superuser" ]]; then
     printf '      %s\n' $schemas
   fi
 
-  # Rollen: NUR die vom Skript verwalteten P2D2-<STAGE> (Fund-3 bewusst NICHT).
+  # Rollen: alle 14 vom Installationsskript verwalteten P2D2-*-Rollen.
   roles=$(kubectl -n "$DBNS" exec central-db-0 -- psql -U "$superuser" -d p2d2 -tAc \
-    "SELECT rolname FROM pg_roles WHERE rolname IN ('P2D2-MAIN','P2D2-DEVELOP','P2D2-DE1','P2D2-DE2','P2D2-FV') ORDER BY rolname;" 2>/dev/null || true)
+    "SELECT rolname FROM pg_roles WHERE rolname IN ('P2D2-Admin','P2D2-RO','P2D2-Admin-Role','P2D2-RO-Role','P2D2-User-MAIN','P2D2-User-DEVELOP','P2D2-User-DE1','P2D2-User-DE2','P2D2-User-FV','P2D2-MAIN','P2D2-DEVELOP','P2D2-DE1','P2D2-DE2','P2D2-FV') ORDER BY rolname;" 2>/dev/null || true)
   if [[ -z "$roles" ]]; then
-    log_ok "keine P2D2-<STAGE>-Rollen (Fund-3-Rollen bewusst ausgeklammert)"
+    log_ok "keine P2D2-*-Rollen"
   else
-    note_reste "P2D2-<STAGE>-Rollen vorhanden:"
+    note_reste "P2D2-*-Rollen vorhanden:"
     printf '      %s\n' $roles
   fi
 else

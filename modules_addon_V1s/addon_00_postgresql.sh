@@ -197,11 +197,12 @@ SQL
   log_ok "AddOn 00 PostgreSQL abgeschlossen (Schritt 1: DDL + Grants + Dump-Import + Cross-Schema-Read)"
 }
 
-# uninstall_addon_postgresql — Rückbau (DROP SCHEMA + ROLE je Stage, umgekehrte Reihenfolge).
-# Schützt den Superuser: nur die P2D2-*-Rollen werden entfernt, nie der Superuser selbst.
-# Hinweis: entfernt derzeit nur P2D2-<B> + Schema; die gemeinsamen Rollen
-# (P2D2-Admin-Role/-Admin, P2D2-RO-Role/-RO) und P2D2-User-<B> bleiben offen
-# (Folgeaufgabe, analog zur Minimal-Seed-/Stage-Scope-Lücke).
+# uninstall_addon_postgresql — vollständiger Rückbau aller von install_addon_postgresql
+# angelegten Objekte (5 Schemata + 14 Rollen). Reihenfolge zweiphasig: erst alle
+# Schemata (CASCADE entfernt Objekte, schema-gebundene Grants und ALTER DEFAULT
+# PRIVILEGES mit), dann alle Rollen (erst Login-/Mitglied-Rollen, dann Gruppen-Rollen).
+# DROP OWNED BY ist ein defensives Sicherheitsnetz gegen unvorhergesehene Reste.
+# Schützt den Superuser und die Zalando-Rollen (p2d2_*): es werden nur P2D2-*-Rollen entfernt.
 uninstall_addon_postgresql() {
   log "=== Uninstall AddOn 00: PostgreSQL (Schemata/Rollen entfernen) ==="
 
@@ -211,24 +212,37 @@ uninstall_addon_postgresql() {
   local superuser
   superuser="$(kubectl -n "$db_ns" get secret "$secret" -o jsonpath='{.data.username}' | base64 -d)"
 
-  local stage role schema
+  # ON_ERROR_STOP=0: Uninstall muss auch bei Teil-Resten aus früheren Läufen robust laufen.
+  local -a psql_u
+  psql_u=(kubectl -n "$db_ns" exec central-db-0 -- psql -v ON_ERROR_STOP=0 -U "$superuser" -d "$db_name")
+
+  # 1) Alle fünf Schemata zuerst (Cross-Schema-Grants aus Turn 9 erfordern, dass
+  #    erst alle Schemata fallen, bevor Rollen droppbar sind).
+  local stage schema
   for stage in FV DE2 DE1 DEVELOP MAIN; do
     case "$stage" in
-      MAIN)    role="P2D2-MAIN";    schema="p2d2_main" ;;
-      DEVELOP) role="P2D2-DEVELOP"; schema="p2d2_develop" ;;
-      DE1)     role="P2D2-DE1";     schema="p2d2_de1" ;;
-      DE2)     role="P2D2-DE2";     schema="p2d2_de2" ;;
-      FV)      role="P2D2-FV";      schema="p2d2_fv" ;;
+      MAIN)    schema="p2d2_main" ;;
+      DEVELOP) schema="p2d2_develop" ;;
+      DE1)     schema="p2d2_de1" ;;
+      DE2)     schema="p2d2_de2" ;;
+      FV)      schema="p2d2_fv" ;;
     esac
-
-    log "  Stage ${stage}: Schema ${schema} + Rolle ${role} entfernen"
-    kubectl -n "$db_ns" exec central-db-0 -- \
-      psql -v ON_ERROR_STOP=0 -U "$superuser" -d "$db_name" -c \
-      "DROP SCHEMA IF EXISTS \"${schema}\" CASCADE;" || log_warn "    Schema ${schema} evtl. schon entfernt"
-    kubectl -n "$db_ns" exec central-db-0 -- \
-      psql -v ON_ERROR_STOP=0 -U "$superuser" -d "$db_name" -c \
-      "DROP ROLE IF EXISTS \"${role}\";" || log_warn "    Rolle ${role} evtl. schon entfernt"
+    log "  Schema ${schema} entfernen"
+    "${psql_u[@]}" -c "DROP SCHEMA IF EXISTS \"${schema}\" CASCADE;" || log_warn "    Schema ${schema} evtl. schon entfernt"
   done
 
-  log_ok "Uninstall AddOn 00 PostgreSQL abgeschlossen"
+  # 2) Rollen in abhängigkeitsfreier Reihenfolge: erst Login-Rollen (Mitglieder),
+  #    dann Gruppen-Rollen, zuletzt die gemeinsamen Rollen.
+  local role
+  for role in \
+      P2D2-MAIN P2D2-DEVELOP P2D2-DE1 P2D2-DE2 P2D2-FV \
+      P2D2-User-MAIN P2D2-User-DEVELOP P2D2-User-DE1 P2D2-User-DE2 P2D2-User-FV \
+      P2D2-Admin P2D2-RO \
+      P2D2-Admin-Role P2D2-RO-Role; do
+    log "  Rolle ${role} entfernen"
+    "${psql_u[@]}" -c "DROP OWNED BY \"${role}\";" || log_warn "    DROP OWNED BY ${role} ohne Effekt"
+    "${psql_u[@]}" -c "DROP ROLE IF EXISTS \"${role}\";" || log_warn "    Rolle ${role} evtl. schon entfernt"
+  done
+
+  log_ok "Uninstall AddOn 00 PostgreSQL abgeschlossen (5 Schemata + 14 Rollen)"
 }
