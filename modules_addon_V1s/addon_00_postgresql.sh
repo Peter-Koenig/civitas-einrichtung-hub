@@ -46,13 +46,36 @@ install_addon_postgresql() {
   superpass="$(kubectl -n "$db_ns" get secret "$secret" -o jsonpath='{.data.password}' | base64 -d)"
   log "Superuser für ${db_name}: ${superuser}"
 
+  # Supplement-Ablage (analog supplement/geotiffs/, git-ignored). Das DDL-Template
+  # liegt jetzt self-contained im Supplement, nicht mehr im Fremd-Repo
+  # p2d2-civitas-addon (nach VM-Restore nicht verfuegbar).
+  local supplement_dir="${ADDON_SUPPLEMENT_DIR:-/srv/p2d2/repos/civitas_einrichtung/supplement}"
   # DDL-Template (zwei Jinja2-Platzhalter, per sed gerendert).
-  local schema_template="${P2D2_SCHEMA_TEMPLATE:-/srv/p2d2/repos/p2d2-civitas-addon/v1/templates/p2d2-postgresql/schema.sql.j2}"
-  # Dump-Ablage (Analogie zu supplement/geotiffs/, git-ignored).
-  local dump_dir="${ADDON_SUPPLEMENT_DIR:-/srv/p2d2/repos/civitas_einrichtung/supplement}/db-dumps"
+  local schema_template="${P2D2_SCHEMA_TEMPLATE:-${supplement_dir}/templates/p2d2-postgresql/schema.sql.j2}"
+  # Dump-Ablage.
+  local dump_dir="${supplement_dir}/db-dumps"
+  # Manifest mit Prüfsummen (p2d2-db-artifacts.sha256).
+  local manifest="${supplement_dir}/p2d2-db-artifacts.sha256"
 
+  # Fail-Fast: Template, Manifest und alle fünf Dumps müssen vor jedem
+  # Datenbankeingriff vorhanden und prüfsummenkonform sein.
   if [[ ! -f "${schema_template}" ]]; then
     log_error "DDL-Template nicht gefunden: ${schema_template}"
+    return 1
+  fi
+  if [[ ! -f "${manifest}" ]]; then
+    log_error "Manifest nicht gefunden: ${manifest}"
+    return 1
+  fi
+  local d
+  for d in MAIN DEVELOP DE1 DE2 FV; do
+    if [[ ! -s "${dump_dir}/${d}.sql" ]]; then
+      log_error "Dump fehlt/leer: ${dump_dir}/${d}.sql"
+      return 1
+    fi
+  done
+  if ! (cd "${supplement_dir}" && sha256sum --check --quiet "${manifest}" >/dev/null 2>&1); then
+    log_error "Prüfsummen-Manifest fehlgeschlagen: ${manifest}"
     return 1
   fi
 
