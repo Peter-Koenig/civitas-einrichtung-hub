@@ -170,11 +170,16 @@ ensure_p2d2_oidc_client() {
       -H "Authorization: Bearer ${token}" 2>/dev/null | jq -r '.value // empty' 2>/dev/null || true)
     if [[ -n "${secret}" ]]; then
       umask 077
+      # Elternverzeichnis existiert u. U. nicht (Default /root/civitas-install) —
+      # sicher anlegen statt still zu scheitern (Turn 8, Robustheitsfix).
+      mkdir -p "$(dirname "${ADDON_IAM_CREDENTIALS_FILE}")" \
+        || { log_error "Credentials-Verzeichnis konnte nicht angelegt werden: $(dirname "${ADDON_IAM_CREDENTIALS_FILE}")"; return 1; }
       {
         echo "# p2d2-AddOn Keycloak-Client (generiert)"
         echo "P2D2_BASE_OIDC_CLIENT_ID=${ADDON_IAM_CLIENT_ID}"
         echo "P2D2_BASE_OIDC_CLIENT_SECRET=${secret}"
-      } > "${ADDON_IAM_CREDENTIALS_FILE}"
+      } > "${ADDON_IAM_CREDENTIALS_FILE}" \
+        || { log_error "Credentials-Datei konnte nicht geschrieben werden: ${ADDON_IAM_CREDENTIALS_FILE}"; return 1; }
       log_ok "Client-Secret nach ${ADDON_IAM_CREDENTIALS_FILE} geschrieben (chmod 600)"
     else
       log_warn "Client-Secret nicht auslesbar — manuell pruefen"
