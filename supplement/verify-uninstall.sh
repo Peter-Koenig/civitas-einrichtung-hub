@@ -161,6 +161,16 @@ fi
 # ── 5. PostgreSQL ──────────────────────────────────────────────────────────────
 log ""
 log "== 5. PostgreSQL =="
+# Operator-/Datenbankebene: preparedDatabases.p2d2 muss entfernt sein. Nur p2d2
+# wird bewertet — fremde preparedDatabases (frost/geodata/keycloak/quantumleap/
+# stellio_*/superset*) sind KEINE Reste und bleiben unangetastet.
+p2d2_cr=$(kubectl -n "$DBNS" get postgresql central-db -o jsonpath='{.spec.preparedDatabases.p2d2}' 2>/dev/null || true)
+if [[ -n "$p2d2_cr" ]]; then
+  note_reste "preparedDatabases.p2d2 weiterhin im CR central-db vorhanden"
+else
+  log_ok "preparedDatabases.p2d2 aus central-db entfernt"
+fi
+
 superuser=$(kubectl -n "$DBNS" get secret postgres.central-db.credentials.postgresql.acid.zalan.do \
   -o jsonpath='{.data.username}' 2>/dev/null | base64 -d 2>/dev/null || true)
 
@@ -183,6 +193,16 @@ if [[ -n "$superuser" ]]; then
   else
     note_reste "P2D2-*-Rollen vorhanden:"
     printf '      %s\n' $roles
+  fi
+
+  # Datenbank p2d2 muss gelöscht sein — nur p2d2 wird bewertet, fremde Datenbanken
+  # (frost/geodata/keycloak/…) sind keine Reste.
+  db_exists=$(kubectl -n "$DBNS" exec central-db-0 -- psql -U "$superuser" -d postgres -tAc \
+    "SELECT 1 FROM pg_database WHERE datname='p2d2';" 2>/dev/null || true)
+  if [[ -n "$db_exists" ]]; then
+    note_reste "Datenbank p2d2 weiterhin vorhanden (pg_database)"
+  else
+    log_ok "Datenbank p2d2 nicht vorhanden"
   fi
 else
   note_reste "Postgres-Superuser-Secret nicht lesbar — DB-Reste manuell prüfen"
