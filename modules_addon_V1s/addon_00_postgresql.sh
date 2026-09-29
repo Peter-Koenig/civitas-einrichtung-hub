@@ -33,6 +33,131 @@ if [[ -z "${ADDON_DB_NS:-}" ]]; then
   return 1 2>/dev/null || exit 1
 fi
 
+# ── Datenbank-Provisionierung über den Zalando-Postgres-Operator ────────────────
+# Der Operator erzeugt/entfernt die Datenbank p2d2 deklarativ über das Feld
+# spec.preparedDatabases.p2d2 im CR central-db. Das Shell-SQL-Modul erzeugt die DB
+# NICHT per CREATE DATABASE; es bleibt für Inhalte (Rollen/Schemata/DDL/Dumps)
+# zuständig. Diese Funktionen stellen den CR-Zustand idempotent her bzw. zurück.
+
+# _pg_master_pod — bestimmt den laufenden Master-Pod des central-db-Clusters
+# dynamisch (Label-basiert), Fallback auf den deterministischen central-db-0.
+_pg_master_pod() {
+  local db_ns="${ADDON_DB_NS}"
+  local pod
+  pod="$(kubectl -n "$db_ns" get pods -l application=spilo -l cluster-name=central-db \
+    -l spilo-role=master --field-selector=status.phase=Running -o name 2>/dev/null \
+    | head -1 | sed 's|pod/||')"
+  [[ -n "$pod" ]] || pod="central-db-0"
+  printf '%s' "$pod"
+}
+
+# ensure_p2d2_database — stellt spec.preparedDatabases.p2d2 idempotent sicher,
+# wartet auf die Operator-Reconciliation und verifiziert die DB-Existenz.
+ensure_p2d2_database() {
+  local db_ns="${ADDON_DB_NS}"
+  local cr="central-db"
+  local target='{"defaultUsers":true,"extensions":{"postgis":"public"},"schemas":{"public":{"defaultRoles":false}}}'
+
+  log "=== PostgreSQL-Datenbank p2d2 (Operator) sicherstellen ==="
+  log "  kubeconfig: ${KUBECONFIG:-<default>}  Kontext: $(kubectl config current-context 2>/dev/null || echo '?')"
+
+  # B.1: API-Zugriff, CR vorhanden, Rechte.
+  if ! kubectl -n "$db_ns" get postgresql "$cr" >/dev/null 2>&1; then
+    log_error "PostgreSQL-CR '${cr}' in ${db_ns} nicht gefunden/lesbar"
+    return 1
+  fi
+  if ! kubectl auth can-i patch postgresqls.acid.zalan.do -n "$db_ns" >/dev/null 2>&1; then
+    log_error "Keine patch-Berechtigung auf postgresqls.acid.zalan.do in ${db_ns}"
+    return 1
+  fi
+  log_ok "Zugriff auf postgresql/${cr} in ${db_ns} vorhanden"
+
+  # B.2: lesen -> abgleichen -> nur bei Bedarf (idempotent) patchen.
+  local current cur_norm tgt_norm
+  current="$(kubectl -n "$db_ns" get postgresql "$cr" -o jsonpath='{.spec.preparedDatabases.p2d2}' 2>/dev/null || true)"
+  cur_norm=""; tgt_norm=""
+  if command -v jq >/dev/null 2>&1; then
+    cur_norm="$(printf '%s' "$current" | jq -cS . 2>/dev/null || true)"
+    tgt_norm="$(printf '%s' "$target" | jq -cS . 2>/dev/null || true)"
+  fi
+  if [[ -n "$cur_norm" && -n "$tgt_norm" && "$cur_norm" == "$tgt_norm" ]]; then
+    log_ok "preparedDatabases.p2d2 bereits vorhanden und äquivalent — kein Patch"
+  elif [[ -n "$current" && -z "$cur_norm" ]]; then
+    log_warn "preparedDatabases.p2d2 vorhanden, aber jq fehlt — überspringe Patch (Annahme: korrekt)"
+  else
+    log "  preparedDatabases.p2d2 setzen (additiv, merge)"
+    kubectl -n "$db_ns" patch postgresql "$cr" --type merge \
+      -p "{\"spec\":{\"preparedDatabases\":{\"p2d2\":${target}}}}" \
+      || { log_error "Patch auf postgresql/${cr} fehlgeschlagen"; return 1; }
+  fi
+
+  # B.3: auf Reconciliation warten und DB-Existenz prüfen.
+  local superuser db_pod waited step max_wait
+  superuser="$(kubectl -n "$db_ns" get secret postgres.central-db.credentials.postgresql.acid.zalan.do \
+    -o jsonpath='{.data.username}' 2>/dev/null | base64 -d 2>/dev/null || echo 'postgres')"
+  db_pod="$(_pg_master_pod)"
+  waited=0; step=5; max_wait="${ADDON_DB_WAIT_SECONDS:-300}"
+  while [[ "$waited" -lt "$max_wait" ]]; do
+    if kubectl -n "$db_ns" exec "$db_pod" -- psql -U "$superuser" -d postgres -tAc \
+      "SELECT 1 FROM pg_database WHERE datname='p2d2';" 2>/dev/null | grep -q 1; then
+      log_ok "Datenbank p2d2 vorhanden (Operator-Reconciliation abgeschlossen)"
+      return 0
+    fi
+    sleep "$step"
+    waited=$((waited + step))
+  done
+
+  log_error "Timeout: Datenbank p2d2 nach ${max_wait}s nicht vorhanden"
+  log "  Diagnose (CR/Events/Pods, ohne Secrets):"
+  kubectl -n "$db_ns" get postgresql "$cr" -o jsonpath='{.spec.preparedDatabases}' 2>/dev/null | head -c 500; echo
+  kubectl -n "$db_ns" get events --sort-by=.lastTimestamp 2>/dev/null | tail -20 || true
+  kubectl -n "$db_ns" get pods 2>/dev/null || true
+  return 1
+}
+
+# remove_p2d2_database — entfernt spec.preparedDatabases.p2d2 gezielt (JSON Patch
+# remove, idempotent) und wartet auf die Operator-Reconciliation.
+remove_p2d2_database() {
+  local db_ns="${ADDON_DB_NS}"
+  local cr="central-db"
+
+  log "=== PostgreSQL-Datenbank p2d2 (Operator) entfernen ==="
+
+  if ! kubectl -n "$db_ns" get postgresql "$cr" >/dev/null 2>&1; then
+    log_warn "PostgreSQL-CR '${cr}' nicht lesbar — überspringe preparedDatabases-Entfernung"
+    return 0
+  fi
+
+  local current
+  current="$(kubectl -n "$db_ns" get postgresql "$cr" -o jsonpath='{.spec.preparedDatabases.p2d2}' 2>/dev/null || true)"
+  if [[ -z "$current" ]]; then
+    log_ok "preparedDatabases.p2d2 bereits nicht vorhanden — idempotent, kein Patch"
+    return 0
+  fi
+
+  log "  Entferne preparedDatabases.p2d2 (JSON Patch remove)"
+  kubectl -n "$db_ns" patch postgresql "$cr" --type json \
+    -p '[{"op":"remove","path":"/spec/preparedDatabases/p2d2"}]' \
+    || { log_error "JSON-Patch remove auf /spec/preparedDatabases/p2d2 fehlgeschlagen"; return 1; }
+
+  local superuser db_pod waited step max_wait
+  superuser="$(kubectl -n "$db_ns" get secret postgres.central-db.credentials.postgresql.acid.zalan.do \
+    -o jsonpath='{.data.username}' 2>/dev/null | base64 -d 2>/dev/null || echo 'postgres')"
+  db_pod="$(_pg_master_pod)"
+  waited=0; step=5; max_wait="${ADDON_DB_WAIT_SECONDS:-300}"
+  while [[ "$waited" -lt "$max_wait" ]]; do
+    if ! kubectl -n "$db_ns" exec "$db_pod" -- psql -U "$superuser" -d postgres -tAc \
+      "SELECT 1 FROM pg_database WHERE datname='p2d2';" 2>/dev/null | grep -q 1; then
+      log_ok "Datenbank p2d2 entfernt (Operator-Reconciliation abgeschlossen)"
+      return 0
+    fi
+    sleep "$step"
+    waited=$((waited + step))
+  done
+  log_warn "Datenbank p2d2 nach ${max_wait}s weiterhin vorhanden — Operator-Semantik (DB-Löschung) prüfen"
+  return 0
+}
+
 install_addon_postgresql() {
   log "=== AddOn 00: PostgreSQL (Rollen/Schemata/DDL/Grants/Dump-Import) ==="
 
@@ -45,6 +170,9 @@ install_addon_postgresql() {
   superuser="$(kubectl -n "$db_ns" get secret "$secret" -o jsonpath='{.data.username}' | base64 -d)"
   superpass="$(kubectl -n "$db_ns" get secret "$secret" -o jsonpath='{.data.password}' | base64 -d)"
   log "Superuser für ${db_name}: ${superuser}"
+
+  # Operator-verwaltete Datenbank p2d2 deklarativ sicherstellen (preparedDatabases.p2d2).
+  ensure_p2d2_database || return 1
 
   # Supplement-Ablage (analog supplement/geotiffs/, git-ignored). Das DDL-Template
   # liegt jetzt self-contained im Supplement, nicht mehr im Fremd-Repo
@@ -81,6 +209,13 @@ install_addon_postgresql() {
 
   local -a psql_pod
   psql_pod=(kubectl -n "$db_ns" exec -i central-db-0 -- psql -v ON_ERROR_STOP=1 -U "$superuser" -d "$db_name")
+
+  # B.4: Verteidigung in der Tiefe — DB-Existenz vor der ersten SQL-Ausführung.
+  if ! kubectl -n "$db_ns" exec "$(_pg_master_pod)" -- psql -U "$superuser" -d postgres -tAc \
+    "SELECT 1 FROM pg_database WHERE datname='${db_name}';" 2>/dev/null | grep -q 1; then
+    log_error "Datenbank ${db_name} nicht vorhanden — Provisionierung fehlgeschlagen?"
+    return 1
+  fi
 
   # 1) Gemeinsame Rollen (einmalig, idempotent).
   log "  Gemeinsame Rollen (P2D2-Admin-Role/-Admin, P2D2-RO-Role/-RO)"
@@ -267,5 +402,8 @@ uninstall_addon_postgresql() {
     "${psql_u[@]}" -c "DROP ROLE IF EXISTS \"${role}\";" || log_warn "    Rolle ${role} evtl. schon entfernt"
   done
 
-  log_ok "Uninstall AddOn 00 PostgreSQL abgeschlossen (5 Schemata + 14 Rollen)"
+  # Operator-verwaltete Datenbank p2d2 deklarativ entfernen (preparedDatabases.p2d2).
+  remove_p2d2_database || return 1
+
+  log_ok "Uninstall AddOn 00 PostgreSQL abgeschlossen (5 Schemata + 14 Rollen + DB)"
 }
