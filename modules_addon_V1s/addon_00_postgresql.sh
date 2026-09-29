@@ -158,6 +158,44 @@ remove_p2d2_database() {
   return 0
 }
 
+# _schema_state — objektiver Initialisierungszustand eines Schemas:
+#   empty    = Schema enthält keine der erwarteten p2d2-Tabellen
+#   complete = alle 14 erwarteten Tabellen UND die komplette Constraint-Sektion
+#              (Nachweis ueber 16 Foreign Keys, den letzten Constraint-Block) vorhanden
+#   partial  = Teilmenge vorhanden (z. B. Tabellen ohne Constraints nach einem
+#              abgebrochenen DDL-Lauf)
+# Grundlage ist die konkrete Tabellen-/Constraint-Menge, nicht allein count(pg_tables).
+_schema_state() {
+  local db_ns="$1" superuser="$2" db_name="$3" schema="$4"
+  local -a expected=(
+    p2d2_containers p2d2_graeber p2d2_graeber_snapshots p2d2_graeber_versionen
+    p2d2_grabflur_mapping p2d2_grabflure p2d2_grabflure_snapshots p2d2_grabflure_versionen
+    p2d2_kommunen wf_feature_status wf_protokoll wf_qs_maengel wf_sessions wf_snapshots
+  )
+  local present fk_count t missing
+  present="$(kubectl -n "$db_ns" exec central-db-0 -- psql -At -U "$superuser" -d "$db_name" \
+    -c "SELECT tablename FROM pg_tables WHERE schemaname='${schema}' ORDER BY tablename;" 2>/dev/null || true)"
+  if [[ -z "$(printf '%s' "$present" | tr -d '[:space:]')" ]]; then
+    echo "empty"; return 0
+  fi
+  missing=0
+  for t in "${expected[@]}"; do
+    grep -qx "$t" <<<"$present" || missing=$((missing + 1))
+  done
+  if [[ "$missing" -ne 0 ]]; then
+    echo "partial"; return 0
+  fi
+  # Alle 14 Tabellen vorhanden. Ob die Constraint-Sektion vollständig durchlief, wird
+  # über die Foreign Keys geprüft (16 Stück, im Template der letzte Constraint-Block).
+  fk_count="$(kubectl -n "$db_ns" exec central-db-0 -- psql -At -U "$superuser" -d "$db_name" \
+    -c "SELECT count(*) FROM pg_constraint con JOIN pg_class c ON c.oid=con.conrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='${schema}' AND con.contype='f';" 2>/dev/null || true)"
+  if [[ "$fk_count" == "16" ]]; then
+    echo "complete"
+  else
+    echo "partial"
+  fi
+}
+
 install_addon_postgresql() {
   log "=== AddOn 00: PostgreSQL (Rollen/Schemata/DDL/Grants/Dump-Import) ==="
 
@@ -271,23 +309,29 @@ CREATE SCHEMA IF NOT EXISTS ${schema};
 ALTER SCHEMA ${schema} OWNER TO "P2D2-Admin-Role";
 SQL
 
-    # (b) DDL rendern (sed) und einspielen — nur bei noch nicht initialisiertem
-    #     Schema. Das Template ist für Tabellen/Sequenzen/Views/Funktionen
-    #     idempotent (IF NOT EXISTS / OR REPLACE), aber seine CONSTRAINT-Sektion
-    #     (DROP+ADD) scheitert beim Wiederholungslauf, weil der PK von den FKs
-    #     referenziert wird. Daher wird die DDL strukturell nur einmalig
-    #     angewendet; Schema-Migration ist eine separate Folgeaufgabe.
-    local tbl_count
-    tbl_count="$(kubectl -n "$db_ns" exec central-db-0 -- psql -At -U "$superuser" -d "$db_name" \
-      -c "SELECT count(*) FROM pg_tables WHERE schemaname = '${schema}';" 2>/dev/null || true)"
-    if [[ -n "${tbl_count}" && "${tbl_count}" != "0" ]]; then
-      log "    DDL übersprungen (Schema ${schema} bereits initialisiert: ${tbl_count} Tabellen)."
-    else
-      sed -e "s/{{ p2d2_instance_schema }}/${schema}/g" \
-          -e "s/{{ p2d2_admin_role }}/P2D2-Admin-Role/g" \
-        "${schema_template}" \
-        | "${psql_pod[@]}"
-    fi
+    # (b) DDL rendern (sed) und einspielen — nur auf einem leeren Schema.
+    #     Das Template ist fuer Tabellen/Sequenzen/Views/Funktionen idempotent
+    #     (IF NOT EXISTS / OR REPLACE), aber die CONSTRAINT-Sektion (ADD
+    #     CONSTRAINT) ist nicht wiederholbar. Daher: leer -> anwenden,
+    #     vollstaendig -> ueberspringen, partiell -> abbrechen (kein stilles
+    #     Ueberspringen eines defekten Teilzustands).
+    local state
+    state="$(_schema_state "$db_ns" "$superuser" "$db_name" "$schema")"
+    case "$state" in
+      empty)
+        sed -e "s/{{ p2d2_instance_schema }}/${schema}/g" \
+            -e "s/{{ p2d2_admin_role }}/P2D2-Admin-Role/g" \
+          "${schema_template}" \
+          | "${psql_pod[@]}"
+        ;;
+      complete)
+        log "    DDL uebersprungen (Schema ${schema} bereits vollstaendig initialisiert)."
+        ;;
+      partial)
+        log_error "    Schema ${schema} ist partiell initialisiert — kein stiller Uebersprung. Bitte Cleanup/Uninstall (siehe ai-run) ausfuehren."
+        return 1
+        ;;
+    esac
 
     # (c) Grants + ALTER DEFAULT PRIVILEGES (idempotent).
     "${psql_pod[@]}" <<SQL
