@@ -297,7 +297,7 @@ def index_defs(schema: str) -> str:
         if ddl.startswith("CREATE INDEX "):
             ddl = ddl.replace("CREATE INDEX ", "CREATE INDEX IF NOT EXISTS ", 1)
         ddl = parametrize(ddl)
-        out.append(ddl)
+        out.append(ddl + ";")
     return "\n\n".join(out)
 
 
@@ -328,7 +328,7 @@ def function_defs(schema: str, only: set = None) -> str:
         ddl = run(f"SELECT pg_get_functiondef({oid})").rstrip("\n")
         ddl = parametrize(ddl)
         sig = parametrize(sign)
-        out.append(ddl + f'\n\n\nALTER FUNCTION {sig} OWNER TO "{ROLE}";')
+        out.append(ddl + ";" + f'\n\n\nALTER FUNCTION {sig} OWNER TO "{ROLE}";')
     return "\n".join(out)
 
 
@@ -346,7 +346,7 @@ def trigger_defs(schema: str, only: set = None) -> str:
         if ddl.startswith("CREATE TRIGGER "):
             ddl = ddl.replace("CREATE TRIGGER ", "CREATE OR REPLACE TRIGGER ", 1)
         ddl = parametrize(ddl)
-        out.append(ddl)
+        out.append(ddl + ";")
     return "\n\n".join(out)
 
 

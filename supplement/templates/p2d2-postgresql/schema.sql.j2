@@ -653,83 +653,83 @@ ALTER TABLE ONLY {{ p2d2_instance_schema }}.wf_protokoll
 ALTER TABLE ONLY {{ p2d2_instance_schema }}.wf_snapshots
     ADD CONSTRAINT wf_snapshots_session_id_fkey FOREIGN KEY (session_id) REFERENCES {{ p2d2_instance_schema }}.wf_sessions(id) ON DELETE CASCADE;
 
-CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_graeber_snapshots_grab ON {{ p2d2_instance_schema }}.p2d2_graeber_snapshots USING btree (grab_id)
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_graeber_snapshots_grab ON {{ p2d2_instance_schema }}.p2d2_graeber_snapshots USING btree (grab_id);
 
-CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_graeber_snapshots_grabflur ON {{ p2d2_instance_schema }}.p2d2_graeber_snapshots USING btree (fried_nr, grabflur)
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_graeber_snapshots_grabflur ON {{ p2d2_instance_schema }}.p2d2_graeber_snapshots USING btree (fried_nr, grabflur);
 
-CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_graeber_snapshots_session ON {{ p2d2_instance_schema }}.p2d2_graeber_snapshots USING btree (session_id)
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_graeber_snapshots_session ON {{ p2d2_instance_schema }}.p2d2_graeber_snapshots USING btree (session_id);
 
-CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_graeber_versionen_boundary ON {{ p2d2_instance_schema }}.p2d2_graeber_versionen USING btree (is_session_boundary)
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_graeber_versionen_boundary ON {{ p2d2_instance_schema }}.p2d2_graeber_versionen USING btree (is_session_boundary);
 
-CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_graeber_versionen_geom ON {{ p2d2_instance_schema }}.p2d2_graeber_versionen USING gist (geom)
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_graeber_versionen_geom ON {{ p2d2_instance_schema }}.p2d2_graeber_versionen USING gist (geom);
 
-CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_graeber_versionen_grabflur ON {{ p2d2_instance_schema }}.p2d2_graeber_versionen USING btree (fried_nr, grabflur)
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_graeber_versionen_grabflur ON {{ p2d2_instance_schema }}.p2d2_graeber_versionen USING btree (fried_nr, grabflur);
 
-CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_graeber_versionen_session ON {{ p2d2_instance_schema }}.p2d2_graeber_versionen USING btree (session_id)
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_graeber_versionen_session ON {{ p2d2_instance_schema }}.p2d2_graeber_versionen USING btree (session_id);
 
-CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_p2d2_grabflur_mapping_container ON {{ p2d2_instance_schema }}.p2d2_grabflur_mapping USING btree (container_id)
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_p2d2_grabflur_mapping_container ON {{ p2d2_instance_schema }}.p2d2_grabflur_mapping USING btree (container_id);
 
-CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_p2d2_grabflur_mapping_context ON {{ p2d2_instance_schema }}.p2d2_grabflur_mapping USING btree (wpname, cemetery_key, grabflur)
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_p2d2_grabflur_mapping_context ON {{ p2d2_instance_schema }}.p2d2_grabflur_mapping USING btree (wpname, cemetery_key, grabflur);
 
-CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_p2d2_grabflur_mapping_grab ON {{ p2d2_instance_schema }}.p2d2_grabflur_mapping USING btree (grab_id)
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_p2d2_grabflur_mapping_grab ON {{ p2d2_instance_schema }}.p2d2_grabflur_mapping USING btree (grab_id);
 
-CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_p2d2_graeber_versionen_grab_id ON {{ p2d2_instance_schema }}.p2d2_graeber_versionen USING btree (grab_id)
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_p2d2_graeber_versionen_grab_id ON {{ p2d2_instance_schema }}.p2d2_graeber_versionen USING btree (grab_id);
 
-CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_feature_status_session ON {{ p2d2_instance_schema }}.wf_feature_status USING btree (last_session_id)
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_feature_status_session ON {{ p2d2_instance_schema }}.wf_feature_status USING btree (last_session_id);
 
-CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_feature_status_state ON {{ p2d2_instance_schema }}.wf_feature_status USING btree (state)
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_feature_status_state ON {{ p2d2_instance_schema }}.wf_feature_status USING btree (state);
 
-CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_protokoll_created_at ON {{ p2d2_instance_schema }}.wf_protokoll USING btree (created_at)
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_protokoll_created_at ON {{ p2d2_instance_schema }}.wf_protokoll USING btree (created_at);
 
-CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_protokoll_event_type ON {{ p2d2_instance_schema }}.wf_protokoll USING btree (event_type)
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_protokoll_event_type ON {{ p2d2_instance_schema }}.wf_protokoll USING btree (event_type);
 
-CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_protokoll_feature ON {{ p2d2_instance_schema }}.wf_protokoll USING btree (feature_type, feature_id)
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_protokoll_feature ON {{ p2d2_instance_schema }}.wf_protokoll USING btree (feature_type, feature_id);
 
-CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_protokoll_session ON {{ p2d2_instance_schema }}.wf_protokoll USING btree (session_id)
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_protokoll_session ON {{ p2d2_instance_schema }}.wf_protokoll USING btree (session_id);
 
-CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_qs_maengel_feature ON {{ p2d2_instance_schema }}.wf_qs_maengel USING btree (feature_type, feature_id)
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_qs_maengel_feature ON {{ p2d2_instance_schema }}.wf_qs_maengel USING btree (feature_type, feature_id);
 
-CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_qs_maengel_level ON {{ p2d2_instance_schema }}.wf_qs_maengel USING btree (qs_level)
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_qs_maengel_level ON {{ p2d2_instance_schema }}.wf_qs_maengel USING btree (qs_level);
 
-CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_qs_maengel_resolved ON {{ p2d2_instance_schema }}.wf_qs_maengel USING btree (resolved)
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_qs_maengel_resolved ON {{ p2d2_instance_schema }}.wf_qs_maengel USING btree (resolved);
 
-CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_qs_maengel_version_ref ON {{ p2d2_instance_schema }}.wf_qs_maengel USING btree (version_table, version_id)
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_qs_maengel_version_ref ON {{ p2d2_instance_schema }}.wf_qs_maengel USING btree (version_table, version_id);
 
-CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_sessions_context ON {{ p2d2_instance_schema }}.wf_sessions USING btree (feature_type, wpname, context_key, context_value)
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_sessions_context ON {{ p2d2_instance_schema }}.wf_sessions USING btree (feature_type, wpname, context_key, context_value);
 
-CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_sessions_last_active ON {{ p2d2_instance_schema }}.wf_sessions USING btree (last_active)
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_sessions_last_active ON {{ p2d2_instance_schema }}.wf_sessions USING btree (last_active);
 
-CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_sessions_state_expires ON {{ p2d2_instance_schema }}.wf_sessions USING btree (state, expires_at)
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_sessions_state_expires ON {{ p2d2_instance_schema }}.wf_sessions USING btree (state, expires_at);
 
-CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_snapshots_feature ON {{ p2d2_instance_schema }}.wf_snapshots USING btree (feature_type, feature_id)
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_snapshots_feature ON {{ p2d2_instance_schema }}.wf_snapshots USING btree (feature_type, feature_id);
 
-CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_snapshots_feature_final ON {{ p2d2_instance_schema }}.wf_snapshots USING btree (feature_type, feature_id, is_final)
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_snapshots_feature_final ON {{ p2d2_instance_schema }}.wf_snapshots USING btree (feature_type, feature_id, is_final);
 
-CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_snapshots_session ON {{ p2d2_instance_schema }}.wf_snapshots USING btree (session_id)
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_snapshots_session ON {{ p2d2_instance_schema }}.wf_snapshots USING btree (session_id);
 
-CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_snapshots_version_ref ON {{ p2d2_instance_schema }}.wf_snapshots USING btree (version_table, version_id)
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_snapshots_version_ref ON {{ p2d2_instance_schema }}.wf_snapshots USING btree (version_table, version_id);
 
-CREATE INDEX IF NOT EXISTS p2d2_containers_cache_expires_idx ON {{ p2d2_instance_schema }}.p2d2_containers USING btree (cache_expires)
+CREATE INDEX IF NOT EXISTS p2d2_containers_cache_expires_idx ON {{ p2d2_instance_schema }}.p2d2_containers USING btree (cache_expires);
 
-CREATE INDEX IF NOT EXISTS p2d2_containers_container_type_idx ON {{ p2d2_instance_schema }}.p2d2_containers USING btree (container_type)
+CREATE INDEX IF NOT EXISTS p2d2_containers_container_type_idx ON {{ p2d2_instance_schema }}.p2d2_containers USING btree (container_type);
 
-CREATE INDEX IF NOT EXISTS p2d2_containers_municipality_idx ON {{ p2d2_instance_schema }}.p2d2_containers USING btree (municipality)
+CREATE INDEX IF NOT EXISTS p2d2_containers_municipality_idx ON {{ p2d2_instance_schema }}.p2d2_containers USING btree (municipality);
 
-CREATE INDEX IF NOT EXISTS p2d2_grabflure_geom_idx ON {{ p2d2_instance_schema }}.p2d2_grabflure USING gist (geom)
+CREATE INDEX IF NOT EXISTS p2d2_grabflure_geom_idx ON {{ p2d2_instance_schema }}.p2d2_grabflure USING gist (geom);
 
-CREATE INDEX IF NOT EXISTS p2d2_grabflure_kommune_idx ON {{ p2d2_instance_schema }}.p2d2_grabflure USING btree (kommune_id)
+CREATE INDEX IF NOT EXISTS p2d2_grabflure_kommune_idx ON {{ p2d2_instance_schema }}.p2d2_grabflure USING btree (kommune_id);
 
-CREATE INDEX IF NOT EXISTS p2d2_grabflure_snapshots_grabflur_idx ON {{ p2d2_instance_schema }}.p2d2_grabflure_snapshots USING btree (grabflur_id)
+CREATE INDEX IF NOT EXISTS p2d2_grabflure_snapshots_grabflur_idx ON {{ p2d2_instance_schema }}.p2d2_grabflure_snapshots USING btree (grabflur_id);
 
-CREATE INDEX IF NOT EXISTS p2d2_grabflure_snapshots_session_idx ON {{ p2d2_instance_schema }}.p2d2_grabflure_snapshots USING btree (session_id)
+CREATE INDEX IF NOT EXISTS p2d2_grabflure_snapshots_session_idx ON {{ p2d2_instance_schema }}.p2d2_grabflure_snapshots USING btree (session_id);
 
-CREATE INDEX IF NOT EXISTS p2d2_grabflure_versionen_geom_idx ON {{ p2d2_instance_schema }}.p2d2_grabflure_versionen USING gist (geom)
+CREATE INDEX IF NOT EXISTS p2d2_grabflure_versionen_geom_idx ON {{ p2d2_instance_schema }}.p2d2_grabflure_versionen USING gist (geom);
 
-CREATE INDEX IF NOT EXISTS p2d2_grabflure_versionen_grabflur_idx ON {{ p2d2_instance_schema }}.p2d2_grabflure_versionen USING btree (grabflur_id)
+CREATE INDEX IF NOT EXISTS p2d2_grabflure_versionen_grabflur_idx ON {{ p2d2_instance_schema }}.p2d2_grabflure_versionen USING btree (grabflur_id);
 
-CREATE INDEX IF NOT EXISTS p2d2_grabflure_versionen_session_idx ON {{ p2d2_instance_schema }}.p2d2_grabflure_versionen USING btree (session_id)
+CREATE INDEX IF NOT EXISTS p2d2_grabflure_versionen_session_idx ON {{ p2d2_instance_schema }}.p2d2_grabflure_versionen USING btree (session_id);
 
-CREATE INDEX IF NOT EXISTS p2d2_grabflure_wpname_idx ON {{ p2d2_instance_schema }}.p2d2_grabflure USING btree (wp_name)
+CREATE INDEX IF NOT EXISTS p2d2_grabflure_wpname_idx ON {{ p2d2_instance_schema }}.p2d2_grabflure USING btree (wp_name);
 
 CREATE OR REPLACE VIEW {{ p2d2_instance_schema }}.v_grabflure_aktuell AS
  SELECT g.p2d2_uuid::text AS p2d2_uuid,
@@ -868,7 +868,7 @@ BEGIN
 
     RETURN v_count;
 END;
-$function$
+$function$;
 
 
 ALTER FUNCTION {{ p2d2_instance_schema }}.aggregate_session_snapshots(bigint) OWNER TO "{{ p2d2_admin_role }}";
@@ -885,12 +885,12 @@ BEGIN
     WHERE feature_id=OLD.grabflur_id AND last_session_id=OLD.session_id;
   RETURN OLD;
 END;
-$function$
+$function$;
 
 
 ALTER FUNCTION {{ p2d2_instance_schema }}.on_version_delete() OWNER TO "{{ p2d2_admin_role }}";
 
-CREATE OR REPLACE TRIGGER trg_version_delete AFTER DELETE ON {{ p2d2_instance_schema }}.p2d2_grabflure_versionen FOR EACH ROW EXECUTE FUNCTION {{ p2d2_instance_schema }}.on_version_delete()
+CREATE OR REPLACE TRIGGER trg_version_delete AFTER DELETE ON {{ p2d2_instance_schema }}.p2d2_grabflure_versionen FOR EACH ROW EXECUTE FUNCTION {{ p2d2_instance_schema }}.on_version_delete();
 
 -- de1-Zusatz: fn_container_mitversionen() + trg_container_mitversionen
 
@@ -965,9 +965,9 @@ BEGIN
 
     RETURN NEW;
 END;
-$function$
+$function$;
 
 
 ALTER FUNCTION {{ p2d2_instance_schema }}.fn_container_mitversionen() OWNER TO "{{ p2d2_admin_role }}";
 
-CREATE OR REPLACE TRIGGER trg_container_mitversionen AFTER INSERT ON {{ p2d2_instance_schema }}.p2d2_grabflure_versionen FOR EACH ROW EXECUTE FUNCTION {{ p2d2_instance_schema }}.fn_container_mitversionen()
+CREATE OR REPLACE TRIGGER trg_container_mitversionen AFTER INSERT ON {{ p2d2_instance_schema }}.p2d2_grabflure_versionen FOR EACH ROW EXECUTE FUNCTION {{ p2d2_instance_schema }}.fn_container_mitversionen();
