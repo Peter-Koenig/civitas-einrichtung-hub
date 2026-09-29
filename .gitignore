@@ -16,3 +16,10 @@ supplement/*
 # Diagnose-/Hilfsskripte unter supplement/ sind Code und werden versioniert
 # (nur Daten wie GeoTIFFs bleiben ignoriert).
 !supplement/*.sh
+# Extraktions-/Verifikationswerkzeuge und das schema-parametrisierte DDL-Template
+# sind versionierter Code, ebenso das Prüfsummen-Manifest (verifiziert die
+# git-ignorierten Dumps unter db-dumps/ zur Laufzeit).
+!supplement/*.py
+!supplement/*.sha256
+!supplement/templates/
+!supplement/templates/**

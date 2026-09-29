@@ -1,0 +1,1012 @@
+-- p2d2 DDL-Template (Basisschema p2d2_develop), erzeugt 2026-09-29 aus data-dna (PostgreSQL 18.6).
+-- Schema-parametrisiert: {{ p2d2_instance_schema }} / {{ p2d2_admin_role }}.
+-- Nur Struktur, keine Daten. Lesend extrahiert (P2D2-RO).
+-- Bewusst ausgeschlossen: gt_pk_metadata, rheinkassel_gf (+ zugehoerige Sequenz).
+
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_type t
+        JOIN pg_namespace n ON n.oid = t.typnamespace
+        WHERE t.typname = 'wf_event_type' AND n.nspname = '{{ p2d2_instance_schema }}'
+    ) THEN
+        CREATE TYPE {{ p2d2_instance_schema }}.wf_event_type AS ENUM (
+    'session_start',
+    'session_pause',
+    'session_resume',
+    'session_end',
+    'session_expire',
+    'session_abort',
+    'feature_edit',
+    'feature_save',
+    'snapshot_create',
+    'qs1_pass',
+    'qs1_fail',
+    'qs2_pass',
+    'qs2_fail',
+    'export_osm'
+);
+    END IF;
+END$$;
+
+
+ALTER TYPE {{ p2d2_instance_schema }}.wf_event_type OWNER TO "{{ p2d2_admin_role }}";
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_type t
+        JOIN pg_namespace n ON n.oid = t.typnamespace
+        WHERE t.typname = 'wf_feature_state' AND n.nspname = '{{ p2d2_instance_schema }}'
+    ) THEN
+        CREATE TYPE {{ p2d2_instance_schema }}.wf_feature_state AS ENUM (
+    'unbearbeitet',
+    'in_bearbeitung',
+    'qs1_ausstehend',
+    'qs1_abgelehnt',
+    'qs2_ausstehend',
+    'qs2_abgelehnt',
+    'exportbereit',
+    'exportiert'
+);
+    END IF;
+END$$;
+
+
+ALTER TYPE {{ p2d2_instance_schema }}.wf_feature_state OWNER TO "{{ p2d2_admin_role }}";
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_type t
+        JOIN pg_namespace n ON n.oid = t.typnamespace
+        WHERE t.typname = 'wf_qs_level' AND n.nspname = '{{ p2d2_instance_schema }}'
+    ) THEN
+        CREATE TYPE {{ p2d2_instance_schema }}.wf_qs_level AS ENUM (
+    'qs1',
+    'qs2'
+);
+    END IF;
+END$$;
+
+
+ALTER TYPE {{ p2d2_instance_schema }}.wf_qs_level OWNER TO "{{ p2d2_admin_role }}";
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_type t
+        JOIN pg_namespace n ON n.oid = t.typnamespace
+        WHERE t.typname = 'wf_qs_result' AND n.nspname = '{{ p2d2_instance_schema }}'
+    ) THEN
+        CREATE TYPE {{ p2d2_instance_schema }}.wf_qs_result AS ENUM (
+    'pass',
+    'fail',
+    'warning'
+);
+    END IF;
+END$$;
+
+
+ALTER TYPE {{ p2d2_instance_schema }}.wf_qs_result OWNER TO "{{ p2d2_admin_role }}";
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_type t
+        JOIN pg_namespace n ON n.oid = t.typnamespace
+        WHERE t.typname = 'wf_session_state' AND n.nspname = '{{ p2d2_instance_schema }}'
+    ) THEN
+        CREATE TYPE {{ p2d2_instance_schema }}.wf_session_state AS ENUM (
+    'active',
+    'paused',
+    'completed',
+    'expired',
+    'aborted'
+);
+    END IF;
+END$$;
+
+
+ALTER TYPE {{ p2d2_instance_schema }}.wf_session_state OWNER TO "{{ p2d2_admin_role }}";
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_type t
+        JOIN pg_namespace n ON n.oid = t.typnamespace
+        WHERE t.typname = 'wf_snapshot_kind' AND n.nspname = '{{ p2d2_instance_schema }}'
+    ) THEN
+        CREATE TYPE {{ p2d2_instance_schema }}.wf_snapshot_kind AS ENUM (
+    'auto',
+    'manual',
+    'session_boundary',
+    'pre_qs',
+    'post_qs',
+    'export'
+);
+    END IF;
+END$$;
+
+
+ALTER TYPE {{ p2d2_instance_schema }}.wf_snapshot_kind OWNER TO "{{ p2d2_admin_role }}";
+
+
+CREATE TABLE IF NOT EXISTS {{ p2d2_instance_schema }}.p2d2_containers (
+    id integer NOT NULL,
+    category character varying(50),
+    osm_name character varying(200),
+    geometry geometry(MultiPolygon,4326),
+    created_at timestamp without time zone DEFAULT now(),
+    updated_at timestamp without time zone DEFAULT now(),
+    last_updated timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    source_wfs character varying(200),
+    cache_expires timestamp without time zone,
+    container_type character varying(100),
+    municipality character varying(100),
+    wp_name character varying(100),
+    osm_admin_level integer,
+    osm_id character varying(20),
+    alt_name character varying(50),
+    admin_name character varying(200)
+);
+
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_containers OWNER TO "{{ p2d2_admin_role }}";
+
+CREATE TABLE IF NOT EXISTS {{ p2d2_instance_schema }}.p2d2_grabflur_mapping (
+    id bigint NOT NULL,
+    container_id integer NOT NULL,
+    wpname character varying(100),
+    municipality character varying(100),
+    cemetery_key character varying(50),
+    cemetery_name character varying(100),
+    grabflur character varying(20),
+    osmid character varying(30),
+    osmadminlevel integer,
+    created_at timestamp with time zone NOT NULL DEFAULT now(),
+    grab_id uuid NOT NULL
+);
+
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_grabflur_mapping OWNER TO "{{ p2d2_admin_role }}";
+
+CREATE TABLE IF NOT EXISTS {{ p2d2_instance_schema }}.p2d2_grabflure (
+    p2d2_uuid uuid NOT NULL DEFAULT gen_random_uuid(),
+    geom geometry(MultiPolygon,4326),
+    id_intern bigint,
+    fh_nr character varying(20),
+    fh_name character varying(100),
+    flur_nr character varying(20),
+    wp_name character varying(100),
+    kommune_id integer,
+    created_at timestamp with time zone NOT NULL DEFAULT now(),
+    updated_at timestamp with time zone NOT NULL DEFAULT now(),
+    CONSTRAINT p2d2_grabflure_uuid_check CHECK ((p2d2_uuid IS NOT NULL))
+);
+
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_grabflure OWNER TO "{{ p2d2_admin_role }}";
+
+CREATE TABLE IF NOT EXISTS {{ p2d2_instance_schema }}.p2d2_grabflure_snapshots (
+    snapshot_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    session_id bigint NOT NULL,
+    grabflur_id uuid NOT NULL,
+    created_at timestamp with time zone NOT NULL DEFAULT now(),
+    created_by text NOT NULL,
+    seq_nr integer NOT NULL,
+    client_ts timestamp with time zone NOT NULL,
+    commands jsonb NOT NULL,
+    CONSTRAINT p2d2_grabflure_snapshots_uuid_check CHECK ((snapshot_id IS NOT NULL))
+);
+
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_grabflure_snapshots OWNER TO "{{ p2d2_admin_role }}";
+
+CREATE TABLE IF NOT EXISTS {{ p2d2_instance_schema }}.p2d2_grabflure_versionen (
+    version_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    grabflur_id uuid NOT NULL,
+    version_nr integer NOT NULL,
+    session_id bigint,
+    is_session_boundary boolean NOT NULL DEFAULT false,
+    created_at timestamp with time zone NOT NULL DEFAULT now(),
+    created_by text NOT NULL,
+    edit_comment text,
+    geom geometry(MultiPolygon,4326),
+    id_intern bigint,
+    id_import bigint,
+    fh_nr character varying(20),
+    fh_name character varying(100),
+    flur_nr character varying(20),
+    wp_name character varying(100),
+    kommune_id integer,
+    CONSTRAINT p2d2_grabflure_versionen_uuid_check CHECK ((version_id IS NOT NULL))
+);
+
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_grabflure_versionen OWNER TO "{{ p2d2_admin_role }}";
+
+CREATE TABLE IF NOT EXISTS {{ p2d2_instance_schema }}.p2d2_graeber (
+    geom geometry(MultiPolygon,4326),
+    id_intern integer,
+    probleme character varying(100),
+    fried_nr character varying(2),
+    fried_name character varying(50),
+    grabflur character varying(10),
+    grabnummer character varying(50),
+    grabart character varying(100),
+    grabart_key character varying(10),
+    anzahl_grabstellen integer,
+    sperrung character varying(10),
+    gkey character varying(10),
+    nachname character varying(50),
+    vorname character varying(50),
+    geburtsdatum date,
+    sterbedatum date,
+    satzschluessel character varying(50),
+    grabstaette_status character varying(20),
+    bestattungsart character varying(20),
+    p2d2_uuid uuid NOT NULL DEFAULT gen_random_uuid(),
+    kommune_id integer
+);
+
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_graeber OWNER TO "{{ p2d2_admin_role }}";
+
+CREATE UNLOGGED TABLE IF NOT EXISTS {{ p2d2_instance_schema }}.p2d2_graeber_snapshots (
+    snapshot_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    session_id bigint NOT NULL,
+    grab_id uuid NOT NULL,
+    created_at timestamp with time zone NOT NULL DEFAULT now(),
+    created_by text NOT NULL,
+    probleme character varying(100),
+    fried_nr character varying(2),
+    fried_name character varying(50),
+    grabflur character varying(10),
+    grabnummer character varying(50),
+    grabart character varying(100),
+    grabart_key character varying(10),
+    anzahl_grabstellen integer,
+    sperrung character varying(10),
+    gkey character varying(10),
+    nachname character varying(50),
+    vorname character varying(50),
+    geburtsdatum date,
+    sterbedatum date,
+    satzschluessel character varying(50),
+    grabstaette_status character varying(20),
+    bestattungsart character varying(20),
+    osm_raw_data jsonb,
+    osm_merge_note text,
+    osm_id bigint,
+    osm_changeset_id bigint,
+    osm_version bigint,
+    seq_nr integer NOT NULL,
+    client_ts timestamp with time zone NOT NULL,
+    commands jsonb NOT NULL
+);
+
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_graeber_snapshots OWNER TO "{{ p2d2_admin_role }}";
+
+CREATE TABLE IF NOT EXISTS {{ p2d2_instance_schema }}.p2d2_graeber_versionen (
+    version_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    grab_id uuid NOT NULL,
+    version_nr integer NOT NULL,
+    session_id bigint,
+    is_session_boundary boolean NOT NULL DEFAULT false,
+    created_at timestamp with time zone NOT NULL DEFAULT now(),
+    created_by text NOT NULL,
+    edit_comment text,
+    geom geometry(MultiPolygon,4326),
+    id_intern integer,
+    id_import integer,
+    probleme character varying(100),
+    fried_nr character varying(2),
+    fried_name character varying(50),
+    grabflur character varying(10),
+    grabnummer character varying(50),
+    grabart character varying(100),
+    grabart_key character varying(10),
+    anzahl_grabstellen integer,
+    sperrung character varying(10),
+    gkey character varying(10),
+    nachname character varying(50),
+    vorname character varying(50),
+    geburtsdatum date,
+    sterbedatum date,
+    satzschluessel character varying(50),
+    grabstaette_status character varying(20),
+    bestattungsart character varying(20),
+    osm_raw_data jsonb,
+    osm_merge_note text,
+    osm_id bigint,
+    osm_changeset_id bigint,
+    osm_version bigint,
+    kommune_id integer,
+    CONSTRAINT chk_{{ p2d2_instance_schema }}_graeber_versionen_version CHECK ((version_nr >= 0))
+);
+
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_graeber_versionen OWNER TO "{{ p2d2_admin_role }}";
+
+CREATE TABLE IF NOT EXISTS {{ p2d2_instance_schema }}.p2d2_kommunen (
+    id integer NOT NULL,
+    wp_name character varying(50) NOT NULL,
+    name character varying(100) NOT NULL,
+    osm_relation_id bigint,
+    country_code character(2) NOT NULL DEFAULT 'de'::bpchar,
+    created_at timestamp with time zone NOT NULL DEFAULT now()
+);
+
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_kommunen OWNER TO "{{ p2d2_admin_role }}";
+
+CREATE TABLE IF NOT EXISTS {{ p2d2_instance_schema }}.wf_feature_status (
+    id bigint NOT NULL,
+    feature_type text NOT NULL,
+    state {{ p2d2_instance_schema }}.wf_feature_state NOT NULL DEFAULT 'unbearbeitet'::{{ p2d2_instance_schema }}.wf_feature_state,
+    last_session_id bigint,
+    last_qs1_at timestamp with time zone,
+    last_qs1_by text,
+    last_qs2_at timestamp with time zone,
+    last_qs2_by text,
+    last_export_at timestamp with time zone,
+    last_export_by text,
+    last_changeset_id text,
+    created_at timestamp with time zone NOT NULL DEFAULT now(),
+    updated_at timestamp with time zone NOT NULL DEFAULT now(),
+    feature_id uuid NOT NULL
+);
+
+
+ALTER TABLE {{ p2d2_instance_schema }}.wf_feature_status OWNER TO "{{ p2d2_admin_role }}";
+
+CREATE TABLE IF NOT EXISTS {{ p2d2_instance_schema }}.wf_protokoll (
+    id bigint NOT NULL,
+    event_type {{ p2d2_instance_schema }}.wf_event_type NOT NULL,
+    feature_type text,
+    session_id bigint,
+    snapshot_id bigint,
+    details jsonb,
+    created_at timestamp with time zone NOT NULL DEFAULT now(),
+    created_by text NOT NULL,
+    feature_id uuid
+);
+
+
+ALTER TABLE {{ p2d2_instance_schema }}.wf_protokoll OWNER TO "{{ p2d2_admin_role }}";
+
+CREATE TABLE IF NOT EXISTS {{ p2d2_instance_schema }}.wf_qs_maengel (
+    id bigint NOT NULL,
+    feature_type text NOT NULL,
+    qs_level {{ p2d2_instance_schema }}.wf_qs_level NOT NULL,
+    result {{ p2d2_instance_schema }}.wf_qs_result NOT NULL,
+    version_table text,
+    version_id uuid,
+    titel text NOT NULL,
+    beschreibung text,
+    reported_by text NOT NULL,
+    created_at timestamp with time zone NOT NULL DEFAULT now(),
+    resolved boolean NOT NULL DEFAULT false,
+    resolved_at timestamp with time zone,
+    resolved_by text,
+    feature_id uuid NOT NULL,
+    CONSTRAINT chk_wf_qs_maengel_resolved CHECK ((((resolved = false) AND (resolved_at IS NULL) AND (resolved_by IS NULL)) OR ((resolved = true) AND (resolved_at IS NOT NULL))))
+);
+
+
+ALTER TABLE {{ p2d2_instance_schema }}.wf_qs_maengel OWNER TO "{{ p2d2_admin_role }}";
+
+CREATE TABLE IF NOT EXISTS {{ p2d2_instance_schema }}.wf_sessions (
+    id bigint NOT NULL,
+    feature_type text NOT NULL DEFAULT 'grab'::text,
+    feature_set_id text NOT NULL,
+    state {{ p2d2_instance_schema }}.wf_session_state NOT NULL DEFAULT 'active'::{{ p2d2_instance_schema }}.wf_session_state,
+    started_by text NOT NULL,
+    ended_by text,
+    started_at timestamp with time zone NOT NULL DEFAULT now(),
+    ended_at timestamp with time zone,
+    last_active timestamp with time zone NOT NULL DEFAULT now(),
+    expires_at timestamp with time zone NOT NULL DEFAULT (now() + '04:00:00'::interval),
+    wpname text NOT NULL,
+    municipality text NOT NULL,
+    context_key text,
+    context_label text,
+    context_value text,
+    feature_uuid uuid
+);
+
+
+ALTER TABLE {{ p2d2_instance_schema }}.wf_sessions OWNER TO "{{ p2d2_admin_role }}";
+
+CREATE TABLE IF NOT EXISTS {{ p2d2_instance_schema }}.wf_snapshots (
+    id bigint NOT NULL,
+    session_id bigint NOT NULL,
+    feature_type text NOT NULL,
+    version_table text NOT NULL,
+    version_id uuid NOT NULL,
+    snapshot_no integer NOT NULL,
+    is_final boolean NOT NULL DEFAULT false,
+    kind {{ p2d2_instance_schema }}.wf_snapshot_kind NOT NULL DEFAULT 'auto'::{{ p2d2_instance_schema }}.wf_snapshot_kind,
+    created_at timestamp with time zone NOT NULL DEFAULT now(),
+    created_by text NOT NULL,
+    metadata jsonb,
+    feature_id uuid NOT NULL,
+    version_nr integer,
+    CONSTRAINT chk_wf_snapshots_no CHECK ((snapshot_no > 0)),
+    CONSTRAINT chk_wf_snapshots_version_table CHECK ((version_table = ANY (ARRAY['p2d2_graeber_snapshots'::text, 'p2d2_graeber_versionen'::text, 'p2d2_grabflure_snapshots'::text, 'p2d2_grabflure_versionen'::text])))
+);
+
+
+ALTER TABLE {{ p2d2_instance_schema }}.wf_snapshots OWNER TO "{{ p2d2_admin_role }}";
+
+
+CREATE SEQUENCE IF NOT EXISTS {{ p2d2_instance_schema }}.p2d2_grabflur_mapping_id_seq
+    AS bigint
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    MAXVALUE 9223372036854775807
+    CACHE 1;
+
+
+ALTER SEQUENCE {{ p2d2_instance_schema }}.p2d2_grabflur_mapping_id_seq OWNER TO "{{ p2d2_admin_role }}";
+
+ALTER SEQUENCE {{ p2d2_instance_schema }}.p2d2_grabflur_mapping_id_seq OWNED BY {{ p2d2_instance_schema }}.p2d2_grabflur_mapping.id;
+CREATE SEQUENCE IF NOT EXISTS {{ p2d2_instance_schema }}.p2d2_kommunen_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    MAXVALUE 2147483647
+    CACHE 1;
+
+
+ALTER SEQUENCE {{ p2d2_instance_schema }}.p2d2_kommunen_id_seq OWNER TO "{{ p2d2_admin_role }}";
+
+ALTER SEQUENCE {{ p2d2_instance_schema }}.p2d2_kommunen_id_seq OWNED BY {{ p2d2_instance_schema }}.p2d2_kommunen.id;
+CREATE SEQUENCE IF NOT EXISTS {{ p2d2_instance_schema }}.wf_feature_status_id_seq
+    AS bigint
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    MAXVALUE 9223372036854775807
+    CACHE 1;
+
+
+ALTER SEQUENCE {{ p2d2_instance_schema }}.wf_feature_status_id_seq OWNER TO "{{ p2d2_admin_role }}";
+
+ALTER SEQUENCE {{ p2d2_instance_schema }}.wf_feature_status_id_seq OWNED BY {{ p2d2_instance_schema }}.wf_feature_status.id;
+CREATE SEQUENCE IF NOT EXISTS {{ p2d2_instance_schema }}.wf_protokoll_id_seq
+    AS bigint
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    MAXVALUE 9223372036854775807
+    CACHE 1;
+
+
+ALTER SEQUENCE {{ p2d2_instance_schema }}.wf_protokoll_id_seq OWNER TO "{{ p2d2_admin_role }}";
+
+ALTER SEQUENCE {{ p2d2_instance_schema }}.wf_protokoll_id_seq OWNED BY {{ p2d2_instance_schema }}.wf_protokoll.id;
+CREATE SEQUENCE IF NOT EXISTS {{ p2d2_instance_schema }}.wf_qs_maengel_id_seq
+    AS bigint
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    MAXVALUE 9223372036854775807
+    CACHE 1;
+
+
+ALTER SEQUENCE {{ p2d2_instance_schema }}.wf_qs_maengel_id_seq OWNER TO "{{ p2d2_admin_role }}";
+
+ALTER SEQUENCE {{ p2d2_instance_schema }}.wf_qs_maengel_id_seq OWNED BY {{ p2d2_instance_schema }}.wf_qs_maengel.id;
+CREATE SEQUENCE IF NOT EXISTS {{ p2d2_instance_schema }}.wf_sessions_id_seq
+    AS bigint
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    MAXVALUE 9223372036854775807
+    CACHE 1;
+
+
+ALTER SEQUENCE {{ p2d2_instance_schema }}.wf_sessions_id_seq OWNER TO "{{ p2d2_admin_role }}";
+
+ALTER SEQUENCE {{ p2d2_instance_schema }}.wf_sessions_id_seq OWNED BY {{ p2d2_instance_schema }}.wf_sessions.id;
+CREATE SEQUENCE IF NOT EXISTS {{ p2d2_instance_schema }}.wf_snapshots_id_seq
+    AS bigint
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    MAXVALUE 9223372036854775807
+    CACHE 1;
+
+
+ALTER SEQUENCE {{ p2d2_instance_schema }}.wf_snapshots_id_seq OWNER TO "{{ p2d2_admin_role }}";
+
+ALTER SEQUENCE {{ p2d2_instance_schema }}.wf_snapshots_id_seq OWNED BY {{ p2d2_instance_schema }}.wf_snapshots.id;
+
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.p2d2_grabflur_mapping ALTER COLUMN id SET DEFAULT nextval('{{ p2d2_instance_schema }}.p2d2_grabflur_mapping_id_seq'::regclass);
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.p2d2_kommunen ALTER COLUMN id SET DEFAULT nextval('{{ p2d2_instance_schema }}.p2d2_kommunen_id_seq'::regclass);
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.wf_feature_status ALTER COLUMN id SET DEFAULT nextval('{{ p2d2_instance_schema }}.wf_feature_status_id_seq'::regclass);
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.wf_protokoll ALTER COLUMN id SET DEFAULT nextval('{{ p2d2_instance_schema }}.wf_protokoll_id_seq'::regclass);
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.wf_qs_maengel ALTER COLUMN id SET DEFAULT nextval('{{ p2d2_instance_schema }}.wf_qs_maengel_id_seq'::regclass);
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.wf_sessions ALTER COLUMN id SET DEFAULT nextval('{{ p2d2_instance_schema }}.wf_sessions_id_seq'::regclass);
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.wf_snapshots ALTER COLUMN id SET DEFAULT nextval('{{ p2d2_instance_schema }}.wf_snapshots_id_seq'::regclass);
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_containers DROP CONSTRAINT IF EXISTS p2d2_containers_pkey;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.p2d2_containers
+    ADD CONSTRAINT p2d2_containers_pkey PRIMARY KEY (id);
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_grabflur_mapping DROP CONSTRAINT IF EXISTS fk_p2d2_grabflur_mapping_grab;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.p2d2_grabflur_mapping
+    ADD CONSTRAINT fk_p2d2_grabflur_mapping_grab FOREIGN KEY (grab_id) REFERENCES {{ p2d2_instance_schema }}.p2d2_graeber(p2d2_uuid) ON DELETE CASCADE;
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_grabflur_mapping DROP CONSTRAINT IF EXISTS p2d2_grabflur_mapping_pkey;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.p2d2_grabflur_mapping
+    ADD CONSTRAINT p2d2_grabflur_mapping_pkey PRIMARY KEY (id);
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_grabflure DROP CONSTRAINT IF EXISTS p2d2_grabflure_kommune_fk;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.p2d2_grabflure
+    ADD CONSTRAINT p2d2_grabflure_kommune_fk FOREIGN KEY (kommune_id) REFERENCES {{ p2d2_instance_schema }}.p2d2_kommunen(id);
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_grabflure DROP CONSTRAINT IF EXISTS p2d2_grabflure_pkey;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.p2d2_grabflure
+    ADD CONSTRAINT p2d2_grabflure_pkey PRIMARY KEY (p2d2_uuid);
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_grabflure_snapshots DROP CONSTRAINT IF EXISTS p2d2_grabflure_snapshots_grabflur_fk;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.p2d2_grabflure_snapshots
+    ADD CONSTRAINT p2d2_grabflure_snapshots_grabflur_fk FOREIGN KEY (grabflur_id) REFERENCES {{ p2d2_instance_schema }}.p2d2_grabflure(p2d2_uuid) ON DELETE CASCADE;
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_grabflure_snapshots DROP CONSTRAINT IF EXISTS p2d2_grabflure_snapshots_pkey;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.p2d2_grabflure_snapshots
+    ADD CONSTRAINT p2d2_grabflure_snapshots_pkey PRIMARY KEY (snapshot_id);
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_grabflure_snapshots DROP CONSTRAINT IF EXISTS p2d2_grabflure_snapshots_seq_unique;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.p2d2_grabflure_snapshots
+    ADD CONSTRAINT p2d2_grabflure_snapshots_seq_unique UNIQUE (session_id, grabflur_id, seq_nr);
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_grabflure_snapshots DROP CONSTRAINT IF EXISTS p2d2_grabflure_snapshots_session_fk;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.p2d2_grabflure_snapshots
+    ADD CONSTRAINT p2d2_grabflure_snapshots_session_fk FOREIGN KEY (session_id) REFERENCES {{ p2d2_instance_schema }}.wf_sessions(id) ON DELETE CASCADE;
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_grabflure_versionen DROP CONSTRAINT IF EXISTS p2d2_grabflure_versionen_grabflur_fk;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.p2d2_grabflure_versionen
+    ADD CONSTRAINT p2d2_grabflure_versionen_grabflur_fk FOREIGN KEY (grabflur_id) REFERENCES {{ p2d2_instance_schema }}.p2d2_grabflure(p2d2_uuid) ON DELETE CASCADE;
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_grabflure_versionen DROP CONSTRAINT IF EXISTS p2d2_grabflure_versionen_pkey;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.p2d2_grabflure_versionen
+    ADD CONSTRAINT p2d2_grabflure_versionen_pkey PRIMARY KEY (version_id);
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_grabflure_versionen DROP CONSTRAINT IF EXISTS p2d2_grabflure_versionen_session_fk;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.p2d2_grabflure_versionen
+    ADD CONSTRAINT p2d2_grabflure_versionen_session_fk FOREIGN KEY (session_id) REFERENCES {{ p2d2_instance_schema }}.wf_sessions(id);
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_graeber DROP CONSTRAINT IF EXISTS p2d2_graeber_id_key;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.p2d2_graeber
+    ADD CONSTRAINT p2d2_graeber_id_key UNIQUE (id_intern);
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_graeber DROP CONSTRAINT IF EXISTS p2d2_graeber_kommune_id_fkey;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.p2d2_graeber
+    ADD CONSTRAINT p2d2_graeber_kommune_id_fkey FOREIGN KEY (kommune_id) REFERENCES {{ p2d2_instance_schema }}.p2d2_kommunen(id);
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_graeber DROP CONSTRAINT IF EXISTS p2d2_graeber_pkey;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.p2d2_graeber
+    ADD CONSTRAINT p2d2_graeber_pkey PRIMARY KEY (p2d2_uuid);
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_graeber DROP CONSTRAINT IF EXISTS uq_graeber_p2d2_uuid;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.p2d2_graeber
+    ADD CONSTRAINT uq_graeber_p2d2_uuid UNIQUE (p2d2_uuid);
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_graeber DROP CONSTRAINT IF EXISTS uq_{{ p2d2_instance_schema }}_graeber_id;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.p2d2_graeber
+    ADD CONSTRAINT uq_{{ p2d2_instance_schema }}_graeber_id UNIQUE (id_intern);
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_graeber_snapshots DROP CONSTRAINT IF EXISTS fk_p2d2_graeber_snapshots_grab;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.p2d2_graeber_snapshots
+    ADD CONSTRAINT fk_p2d2_graeber_snapshots_grab FOREIGN KEY (grab_id) REFERENCES {{ p2d2_instance_schema }}.p2d2_graeber(p2d2_uuid) ON DELETE CASCADE;
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_graeber_snapshots DROP CONSTRAINT IF EXISTS fk_p2d2_graeber_snapshots_session;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.p2d2_graeber_snapshots
+    ADD CONSTRAINT fk_p2d2_graeber_snapshots_session FOREIGN KEY (session_id) REFERENCES {{ p2d2_instance_schema }}.wf_sessions(id) ON DELETE CASCADE;
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_graeber_snapshots DROP CONSTRAINT IF EXISTS p2d2_graeber_snapshots_pkey;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.p2d2_graeber_snapshots
+    ADD CONSTRAINT p2d2_graeber_snapshots_pkey PRIMARY KEY (snapshot_id);
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_graeber_snapshots DROP CONSTRAINT IF EXISTS p2d2_graeber_snapshots_seq_unique;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.p2d2_graeber_snapshots
+    ADD CONSTRAINT p2d2_graeber_snapshots_seq_unique UNIQUE (session_id, grab_id, seq_nr);
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_graeber_versionen DROP CONSTRAINT IF EXISTS fk_p2d2_graeber_versionen_grab;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.p2d2_graeber_versionen
+    ADD CONSTRAINT fk_p2d2_graeber_versionen_grab FOREIGN KEY (grab_id) REFERENCES {{ p2d2_instance_schema }}.p2d2_graeber(p2d2_uuid) ON DELETE CASCADE;
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_graeber_versionen DROP CONSTRAINT IF EXISTS fk_p2d2_graeber_versionen_session;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.p2d2_graeber_versionen
+    ADD CONSTRAINT fk_p2d2_graeber_versionen_session FOREIGN KEY (session_id) REFERENCES {{ p2d2_instance_schema }}.wf_sessions(id);
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_graeber_versionen DROP CONSTRAINT IF EXISTS p2d2_graeber_versionen_kommune_id_fkey;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.p2d2_graeber_versionen
+    ADD CONSTRAINT p2d2_graeber_versionen_kommune_id_fkey FOREIGN KEY (kommune_id) REFERENCES {{ p2d2_instance_schema }}.p2d2_kommunen(id);
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_graeber_versionen DROP CONSTRAINT IF EXISTS p2d2_graeber_versionen_pkey;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.p2d2_graeber_versionen
+    ADD CONSTRAINT p2d2_graeber_versionen_pkey PRIMARY KEY (version_id);
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_graeber_versionen DROP CONSTRAINT IF EXISTS uq_{{ p2d2_instance_schema }}_p2d2_graeber_versionen_grab_version;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.p2d2_graeber_versionen
+    ADD CONSTRAINT uq_{{ p2d2_instance_schema }}_p2d2_graeber_versionen_grab_version UNIQUE (grab_id, version_nr);
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_kommunen DROP CONSTRAINT IF EXISTS p2d2_kommunen_pkey;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.p2d2_kommunen
+    ADD CONSTRAINT p2d2_kommunen_pkey PRIMARY KEY (id);
+
+ALTER TABLE {{ p2d2_instance_schema }}.p2d2_kommunen DROP CONSTRAINT IF EXISTS p2d2_kommunen_wp_name_key;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.p2d2_kommunen
+    ADD CONSTRAINT p2d2_kommunen_wp_name_key UNIQUE (wp_name);
+
+ALTER TABLE {{ p2d2_instance_schema }}.wf_feature_status DROP CONSTRAINT IF EXISTS uq_{{ p2d2_instance_schema }}_wf_feature_status_feature;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.wf_feature_status
+    ADD CONSTRAINT uq_{{ p2d2_instance_schema }}_wf_feature_status_feature UNIQUE (feature_type, feature_id);
+
+ALTER TABLE {{ p2d2_instance_schema }}.wf_feature_status DROP CONSTRAINT IF EXISTS wf_feature_status_last_session_id_fkey;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.wf_feature_status
+    ADD CONSTRAINT wf_feature_status_last_session_id_fkey FOREIGN KEY (last_session_id) REFERENCES {{ p2d2_instance_schema }}.wf_sessions(id);
+
+ALTER TABLE {{ p2d2_instance_schema }}.wf_feature_status DROP CONSTRAINT IF EXISTS wf_feature_status_pkey;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.wf_feature_status
+    ADD CONSTRAINT wf_feature_status_pkey PRIMARY KEY (id);
+
+ALTER TABLE {{ p2d2_instance_schema }}.wf_protokoll DROP CONSTRAINT IF EXISTS wf_protokoll_pkey;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.wf_protokoll
+    ADD CONSTRAINT wf_protokoll_pkey PRIMARY KEY (id);
+
+ALTER TABLE {{ p2d2_instance_schema }}.wf_protokoll DROP CONSTRAINT IF EXISTS wf_protokoll_session_id_fkey;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.wf_protokoll
+    ADD CONSTRAINT wf_protokoll_session_id_fkey FOREIGN KEY (session_id) REFERENCES {{ p2d2_instance_schema }}.wf_sessions(id);
+
+ALTER TABLE {{ p2d2_instance_schema }}.wf_protokoll DROP CONSTRAINT IF EXISTS wf_protokoll_snapshot_id_fkey;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.wf_protokoll
+    ADD CONSTRAINT wf_protokoll_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES {{ p2d2_instance_schema }}.wf_snapshots(id);
+
+ALTER TABLE {{ p2d2_instance_schema }}.wf_qs_maengel DROP CONSTRAINT IF EXISTS wf_qs_maengel_pkey;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.wf_qs_maengel
+    ADD CONSTRAINT wf_qs_maengel_pkey PRIMARY KEY (id);
+
+ALTER TABLE {{ p2d2_instance_schema }}.wf_sessions DROP CONSTRAINT IF EXISTS wf_sessions_pkey;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.wf_sessions
+    ADD CONSTRAINT wf_sessions_pkey PRIMARY KEY (id);
+
+ALTER TABLE {{ p2d2_instance_schema }}.wf_snapshots DROP CONSTRAINT IF EXISTS uq_{{ p2d2_instance_schema }}_wf_snapshots_session_feature_no;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.wf_snapshots
+    ADD CONSTRAINT uq_{{ p2d2_instance_schema }}_wf_snapshots_session_feature_no UNIQUE (session_id, feature_id, snapshot_no);
+
+ALTER TABLE {{ p2d2_instance_schema }}.wf_snapshots DROP CONSTRAINT IF EXISTS wf_snapshots_pkey;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.wf_snapshots
+    ADD CONSTRAINT wf_snapshots_pkey PRIMARY KEY (id);
+
+ALTER TABLE {{ p2d2_instance_schema }}.wf_snapshots DROP CONSTRAINT IF EXISTS wf_snapshots_session_id_fkey;
+ALTER TABLE ONLY {{ p2d2_instance_schema }}.wf_snapshots
+    ADD CONSTRAINT wf_snapshots_session_id_fkey FOREIGN KEY (session_id) REFERENCES {{ p2d2_instance_schema }}.wf_sessions(id) ON DELETE CASCADE;
+
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_graeber_snapshots_grab ON {{ p2d2_instance_schema }}.p2d2_graeber_snapshots USING btree (grab_id)
+
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_graeber_snapshots_grabflur ON {{ p2d2_instance_schema }}.p2d2_graeber_snapshots USING btree (fried_nr, grabflur)
+
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_graeber_snapshots_session ON {{ p2d2_instance_schema }}.p2d2_graeber_snapshots USING btree (session_id)
+
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_graeber_versionen_boundary ON {{ p2d2_instance_schema }}.p2d2_graeber_versionen USING btree (is_session_boundary)
+
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_graeber_versionen_geom ON {{ p2d2_instance_schema }}.p2d2_graeber_versionen USING gist (geom)
+
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_graeber_versionen_grabflur ON {{ p2d2_instance_schema }}.p2d2_graeber_versionen USING btree (fried_nr, grabflur)
+
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_graeber_versionen_session ON {{ p2d2_instance_schema }}.p2d2_graeber_versionen USING btree (session_id)
+
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_p2d2_grabflur_mapping_container ON {{ p2d2_instance_schema }}.p2d2_grabflur_mapping USING btree (container_id)
+
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_p2d2_grabflur_mapping_context ON {{ p2d2_instance_schema }}.p2d2_grabflur_mapping USING btree (wpname, cemetery_key, grabflur)
+
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_p2d2_grabflur_mapping_grab ON {{ p2d2_instance_schema }}.p2d2_grabflur_mapping USING btree (grab_id)
+
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_p2d2_graeber_versionen_grab_id ON {{ p2d2_instance_schema }}.p2d2_graeber_versionen USING btree (grab_id)
+
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_feature_status_session ON {{ p2d2_instance_schema }}.wf_feature_status USING btree (last_session_id)
+
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_feature_status_state ON {{ p2d2_instance_schema }}.wf_feature_status USING btree (state)
+
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_protokoll_created_at ON {{ p2d2_instance_schema }}.wf_protokoll USING btree (created_at)
+
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_protokoll_event_type ON {{ p2d2_instance_schema }}.wf_protokoll USING btree (event_type)
+
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_protokoll_feature ON {{ p2d2_instance_schema }}.wf_protokoll USING btree (feature_type, feature_id)
+
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_protokoll_session ON {{ p2d2_instance_schema }}.wf_protokoll USING btree (session_id)
+
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_qs_maengel_feature ON {{ p2d2_instance_schema }}.wf_qs_maengel USING btree (feature_type, feature_id)
+
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_qs_maengel_level ON {{ p2d2_instance_schema }}.wf_qs_maengel USING btree (qs_level)
+
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_qs_maengel_resolved ON {{ p2d2_instance_schema }}.wf_qs_maengel USING btree (resolved)
+
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_qs_maengel_version_ref ON {{ p2d2_instance_schema }}.wf_qs_maengel USING btree (version_table, version_id)
+
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_sessions_context ON {{ p2d2_instance_schema }}.wf_sessions USING btree (feature_type, wpname, context_key, context_value)
+
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_sessions_last_active ON {{ p2d2_instance_schema }}.wf_sessions USING btree (last_active)
+
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_sessions_state_expires ON {{ p2d2_instance_schema }}.wf_sessions USING btree (state, expires_at)
+
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_snapshots_feature ON {{ p2d2_instance_schema }}.wf_snapshots USING btree (feature_type, feature_id)
+
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_snapshots_feature_final ON {{ p2d2_instance_schema }}.wf_snapshots USING btree (feature_type, feature_id, is_final)
+
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_snapshots_session ON {{ p2d2_instance_schema }}.wf_snapshots USING btree (session_id)
+
+CREATE INDEX IF NOT EXISTS idx_{{ p2d2_instance_schema }}_wf_snapshots_version_ref ON {{ p2d2_instance_schema }}.wf_snapshots USING btree (version_table, version_id)
+
+CREATE INDEX IF NOT EXISTS p2d2_containers_cache_expires_idx ON {{ p2d2_instance_schema }}.p2d2_containers USING btree (cache_expires)
+
+CREATE INDEX IF NOT EXISTS p2d2_containers_container_type_idx ON {{ p2d2_instance_schema }}.p2d2_containers USING btree (container_type)
+
+CREATE INDEX IF NOT EXISTS p2d2_containers_municipality_idx ON {{ p2d2_instance_schema }}.p2d2_containers USING btree (municipality)
+
+CREATE INDEX IF NOT EXISTS p2d2_grabflure_geom_idx ON {{ p2d2_instance_schema }}.p2d2_grabflure USING gist (geom)
+
+CREATE INDEX IF NOT EXISTS p2d2_grabflure_kommune_idx ON {{ p2d2_instance_schema }}.p2d2_grabflure USING btree (kommune_id)
+
+CREATE INDEX IF NOT EXISTS p2d2_grabflure_snapshots_grabflur_idx ON {{ p2d2_instance_schema }}.p2d2_grabflure_snapshots USING btree (grabflur_id)
+
+CREATE INDEX IF NOT EXISTS p2d2_grabflure_snapshots_session_idx ON {{ p2d2_instance_schema }}.p2d2_grabflure_snapshots USING btree (session_id)
+
+CREATE INDEX IF NOT EXISTS p2d2_grabflure_versionen_geom_idx ON {{ p2d2_instance_schema }}.p2d2_grabflure_versionen USING gist (geom)
+
+CREATE INDEX IF NOT EXISTS p2d2_grabflure_versionen_grabflur_idx ON {{ p2d2_instance_schema }}.p2d2_grabflure_versionen USING btree (grabflur_id)
+
+CREATE INDEX IF NOT EXISTS p2d2_grabflure_versionen_session_idx ON {{ p2d2_instance_schema }}.p2d2_grabflure_versionen USING btree (session_id)
+
+CREATE INDEX IF NOT EXISTS p2d2_grabflure_wpname_idx ON {{ p2d2_instance_schema }}.p2d2_grabflure USING btree (wp_name)
+
+CREATE OR REPLACE VIEW {{ p2d2_instance_schema }}.v_grabflure_aktuell AS
+ SELECT g.p2d2_uuid::text AS p2d2_uuid,
+    COALESCE(v.geom, g.geom) AS geom,
+    g.id_intern,
+    g.fh_nr,
+    g.fh_name,
+    g.flur_nr,
+    g.wp_name,
+    g.kommune_id,
+    g.created_at,
+    g.updated_at,
+    v.version_nr,
+    v.version_id AS aktuelle_version_id,
+    v.session_id AS aktuelle_session_id,
+    v.edit_comment AS version_kommentar,
+    v.created_at AS version_erstellt_am,
+    v.created_by AS version_erstellt_von,
+    COALESCE(fs.state::text, 'unbearbeitet'::text) AS workflow_status,
+    fs.last_session_id AS letzte_session_id
+   FROM {{ p2d2_instance_schema }}.p2d2_grabflure g
+     LEFT JOIN LATERAL ( SELECT gv.version_id,
+            gv.grabflur_id,
+            gv.version_nr,
+            gv.session_id,
+            gv.is_session_boundary,
+            gv.created_at,
+            gv.created_by,
+            gv.edit_comment,
+            gv.geom,
+            gv.id_intern,
+            gv.id_import,
+            gv.fh_nr,
+            gv.fh_name,
+            gv.flur_nr,
+            gv.wp_name,
+            gv.kommune_id
+           FROM {{ p2d2_instance_schema }}.p2d2_grabflure_versionen gv
+          WHERE gv.grabflur_id = g.p2d2_uuid
+          ORDER BY gv.version_nr DESC
+         LIMIT 1) v ON true
+     LEFT JOIN {{ p2d2_instance_schema }}.wf_feature_status fs ON fs.feature_id = g.p2d2_uuid AND fs.feature_type = 'grabflur'::text;;
+
+
+ALTER VIEW {{ p2d2_instance_schema }}.v_grabflure_aktuell OWNER TO "{{ p2d2_admin_role }}";
+CREATE OR REPLACE VIEW {{ p2d2_instance_schema }}.v_graeber_aktuell AS
+ SELECT DISTINCT ON (g.p2d2_uuid) g.p2d2_uuid::text AS p2d2_uuid,
+    COALESCE(v.geom::geometry, g.geom) AS geom,
+    g.id_intern,
+    COALESCE(v.probleme, g.probleme) AS probleme,
+    COALESCE(v.fried_nr, g.fried_nr) AS fried_nr,
+    COALESCE(v.fried_name, g.fried_name) AS fried_name,
+    COALESCE(v.grabflur, g.grabflur) AS grabflur,
+    COALESCE(v.grabnummer, g.grabnummer) AS grabnummer,
+    COALESCE(v.grabart, g.grabart) AS grabart,
+    COALESCE(v.grabart_key, g.grabart_key) AS grabart_key,
+    COALESCE(v.anzahl_grabstellen, g.anzahl_grabstellen) AS anzahl_grabstellen,
+    COALESCE(v.sperrung, g.sperrung) AS sperrung,
+    COALESCE(v.gkey, g.gkey) AS gkey,
+    COALESCE(v.nachname, g.nachname) AS nachname,
+    COALESCE(v.vorname, g.vorname) AS vorname,
+    COALESCE(v.geburtsdatum, g.geburtsdatum) AS geburtsdatum,
+    COALESCE(v.sterbedatum, g.sterbedatum) AS sterbedatum,
+    COALESCE(v.satzschluessel, g.satzschluessel) AS satzschluessel,
+    COALESCE(v.grabstaette_status, g.grabstaette_status) AS grabstaette_status,
+    COALESCE(v.bestattungsart, g.bestattungsart) AS bestattungsart,
+    COALESCE(v.kommune_id, g.kommune_id) AS kommune_id,
+    COALESCE(v.version_nr, 0) AS version_nr,
+    v.osm_id,
+    v.osm_version,
+    v.osm_changeset_id,
+    v.osm_raw_data AS osm_rohdaten,
+    v.osm_merge_note,
+    v.edit_comment AS osm_edit_comment,
+    v.session_id AS aktuelle_session_id,
+    v.created_at AS version_erstellt_am,
+    v.created_by AS version_erstellt_von,
+    fs.state::text AS workflow_status,
+    fs.last_session_id AS letzte_session_id
+   FROM {{ p2d2_instance_schema }}.p2d2_graeber g
+     LEFT JOIN {{ p2d2_instance_schema }}.p2d2_graeber_versionen v ON v.grab_id = g.p2d2_uuid
+     LEFT JOIN {{ p2d2_instance_schema }}.wf_feature_status fs ON fs.feature_id = g.p2d2_uuid AND fs.feature_type = 'grab'::text
+  ORDER BY g.p2d2_uuid, v.version_nr DESC NULLS LAST;;
+
+
+ALTER VIEW {{ p2d2_instance_schema }}.v_graeber_aktuell OWNER TO "{{ p2d2_admin_role }}";
+
+CREATE OR REPLACE FUNCTION {{ p2d2_instance_schema }}.aggregate_session_snapshots(p_session_id bigint)
+ RETURNS integer
+ LANGUAGE plpgsql
+AS $function$
+DECLARE
+    v_count INTEGER;
+BEGIN
+    INSERT INTO {{ p2d2_instance_schema }}.p2d2_graeber_versionen (
+        grab_id, version_nr, session_id, is_session_boundary,
+        created_at, created_by, edit_comment,
+        geom, id_intern, id_import, probleme,
+        fried_nr, fried_name, grabflur, grabnummer,
+        grabart, grabart_key, anzahl_grabstellen,
+        sperrung, gkey, nachname, vorname,
+        geburtsdatum, sterbedatum, satzschluessel,
+        grabstaette_status, bestattungsart,
+        osm_raw_data, osm_merge_note,
+        osm_id, osm_changeset_id, osm_version, kommune_id
+    )
+    SELECT DISTINCT ON (s.grab_id)
+        s.grab_id,
+        COALESCE(
+            (SELECT MAX(v.version_nr)
+               FROM {{ p2d2_instance_schema }}.p2d2_graeber_versionen v
+              WHERE v.grab_id = s.grab_id),
+            -1
+        ) + 1,
+        p_session_id,
+        TRUE,
+        now(), s.created_by, s.edit_comment,
+        s.geom, s.id_intern, s.id_import, s.probleme,
+        s.fried_nr, s.fried_name, s.grabflur, s.grabnummer,
+        s.grabart, s.grabart_key, s.anzahl_grabstellen,
+        s.sperrung, s.gkey, s.nachname, s.vorname,
+        s.geburtsdatum, s.sterbedatum, s.satzschluessel,
+        s.grabstaette_status, s.bestattungsart,
+        s.osm_raw_data, s.osm_merge_note,
+        s.osm_id, s.osm_changeset_id, s.osm_version, s.kommune_id
+    FROM {{ p2d2_instance_schema }}.p2d2_graeber_snapshots s
+    WHERE s.session_id = p_session_id
+    ORDER BY s.grab_id, s.created_at DESC;
+
+    GET DIAGNOSTICS v_count = ROW_COUNT;
+
+    UPDATE {{ p2d2_instance_schema }}.wf_snapshots
+       SET is_final = TRUE
+     WHERE session_id = p_session_id
+       AND version_table = 'p2d2_graeber_snapshots';
+
+    RETURN v_count;
+END;
+$function$
+
+
+ALTER FUNCTION {{ p2d2_instance_schema }}.aggregate_session_snapshots(bigint) OWNER TO "{{ p2d2_admin_role }}";
+CREATE OR REPLACE FUNCTION {{ p2d2_instance_schema }}.on_version_delete()
+ RETURNS trigger
+ LANGUAGE plpgsql
+AS $function$
+BEGIN
+  DELETE FROM {{ p2d2_instance_schema }}.wf_snapshots WHERE version_id = OLD.version_id;
+  UPDATE {{ p2d2_instance_schema }}.wf_sessions SET state='aborted', ended_at=now()
+    WHERE id=OLD.session_id AND state IN ('active','completed');
+  UPDATE {{ p2d2_instance_schema }}.wf_feature_status
+    SET state='unbearbeitet', last_session_id=NULL, updated_at=now()
+    WHERE feature_id=OLD.grabflur_id AND last_session_id=OLD.session_id;
+  RETURN OLD;
+END;
+$function$
+
+
+ALTER FUNCTION {{ p2d2_instance_schema }}.on_version_delete() OWNER TO "{{ p2d2_admin_role }}";
+
+CREATE OR REPLACE TRIGGER trg_version_delete AFTER DELETE ON {{ p2d2_instance_schema }}.p2d2_grabflure_versionen FOR EACH ROW EXECUTE FUNCTION {{ p2d2_instance_schema }}.on_version_delete()
+
+-- de1-Zusatz: fn_container_mitversionen() + trg_container_mitversionen
+
+CREATE OR REPLACE FUNCTION {{ p2d2_instance_schema }}.fn_container_mitversionen()
+ RETURNS trigger
+ LANGUAGE plpgsql
+AS $function$
+BEGIN
+    -- Guard 1: Version-0-Anlage durch ensureVersion0() → nichts tun
+    -- Guard 2: Mitversion, die dieser Trigger selbst angelegt hat → keine Rekursion
+    IF NEW.version_nr = 0 OR NEW.is_session_boundary = FALSE THEN
+        RETURN NEW;
+    END IF;
+
+    EXECUTE format(
+        $sql$
+        INSERT INTO %I.p2d2_grabflure_versionen (
+            grabflur_id,
+            version_nr,
+            session_id,
+            is_session_boundary,
+            created_at,
+            created_by,
+            edit_comment,
+            geom,
+            id_intern,
+            id_import,
+            fh_nr,
+            fh_name,
+            flur_nr,
+            wp_name,
+            kommune_id
+        )
+        SELECT
+            v.p2d2_uuid::uuid,
+            $1,
+            $2,
+            FALSE,
+            now(),
+            $3,
+            'Mitversion Session ' || $2,
+            v.geom,
+            v.id_intern,
+            NULL,
+            v.fh_nr,
+            v.fh_name,
+            v.flur_nr,
+            v.wp_name,
+            v.kommune_id
+        FROM %I.v_grabflure_aktuell v
+        WHERE
+            v.fh_nr = $4
+            AND v.p2d2_uuid::uuid <> $5
+            -- Noch keine Zeile dieser Grabflur in dieser Session vorhanden
+            AND NOT EXISTS (
+                SELECT 1
+                FROM %I.p2d2_grabflure_versionen ex
+                WHERE ex.grabflur_id = v.p2d2_uuid::uuid
+                  AND ex.session_id  = $2
+            )
+        $sql$,
+        TG_TABLE_SCHEMA,
+        TG_TABLE_SCHEMA,
+        TG_TABLE_SCHEMA
+    )
+    USING
+        NEW.version_nr,
+        NEW.session_id,
+        NEW.created_by,
+        NEW.fh_nr,
+        NEW.grabflur_id;
+
+    RETURN NEW;
+END;
+$function$
+
+
+ALTER FUNCTION {{ p2d2_instance_schema }}.fn_container_mitversionen() OWNER TO "{{ p2d2_admin_role }}";
+
+CREATE OR REPLACE TRIGGER trg_container_mitversionen AFTER INSERT ON {{ p2d2_instance_schema }}.p2d2_grabflure_versionen FOR EACH ROW EXECUTE FUNCTION {{ p2d2_instance_schema }}.fn_container_mitversionen()
