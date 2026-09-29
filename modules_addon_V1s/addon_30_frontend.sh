@@ -192,12 +192,61 @@ install_addon_frontend_build() {
     return 1
   fi
 
-  local stage
+  # ── Build-Engine (Docker) bereitstellen ─────────────────────────────────────
+  # Verbindliche Build-Engine der CIVITAS/CORE-V1s-Umgebung ist Docker. Auf der
+  # k3s/containerd-VM ist Docker NICHT dauerhaft installiert. Analog zu
+  # modules_V1s/06c_image_build.sh wird Docker nur dann temporär installiert,
+  # wenn es fehlt, und nach dem Build wieder deinstalliert — kein paralleler
+  # Docker-Daemon auf der VM, kein stilles Zurücklassen.
+  local docker_installed_by_script="false"
+  if command -v docker >/dev/null 2>&1; then
+    log_ok "Build-Engine Docker vorhanden: $(command -v docker) ($(docker --version 2>&1))"
+  else
+    log "Build-Engine Docker nicht vorhanden — installiere temporär (docker.io) …"
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update || { log_error "apt-get update fehlgeschlagen — Docker-Installation nicht möglich"; return 1; }
+    apt-get install -y docker.io || { log_error "docker.io-Installation fehlgeschlagen — Build-Engine fehlt"; return 1; }
+    docker_installed_by_script="true"
+    log_ok "Docker temporär installiert: $(command -v docker) ($(docker --version 2>&1))"
+  fi
+
+  # Fail-Fast: Build-Engine (Binary + Daemon) muss VOR dem Git-Clone nutzbar sein.
+  if ! command -v docker >/dev/null 2>&1; then
+    log_error "Build-Engine Docker nicht verfügbar (kein docker-Binary im PATH)"
+    log_error "  Abbruch vor dem Build. Bitte docker.io installieren oder die Build-Umgebung prüfen."
+    return 1
+  fi
+  if ! docker info >/dev/null 2>&1; then
+    log_error "Build-Engine Docker nicht nutzbar (Docker-Daemon nicht erreichbar): $(command -v docker)"
+    log_error "  Abbruch vor dem Build. Bitte Daemon starten (systemctl start docker) oder docker.io neu installieren."
+    return 1
+  fi
+
+  local stage build_failed=0
   for stage in main dev de1 de2 fv; do
     log "  Image-Build ${stage} (${build_script} ${stage}) …"
-    "${build_script}" "${stage}" \
-      || { log_error "Image-Build ${stage} fehlgeschlagen — Abbruch"; return 1; }
+    if ! "${build_script}" "${stage}"; then
+      log_error "Image-Build ${stage} fehlgeschlagen — Abbruch"
+      build_failed=1
+      break
+    fi
   done
+
+  # ── Docker ggf. wieder deinstallieren (auch bei Build-Fehler) ──────────────
+  if [[ "${docker_installed_by_script}" == "true" ]]; then
+    log "Deinstalliere temporär installiertes Docker (Sicherheitscheck) …"
+    if apt-get purge --dry-run docker.io | grep -qE "Purg docker\.io(:[a-z0-9]+)?[[:space:]]"; then
+      apt-get purge -y docker.io || log_warn "Docker-Deinstallation fehlgeschlagen — bitte manuell prüfen"
+      apt-get autoremove -y || true
+      log_ok "Docker deinstalliert (war temporär installiert)"
+    else
+      log_warn "Sicherheitscheck fehlgeschlagen — Docker-Deinstallation übersprungen (bitte manuell prüfen)"
+    fi
+  fi
+
+  if [[ "${build_failed}" -ne 0 ]]; then
+    return 1
+  fi
 
   log_ok "Frontend-Images für alle 5 Stages gebaut + in k3s importiert"
   return 0
