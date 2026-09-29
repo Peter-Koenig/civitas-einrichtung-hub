@@ -26,7 +26,6 @@
 # dieser Bestandteil der dokumentierten Zielstruktur (3 Funktionen, 2 Trigger je
 # Schema) ist — siehe postgresql.md.
 import argparse
-import datetime
 import os
 import subprocess
 import sys
@@ -249,25 +248,35 @@ def serial_defaults(schema: str) -> str:
 
 
 def separate_constraints(schema: str) -> str:
-    out = []
-    for tbl, conname, condef in rows(
-        f"""
-        SELECT c.relname, con.conname, pg_get_constraintdef(con.oid)
-        FROM pg_constraint con
-        JOIN pg_class c ON c.oid = con.conrelid
-        JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = '{schema}' AND con.contype IN ('p','u','f')
-          AND c.relname NOT IN ('gt_pk_metadata','rheinkassel_gf')
-        ORDER BY c.relname, con.conname
-        """
-    ):
-        conname = parametrize(conname)
-        out.append(
-            f"ALTER TABLE {SCH}.{tbl} DROP CONSTRAINT IF EXISTS {conname};\n"
-            f"ALTER TABLE ONLY {SCH}.{tbl}\n"
-            f"    ADD CONSTRAINT {conname} {parametrize(condef)};"
-        )
-    return "\n\n".join(out)
+    # Abhaengigkeitsreihenfolge: erst PRIMARY KEY, dann UNIQUE, zuletzt FOREIGN KEY.
+    # Nur so existiert jede referenzierte PK/UNIQUE-Voraussetzung vor ihrem FK
+    # (alphabetische Tabellen-Sortierung wuerde z. B. p2d2_grabflur_mapping vor
+    # p2d2_graeber ziehen und den FK vor dem referenzierten PK anlegen).
+    # Kein DROP CONSTRAINT: die DDL wird ausschliesslich auf ein leeres Schema
+    # angewendet; ein DROP+ADD-Muster waere nicht wiederholungssicher und erzeugt
+    # auf einem frischen Schema lediglich NOTICEs.
+
+    def group(contype: str) -> str:
+        blocks = []
+        for tbl, conname, condef in rows(
+            f"""
+            SELECT c.relname, con.conname, pg_get_constraintdef(con.oid)
+            FROM pg_constraint con
+            JOIN pg_class c ON c.oid = con.conrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = '{schema}' AND con.contype = '{contype}'
+              AND c.relname NOT IN ('gt_pk_metadata','rheinkassel_gf')
+            ORDER BY c.relname, con.conname
+            """
+        ):
+            conname = parametrize(conname)
+            blocks.append(
+                f"ALTER TABLE ONLY {SCH}.{tbl}\n"
+                f"    ADD CONSTRAINT {conname} {parametrize(condef)};"
+            )
+        return "\n\n".join(blocks)
+
+    return "\n\n".join(filter(None, (group("p"), group("u"), group("f"))))
 
 
 def index_defs(schema: str) -> str:
@@ -361,10 +370,9 @@ def main():
         print(f"WARNUNG Basis-Schema {schema} ({base} Tabellen) weicht ab: " + "; ".join(diffs), file=sys.stderr)
 
     header = (
-        f"-- p2d2 DDL-Template (Basisschema {schema}), erzeugt "
-        f"{datetime.date.today().isoformat()} aus data-dna (PostgreSQL 18.6).\n"
+        f"-- p2d2 DDL-Template (Basisschema {schema}).\n"
         "-- Schema-parametrisiert: {{ p2d2_instance_schema }} / {{ p2d2_admin_role }}.\n"
-        "-- Nur Struktur, keine Daten. Lesend extrahiert (P2D2-RO).\n"
+        "-- Nur Struktur, keine Daten. Lesend aus der Standalone-DB data-dna extrahiert (P2D2-RO).\n"
         "-- Bewusst ausgeschlossen: gt_pk_metadata, rheinkassel_gf (+ zugehoerige Sequenz).\n"
     )
 
