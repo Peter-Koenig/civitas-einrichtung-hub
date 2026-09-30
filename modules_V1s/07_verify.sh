@@ -47,6 +47,7 @@ run_verification() {
 
   verify_phase1
   verify_phase2
+  verify_portal_tiles
   if [[ "${RUN_TESTS:-false}" == "true" ]]; then
     setup_tests_env
     run_test_suite
