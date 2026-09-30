@@ -96,6 +96,7 @@ source "${SCRIPT_DIR}/modules_addon_V1s/addon_10_geoserver.sh"
 source "${SCRIPT_DIR}/modules_addon_V1s/addon_20_mapproxy.sh"
 source "${SCRIPT_DIR}/modules_addon_V1s/addon_25_iam.sh"
 source "${SCRIPT_DIR}/modules_addon_V1s/addon_30_frontend.sh"
+source "${SCRIPT_DIR}/modules_addon_V1s/addon_35_portal.sh"
 
 # ── Fail-Fast-Vorprüfungen (Turn 63/65) ────────────────────────────────────────
 # _preflight_env — prüft, dass .env.p2d2-addon alle Pflichtvariablen liefert.
@@ -267,7 +268,8 @@ log "============================================"
 
 # ── Bausteine in Reihenfolge ──────────────────────────────────────────────────
 if [[ "${1:-}" == "--uninstall" ]]; then
-  log "Modus: Uninstall (frontend -> iam -> mapproxy -> geoserver -> postgresql)"
+  log "Modus: Uninstall (portal -> frontend -> iam -> mapproxy -> geoserver -> postgresql)"
+  portal_remove
   uninstall_addon_frontend
   uninstall_addon_iam
   uninstall_addon_mapproxy
@@ -280,6 +282,7 @@ else
   install_addon_iam
   install_addon_frontend_build
   install_addon_frontend
+  portal_apply
 fi
 
 log ""
