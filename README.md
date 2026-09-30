@@ -281,7 +281,7 @@ bereits laufende CIVITAS/CORE-V1s-Instanz mit statischem Masterportal voraus.
 | Pfad | Inhalt |
 |------|--------|
 | `p2d2-civitas-addon-v1s.sh` | Hauptskript |
-| `modules_addon_V1s/` | Fünf Module: `addon_00_postgresql.sh`, `addon_10_geoserver.sh`, `addon_20_mapproxy.sh`, `addon_25_iam.sh`, `addon_30_frontend.sh` |
+| `modules_addon_V1s/` | Sechs Module: `addon_00_postgresql.sh`, `addon_10_geoserver.sh`, `addon_20_mapproxy.sh`, `addon_25_iam.sh`, `addon_30_frontend.sh`, `addon_35_portal.sh` |
 | `overlay_addon_V1s/k8s/` | Kubernetes-Manifeste, Dockerfiles, Build-Skripte, `UNINSTALL-CHECKLIST.md` |
 | `supplement/` | Git-ignorierte Nutzdaten (GeoTIFFs) und versionierte Hilfsskripte (`verify-uninstall.sh`) |
 
@@ -644,7 +644,7 @@ CIVITAS/CORE V1s instance with a static Masterportal.
 | Path | Content |
 |------|---------|
 | `p2d2-civitas-addon-v1s.sh` | Main script |
-| `modules_addon_V1s/` | Five modules: `addon_00_postgresql.sh`, `addon_10_geoserver.sh`, `addon_20_mapproxy.sh`, `addon_25_iam.sh`, `addon_30_frontend.sh` |
+| `modules_addon_V1s/` | Six modules: `addon_00_postgresql.sh`, `addon_10_geoserver.sh`, `addon_20_mapproxy.sh`, `addon_25_iam.sh`, `addon_30_frontend.sh`, `addon_35_portal.sh` |
 | `overlay_addon_V1s/k8s/` | Kubernetes manifests, Dockerfiles, build scripts, `UNINSTALL-CHECKLIST.md` |
 | `supplement/` | Git-ignored payload data (GeoTIFFs) and versioned helper scripts (`verify-uninstall.sh`) |
 
