@@ -10,17 +10,30 @@
 # ein. Der eingefügte Block ist markiert:
 #   // p2d2-addon:begin  …  // p2d2-addon:end
 #
+# Öffentliche Funktionen:
+#   portal_apply   — Block einfügen/ersetzen + Portal-Restart
+#   portal_remove  — nur den markierten Block entfernen + Restart
+#   portal_status  — Zustand anzeigen (read-only)
+#   portal_verify  — Verifikation der 5 Kacheln (Marker, Reihenfolge, /check?id=)
+#
+# Env (überschreibbar): PORTAL_NS, PORTAL_CM, PORTAL_KEY, PORTAL_DEPLOY,
+# PORTAL_DOMAIN, PORTAL_INGRESS_IP, PORTAL_ICON (Fallback P2D2_ICON),
+# PORTAL_BACKUP_DIR, PORTAL_VERIFY_RETRIES (Default 3), PORTAL_VERIFY_DELAY
+# (Default 5 s).
+#
 # ACHTUNG: Ein erneuter CIVITAS/CORE-Ansible-Lauf überschreibt die ConfigMap
 # "apps.js". Danach muss dieses Modul erneut ausgeführt werden (portal_apply),
 # sonst fehlen die Kacheln wieder.
 #
 # Logik übernommen aus dem erprobten Referenzskript p2d2-portal-tiles.sh.
 # Abweichungen (nur durch Modul-Konventionen erzwungen, siehe ai-run):
-#   - Funktionen portal_apply/portal_remove/portal_status statt Standalone-Skript;
-#   - log_*/_portal_die (return 1) statt log/die(exit 1);
-#   - Variablen-Präfix PORTAL_* statt kurzer Namen (Global-Namespace der Module);
-#   - kein `kubectl edit` (wie im Referenzskript) — Schreiben per
-#     `kubectl create configmap --dry-run=client | kubectl apply --server-side`.
+#   - Funktionen statt Standalone-Skript; log_*/_portal_die (return 1) statt die;
+#   - Variablen-Präfix PORTAL_* (Global-Namespace der Module);
+#   - Schreiben per `kubectl create configmap --dry-run=client | kubectl apply
+#     --server-side --field-manager=p2d2-addon-portal --force-conflicts`.
+# Bewusst UNVERÄNDERT (Korrektur 8): Marker-Text (auch der veraltete Zusatz
+# "verwaltet durch p2d2-portal-tiles.sh"), Einfügepunkt Array-Anfang,
+# ${DOMAIN}-Escaping, validate_in_pod.
 
 # Fail-Fast: Modul nicht isoliert sourcen (log_* kommen vom Hauptskript).
 if [[ -z "${ADDON_DOMAIN:-}" ]]; then
@@ -36,12 +49,17 @@ PORTAL_CM="${PORTAL_CM:-apps.js}"
 PORTAL_KEY="${PORTAL_KEY:-apps.js}"
 PORTAL_DEPLOY="${PORTAL_DEPLOY:-deploy/service-portal}"
 PORTAL_DOMAIN="${PORTAL_DOMAIN:-${ADDON_DOMAIN}}"
-PORTAL_INGRESS_IP="${PORTAL_INGRESS_IP:-192.168.12.139}"
-PORTAL_ICON="${P2D2_ICON:-https://www.udp.data-dna.eu/images/p2d2-logo.svg}"
+# Korrektur 5: Ingress-IP aus VM_IP_STATIC (vom Hauptskript exportiert) ableiten;
+# Literal nur als allerletzter Fallback für isolierte Nutzung.
+PORTAL_INGRESS_IP="${PORTAL_INGRESS_IP:-${VM_IP_STATIC:-192.168.12.139}}"
+# Korrektur 6: PORTAL_ICON mit Fallback auf P2D2_ICON (Abwärtskompatibilität).
+PORTAL_ICON="${PORTAL_ICON:-${P2D2_ICON:-https://www.udp.data-dna.eu/images/p2d2-logo.svg}}"
 PORTAL_BACKUP_DIR="${PORTAL_BACKUP_DIR:-/root/civitas-install/backup/service-portal}"
 PORTAL_BEGIN_MARK="// p2d2-addon:begin"
 PORTAL_END_MARK="// p2d2-addon:end"
 PORTAL_IDS="p2d2-main p2d2-dev p2d2-de1 p2d2-de2 p2d2-fv"
+PORTAL_VERIFY_RETRIES="${PORTAL_VERIFY_RETRIES:-3}"
+PORTAL_VERIFY_DELAY="${PORTAL_VERIFY_DELAY:-5}"
 
 # _portal_die — loggt und beendet die aufrufende Funktion mit Fehlercode.
 _portal_die() { log_error "$*"; return 1; }
@@ -49,9 +67,10 @@ _portal_die() { log_error "$*"; return 1; }
 # _portal_fetch_current <work> — liest data[apps.js] der ConfigMap in <work>/current.js.
 _portal_fetch_current() {
   local work="$1"
-  kubectl -n "$PORTAL_NS" get cm "$PORTAL_CM" >/dev/null || _portal_die "ConfigMap $PORTAL_NS/$PORTAL_CM nicht gefunden"
+  kubectl -n "$PORTAL_NS" get cm "$PORTAL_CM" >/dev/null \
+    || { _portal_die "ConfigMap $PORTAL_NS/$PORTAL_CM nicht gefunden"; return 1; }
   kubectl -n "$PORTAL_NS" get cm "$PORTAL_CM" -o jsonpath='{.data.apps\.js}' > "$work/current.js"
-  [ -s "$work/current.js" ] || _portal_die "data[apps.js] ist leer"
+  [ -s "$work/current.js" ] || { _portal_die "data[apps.js] ist leer"; return 1; }
 }
 
 # _portal_strip_block <in> <out> — entfernt den markierten p2d2-Block.
@@ -114,7 +133,7 @@ _portal_validate_in_pod() {
   local candidate="$1"
   if kubectl -n "$PORTAL_NS" exec "$PORTAL_DEPLOY" -- sh -c 'command -v node' >/dev/null 2>&1; then
     kubectl -n "$PORTAL_NS" exec -i "$PORTAL_DEPLOY" -- sh -c 'cat > /tmp/apps.candidate.js && node -e "const a=require(\"/tmp/apps.candidate.js\"); const ids=a.map(x=>x.id); if(new Set(ids).size!==ids.length) throw new Error(\"doppelte ids\"); console.log(ids.length+\" Apps: \"+ids.join(\" \"))"; rc=$?; rm -f /tmp/apps.candidate.js; exit $rc' < "$candidate" \
-      || _portal_die "Kandidat syntaktisch ungueltig oder doppelte IDs - nichts angewendet"
+      || { _portal_die "Kandidat syntaktisch ungueltig oder doppelte IDs - nichts angewendet"; return 1; }
   else
     log_warn "kein node im Portal-Pod gefunden - Syntaxpruefung uebersprungen"
   fi
@@ -128,7 +147,8 @@ _portal_show_diff() {
 # _portal_backup <work> — Backup der ConfigMap + current.js.
 _portal_backup() {
   local work="$1"
-  mkdir -p "$PORTAL_BACKUP_DIR"; chmod 700 "$PORTAL_BACKUP_DIR"
+  mkdir -p "$PORTAL_BACKUP_DIR" || { _portal_die "Backup-Verzeichnis nicht anlegbar: $PORTAL_BACKUP_DIR"; return 1; }
+  chmod 700 "$PORTAL_BACKUP_DIR"
   local ts; ts="$(date +%Y%m%dT%H%M%S)"
   kubectl -n "$PORTAL_NS" get cm "$PORTAL_CM" -o yaml > "$PORTAL_BACKUP_DIR/apps.js-cm-$ts.yaml"
   cp "$work/current.js" "$PORTAL_BACKUP_DIR/apps.js-$ts.js"
@@ -140,14 +160,14 @@ _portal_apply_cm() {
   local candidate="$1"
   kubectl -n "$PORTAL_NS" create configmap "$PORTAL_CM" --from-file="$PORTAL_KEY=$candidate" --dry-run=client -o yaml \
     | kubectl -n "$PORTAL_NS" apply --server-side --field-manager=p2d2-addon-portal --force-conflicts -f - \
-    || _portal_die "ConfigMap apply fehlgeschlagen"
+    || { _portal_die "ConfigMap apply fehlgeschlagen"; return 1; }
   # subPath-Mount aktualisiert sich nicht selbst -> Restart zwingend (nginx + url_checker)
-  kubectl -n "$PORTAL_NS" rollout restart "$PORTAL_DEPLOY" || _portal_die "rollout restart fehlgeschlagen"
-  kubectl -n "$PORTAL_NS" rollout status "$PORTAL_DEPLOY" --timeout=180s || _portal_die "rollout status fehlgeschlagen"
+  kubectl -n "$PORTAL_NS" rollout restart "$PORTAL_DEPLOY" || { _portal_die "rollout restart fehlgeschlagen"; return 1; }
+  kubectl -n "$PORTAL_NS" rollout status "$PORTAL_DEPLOY" --timeout=180s || { _portal_die "rollout status fehlgeschlagen"; return 1; }
 }
 
-# _portal_status <work> — liest den Zustand und prüft die Hosts (read-only).
-_portal_status() {
+# _portal_status_impl <work> — liest den Zustand und prüft die Hosts (read-only).
+_portal_status_impl() {
   local work="$1"
   _portal_fetch_current "$work" || return 1
   log "Marker-Bloecke in ConfigMap: $(grep -c -- "$PORTAL_BEGIN_MARK" "$work/current.js" || true)"
@@ -162,27 +182,16 @@ _portal_status() {
   curl -sk --max-time 10 --resolve "$PORTAL_DOMAIN:443:$PORTAL_INGRESS_IP" "https://$PORTAL_DOMAIN/apps.js" | grep -cE 'id: "p2d2-' || true
 }
 
-# ── Öffentliche Funktionen (von p2d2-civitas-addon-v1s.sh aufgerufen) ──────────
-
-portal_status() {
-  log "=== AddOn 35: Service-Portal-Kacheln (Status) ==="
-  local work; work="$(mktemp -d)"
-  trap 'rm -rf "$work"' RETURN
-  _portal_status "$work"
-}
-
-portal_apply() {
-  log "=== AddOn 35: Service-Portal-Kacheln (apply) ==="
-  local work; work="$(mktemp -d)"
-  trap 'rm -rf "$work"' RETURN
-
+# _portal_apply_impl <work> — Kern der apply-Logik.
+_portal_apply_impl() {
+  local work="$1"
   _portal_fetch_current "$work" || return 1
   _portal_build_block "$work"
   _portal_strip_block "$work/current.js" "$work/stripped.js"
   _portal_insert_block "$work/stripped.js" "$work/candidate.js" "$work/block.js" || return 1
   if cmp -s "$work/current.js" "$work/candidate.js"; then
     log "Keine Aenderung noetig (idempotent)"
-    _portal_status "$work" || true
+    _portal_status_impl "$work" || true
     return 0
   fi
   _portal_show_diff "$work/current.js" "$work/candidate.js"
@@ -190,15 +199,13 @@ portal_apply() {
   _portal_backup "$work" || return 1
   _portal_apply_cm "$work/candidate.js" || return 1
   log_ok "Service-Portal-Kacheln angewendet"
-  _portal_status "$work" || true
+  _portal_status_impl "$work" || true
   return 0
 }
 
-portal_remove() {
-  log "=== AddOn 35: Service-Portal-Kacheln (remove) ==="
-  local work; work="$(mktemp -d)"
-  trap 'rm -rf "$work"' RETURN
-
+# _portal_remove_impl <work> — Kern der remove-Logik.
+_portal_remove_impl() {
+  local work="$1"
   _portal_fetch_current "$work" || return 1
   if ! grep -q -- "$PORTAL_BEGIN_MARK" "$work/current.js"; then
     log "Kein p2d2-Block vorhanden - nichts zu tun"
@@ -211,4 +218,117 @@ portal_remove() {
   _portal_apply_cm "$work/candidate.js" || return 1
   log_ok "Service-Portal-Kacheln entfernt"
   return 0
+}
+
+# ── Verifikation (portal_verify) ───────────────────────────────────────────────
+# Zähler sind Modul-weit (werden in portal_verify zurückgesetzt). _portal_vcheck
+# nutzt eine Zuweisung (kein ((++))), damit set -e nicht auf 0-Ergebnis scheitert.
+_PORTAL_FAILS=0
+_PORTAL_WARNS=0
+
+_portal_vcheck() {  # $1 = Beschreibung, $2 = 0 (ok) | 1 (fail)
+  if [[ "$2" -eq 0 ]]; then
+    log_ok "$1"
+  else
+    log_error "$1"
+    _PORTAL_FAILS=$((_PORTAL_FAILS + 1))
+  fi
+}
+
+# _portal_verify_impl — prüft Marker-Block, ID-Reihenfolge und /check?id=.
+_portal_verify_impl() {
+  local expected="p2d2-main p2d2-dev p2d2-de1 p2d2-de2 p2d2-fv"
+
+  # 1) Genau 1 Marker-Block in der ConfigMap.
+  local current marker_count
+  current="$(kubectl -n "$PORTAL_NS" get cm "$PORTAL_CM" -o jsonpath='{.data.apps\.js}' 2>/dev/null || true)"
+  if [[ -z "$current" ]]; then
+    log_error "Portal-Kacheln: ConfigMap $PORTAL_NS/$PORTAL_CM nicht lesbar oder data[apps.js] leer"
+    _PORTAL_FAILS=$((_PORTAL_FAILS + 1))
+    return 1
+  fi
+  marker_count="$(printf '%s' "$current" | grep -c -- "$PORTAL_BEGIN_MARK" || true)"
+  if [[ "$marker_count" == "1" ]]; then
+    _portal_vcheck "genau 1 Marker-Block in apps.js" 0
+  else
+    _portal_vcheck "genau 1 Marker-Block in apps.js (gefunden: ${marker_count})" 1
+    if [[ "$marker_count" == "0" ]]; then
+      log_warn "Hinweis: Kein p2d2-Block vorhanden. portal_apply erneut ausfuehren (z. B. nach CIVITAS-Ansible-Lauf)."
+    fi
+  fi
+
+  # 2) Reihenfolge der 5 IDs auf der ausgelieferten https://<domain>/apps.js (mit Retry).
+  local order first_five attempt ok=0
+  for ((attempt = 1; attempt <= PORTAL_VERIFY_RETRIES; attempt++)); do
+    order="$(curl -sk --max-time 15 --resolve "$PORTAL_DOMAIN:443:$PORTAL_INGRESS_IP" "https://$PORTAL_DOMAIN/apps.js" 2>/dev/null \
+      | grep -oE 'id: "[^"]+"' | sed -E 's/id: "([^"]+)"/\1/' | tr '\n' ' ' || true)"
+    first_five="$(printf '%s' "$order" | awk '{ for(i=1;i<=5;i++) printf "%s%s", $i, (i<5 ? " " : "") }')"
+    if [[ "$first_five" == "$expected" ]]; then ok=1; break; fi
+    [[ "$attempt" -lt "$PORTAL_VERIFY_RETRIES" ]] && sleep "$PORTAL_VERIFY_DELAY"
+  done
+  if [[ "$ok" -eq 1 ]]; then
+    _portal_vcheck "5 IDs in Reihenfolge und vor allen Nicht-p2d2-Eintraegen" 0
+  else
+    _portal_vcheck "5 IDs in Reihenfolge und vor allen Nicht-p2d2-Eintraegen (Ist: ${first_five:-<leer>})" 1
+  fi
+
+  # 3) /check?id=<id> je ID (mit Retry).
+  local id code attempt
+  for id in $PORTAL_IDS; do
+    code=""
+    for ((attempt = 1; attempt <= PORTAL_VERIFY_RETRIES; attempt++)); do
+      code="$(curl -sk --max-time 15 --resolve "$PORTAL_DOMAIN:443:$PORTAL_INGRESS_IP" -o /dev/null -w '%{http_code}' "https://$PORTAL_DOMAIN/check?id=$id" 2>/dev/null || true)"
+      [[ "$code" == "200" || "$code" == "404" ]] && break
+      [[ "$attempt" -lt "$PORTAL_VERIFY_RETRIES" ]] && sleep "$PORTAL_VERIFY_DELAY"
+    done
+    case "$code" in
+      200) _portal_vcheck "/check?id=$id (HTTP 200)" 0 ;;
+      404) _portal_vcheck "/check?id=$id (HTTP 404, App unbekannt)" 1 ;;
+      *)   _PORTAL_WARNS=$((_PORTAL_WARNS + 1))
+           log_warn "/check?id=$id HTTP ${code} (WARN — sporadische TLS-Abbrueche am Edge bekannt)" ;;
+    esac
+  done
+
+  if [[ "$_PORTAL_FAILS" -eq 0 ]]; then
+    log_ok "Portal-Kacheln-Verifikation: bestanden (${_PORTAL_WARNS} WARN)"
+    return 0
+  fi
+  log_error "Portal-Kacheln-Verifikation: ${_PORTAL_FAILS} FAIL"
+  return 1
+}
+
+# ── Öffentliche Funktionen (von p2d2-civitas-addon-v1s.sh aufgerufen) ──────────
+
+portal_status() {
+  log "=== AddOn 35: Service-Portal-Kacheln (status) ==="
+  local work rc=0
+  work="$(mktemp -d)"
+  _portal_status_impl "$work" || rc=$?
+  rm -rf "$work"
+  return "$rc"
+}
+
+portal_apply() {
+  log "=== AddOn 35: Service-Portal-Kacheln (apply) ==="
+  local work rc=0
+  work="$(mktemp -d)"
+  _portal_apply_impl "$work" || rc=$?
+  rm -rf "$work"
+  return "$rc"
+}
+
+portal_remove() {
+  log "=== AddOn 35: Service-Portal-Kacheln (remove) ==="
+  local work rc=0
+  work="$(mktemp -d)"
+  _portal_remove_impl "$work" || rc=$?
+  rm -rf "$work"
+  return "$rc"
+}
+
+portal_verify() {
+  log "=== AddOn 35: Service-Portal-Kacheln (verify) ==="
+  _PORTAL_FAILS=0
+  _PORTAL_WARNS=0
+  _portal_verify_impl
 }
