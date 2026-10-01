@@ -310,16 +310,18 @@ Fehlermeldung ab.
 **Modul-Reihenfolge:**
 
 Installation: `postgresql → geoserver → mapproxy → iam → frontend-build →
-frontend`. Uninstall läuft in umgekehrter Reihenfolge:
-`frontend → iam → mapproxy → geoserver → postgresql`.
+frontend → portal-apply → portal-verify`. Uninstall läuft in umgekehrter
+Reihenfolge: `portal-remove → frontend → iam → mapproxy → geoserver →
+postgresql`.
 
 **Vorprüfung (Fail-Fast):**
 
 Vor jeder Aktion prüft `preflight_addon()`, ob der CIVITAS/CORE-Namespace
 (`cc-prd-geodata-stack`) existiert. Vor einer Installation zusätzlich, ob
-`.env.p2d2-addon` alle Pflichtvariablen enthält und ob ein
-Masterportal-Service im Namespace gefunden werden kann. Bei Uninstall genügt
-die Namespace-Prüfung.
+`.env.p2d2-addon` alle Pflichtvariablen enthält, ob ein Masterportal-Service im
+Namespace gefunden werden kann und ob der Service-Portal-Namespace
+(`cc-prd-access-stack`) samt Service-Portal-Deployment vorhanden ist. Bei
+Uninstall genügt die Namespace-Prüfung.
 
 **Konfiguration (`.env.p2d2-addon`):**
 
@@ -335,6 +337,22 @@ GeoTIFF-Rasterdaten für die GeoServer-Mosaic-Anlage liegen unter
 von `*.sh`-Dateien). Für jeden Unterordner mit `.tif`/`.tiff`-Dateien wird ein
 eigenes Mosaic mit dem Ordnernamen als Stadt-Identifikator angelegt. Fehlt der
 Ordner oder enthält er keine Rasterdaten, wird die Mosaic-Anlage übersprungen.
+
+**Service-Portal-Kacheln (`addon_35_portal.sh`):**
+
+Das Modul fügt die fünf p2d2-Stage-Kacheln (`p2d2-main`, `p2d2-dev`, `p2d2-de1`,
+`p2d2-de2`, `p2d2-fv`) idempotent und rückbaubar am Anfang der
+Service-Portal-ConfigMap `apps.js` ein (Namespace `cc-prd-access-stack`,
+Deployment `service-portal`). Öffentliche Funktionen: `portal_apply`
+(einfügen/ersetzen + Portal-Restart), `portal_remove` (nur den markierten Block
+entfernen + Restart), `portal_status` (read-only) und `portal_verify`
+(Verifikation der Kacheln). Die Verifikation ist Teil dieses AddOn-Moduls, nicht
+des Kern-Installers (`modules_V1s/` bleibt unverändert). Konfigurierbar über
+`PORTAL_NS`, `PORTAL_CM`, `PORTAL_KEY`, `PORTAL_DEPLOY`, `PORTAL_DOMAIN`,
+`PORTAL_INGRESS_IP`, `PORTAL_ICON` (Fallback `P2D2_ICON`), `PORTAL_BACKUP_DIR`,
+`PORTAL_VERIFY_RETRIES` (Default 3) und `PORTAL_VERIFY_DELAY` (Default 5 s).
+Ein erneuter CIVITAS/CORE-Ansible-Lauf überschreibt die ConfigMap; danach muss
+`portal_apply` erneut ausgeführt werden.
 
 **Uninstall-Verifikation:**
 
@@ -673,16 +691,17 @@ with an error message.
 **Module order:**
 
 Installation: `postgresql → geoserver → mapproxy → iam → frontend-build →
-frontend`. Uninstall runs in reverse order:
-`frontend → iam → mapproxy → geoserver → postgresql`.
+frontend → portal-apply → portal-verify`. Uninstall runs in reverse order:
+`portal-remove → frontend → iam → mapproxy → geoserver → postgresql`.
 
 **Preflight (fail-fast):**
 
 Before any action, `preflight_addon()` checks whether the CIVITAS/CORE
 namespace (`cc-prd-geodata-stack`) exists. Before an installation it
-additionally checks whether `.env.p2d2-addon` contains all required variables
-and whether a Masterportal service can be found in the namespace. For
-uninstall, the namespace check is sufficient.
+additionally checks whether `.env.p2d2-addon` contains all required variables,
+whether a Masterportal service can be found in the namespace, and whether the
+service-portal namespace (`cc-prd-access-stack`) and its service-portal
+deployment are present. For uninstall, the namespace check is sufficient.
 
 **Configuration (`.env.p2d2-addon`):**
 
@@ -698,6 +717,22 @@ GeoTIFF raster data for GeoServer mosaic creation resides under
 files. For each subdirectory containing `.tif`/`.tiff` files, a separate mosaic
 is created using the directory name as the city identifier. If the directory
 is missing or contains no raster data, mosaic creation is skipped.
+
+**Service-portal tiles (`addon_35_portal.sh`):**
+
+The module inserts the five p2d2-stage tiles (`p2d2-main`, `p2d2-dev`,
+`p2d2-de1`, `p2d2-de2`, `p2d2-fv`) idempotently and reversibly at the beginning
+of the service-portal ConfigMap `apps.js` (namespace `cc-prd-access-stack`,
+deployment `service-portal`). Public functions: `portal_apply`
+(insert/replace + portal restart), `portal_remove` (remove only the marked
+block + restart), `portal_status` (read-only), and `portal_verify` (tile
+verification). Verification is part of this add-on module, not the core
+installer (`modules_V1s/` remains unchanged). Configurable via `PORTAL_NS`,
+`PORTAL_CM`, `PORTAL_KEY`, `PORTAL_DEPLOY`, `PORTAL_DOMAIN`,
+`PORTAL_INGRESS_IP`, `PORTAL_ICON` (fallback `P2D2_ICON`), `PORTAL_BACKUP_DIR`,
+`PORTAL_VERIFY_RETRIES` (default 3), and `PORTAL_VERIFY_DELAY` (default 5 s).
+A subsequent CIVITAS/CORE Ansible run overwrites the ConfigMap; `portal_apply`
+must then be run again.
 
 **Uninstall verification:**
 
