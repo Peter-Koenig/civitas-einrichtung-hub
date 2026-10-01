@@ -141,6 +141,21 @@ _preflight_masterportal() {
   return 0
 }
 
+# _preflight_portal — Service-Portal-Namespace und -Deployment muessen vorhanden sein,
+# sonst scheitert der Lauf erst NACH Installation aller Komponenten am fehlenden Portal.
+_preflight_portal() {
+  if ! kubectl get namespace "${PORTAL_NS}" &>/dev/null; then
+    log_error "Service-Portal-Namespace '${PORTAL_NS}' nicht vorhanden — ist CIVITAS/CORE (Service-Portal) installiert?"
+    return 1
+  fi
+  if ! kubectl -n "${PORTAL_NS}" get "${PORTAL_DEPLOY}" &>/dev/null; then
+    log_error "Service-Portal-Deployment '${PORTAL_DEPLOY}' in ${PORTAL_NS} nicht gefunden — ist CIVITAS/CORE (Service-Portal) installiert?"
+    return 1
+  fi
+  log_ok "Service-Portal vorhanden: ${PORTAL_NS}/${PORTAL_DEPLOY}"
+  return 0
+}
+
 # preflight_addon — bricht früh ab, bevor irgendein Teil-Deploy passiert.
 preflight_addon() {
   log "=== Vorprüfung (Fail-Fast) ==="
@@ -150,10 +165,11 @@ preflight_addon() {
   fi
   log_ok "Namespace ${ADDON_NS} vorhanden"
 
-  # Für Uninstall ist .env/Masterportal nicht erforderlich (Creds kommen aus k8s).
+  # Für Uninstall ist .env/Masterportal/Portal nicht erforderlich (Creds kommen aus k8s).
   if [[ "${1:-}" != "--uninstall" ]]; then
     _preflight_env || return 1
     _preflight_masterportal || return 1
+    _preflight_portal || return 1
   fi
   log_ok "Vorprüfung abgeschlossen"
   return 0
@@ -267,9 +283,10 @@ log " Domain:       ${ADDON_DOMAIN}"
 log "============================================"
 
 # ── Bausteine in Reihenfolge ──────────────────────────────────────────────────
+ADDON_EXIT_CODE=0
 if [[ "${1:-}" == "--uninstall" ]]; then
   log "Modus: Uninstall (portal -> frontend -> iam -> mapproxy -> geoserver -> postgresql)"
-  portal_remove
+  portal_remove || log_warn "Portal-Kacheln konnten nicht entfernt werden - Rueckbau wird fortgesetzt (manuell pruefen: portal_status)"
   uninstall_addon_frontend
   uninstall_addon_iam
   uninstall_addon_mapproxy
@@ -283,6 +300,9 @@ else
   install_addon_frontend_build
   install_addon_frontend
   portal_apply
+  # Verifikation laeuft nicht-abbrechend: FAILs werden geloggt, der Installer
+  # laeuft bis zur Abschlussmeldung durch und endet dann mit Exit-Code 1.
+  portal_verify || ADDON_EXIT_CODE=1
 fi
 
 log ""
@@ -293,3 +313,4 @@ else
   log " p2d2-AddOn (V1s) — Installation abgeschlossen."
 fi
 log "============================================"
+exit "${ADDON_EXIT_CODE}"
