@@ -237,7 +237,6 @@ _portal_vcheck() {  # $1 = Beschreibung, $2 = 0 (ok) | 1 (fail)
 
 # _portal_verify_impl — prüft Marker-Block, ID-Reihenfolge und /check?id=.
 _portal_verify_impl() {
-  local expected="p2d2-main p2d2-dev p2d2-de1 p2d2-de2 p2d2-fv"
 
   # 1) Genau 1 Marker-Block in der ConfigMap.
   local current marker_count
@@ -263,7 +262,7 @@ _portal_verify_impl() {
     order="$(curl -sk --max-time 15 --resolve "$PORTAL_DOMAIN:443:$PORTAL_INGRESS_IP" "https://$PORTAL_DOMAIN/apps.js" 2>/dev/null \
       | grep -oE 'id: "[^"]+"' | sed -E 's/id: "([^"]+)"/\1/' | tr '\n' ' ' || true)"
     first_five="$(printf '%s' "$order" | awk '{ for(i=1;i<=5;i++) printf "%s%s", $i, (i<5 ? " " : "") }')"
-    if [[ "$first_five" == "$expected" ]]; then ok=1; break; fi
+    if [[ "$first_five" == "$PORTAL_IDS" ]]; then ok=1; break; fi
     [[ "$attempt" -lt "$PORTAL_VERIFY_RETRIES" ]] && sleep "$PORTAL_VERIFY_DELAY"
   done
   if [[ "$ok" -eq 1 ]]; then
