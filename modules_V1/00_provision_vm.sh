@@ -31,6 +31,43 @@
 #
 # Idempotenz: Wenn die VM mit der konfigurierten VM_ID bereits existiert,
 # wird die Provisionierung übersprungen.
+#
+# Unterstützte Storage-Typen: zfspool, lvmthin. Verzeichnis-/NFS-Storage ist
+# nicht getestet und wird abgelehnt (check_proxmox_prereqs).
+
+check_proxmox_prereqs() {
+  local line storage_type storage_status
+  line="$(pvesm status 2>/dev/null | awk -v s="${PROXMOX_STORAGE}" '$1==s {print $2, $3}')"
+  storage_type="${line%% *}"
+  storage_status="${line##* }"
+
+  if [[ -z "${line}" ]]; then
+    log_error "Proxmox-Storage '${PROXMOX_STORAGE}' nicht gefunden (pvesm status)."
+    log_error "Verfügbare Storages:"
+    pvesm status 2>/dev/null | awk 'NR>1 {print "  - " $1 " (" $2 ", " $3 ")"}' || true
+    exit 1
+  fi
+  if [[ "${storage_status}" != "active" ]]; then
+    log_error "Storage '${PROXMOX_STORAGE}' ist nicht aktiv (Status: ${storage_status})."
+    exit 1
+  fi
+  case "${storage_type}" in
+    zfspool|lvmthin)
+      log_ok "Proxmox-Storage '${PROXMOX_STORAGE}' (Typ: ${storage_type}) geeignet" ;;
+    *)
+      log_error "Storage-Typ '${storage_type}' wird nicht unterstützt (unterstützt: zfspool, lvmthin)."
+      exit 1 ;;
+  esac
+
+  if ! ip link show "${VM_BRIDGE}" &>/dev/null; then
+    log_error "Bridge '${VM_BRIDGE}' existiert nicht auf diesem Host."
+    log_error "Vorhandene Bridges: $(ip -br link show type bridge 2>/dev/null | awk '{print $1}' | paste -sd' ')"
+    exit 1
+  fi
+  log_ok "Bridge '${VM_BRIDGE}' vorhanden"
+
+  PROXMOX_STORAGE_TYPE="${storage_type}"
+}
 
 provision_vm() {
   log "=== Phase -1: VM provisionieren ==="
@@ -49,6 +86,9 @@ provision_vm() {
     log_ok "VM ${VM_ID} (${VM_NAME}) existiert bereits — Status: ${vm_status}"
     return 0
   fi
+
+  # Storage-/Bridge-Prüfung VOR Download und qm create (kein halbfertiger Zustand).
+  check_proxmox_prereqs
 
   # ── Schritt 1: Cloud-Image herunterladen (24h-Cache) ─────────────────────
   local image_name image_path cache_dir
@@ -86,20 +126,9 @@ provision_vm() {
     --agent enabled=1 \
     --onboot 1
 
-  # ── Storage pruefen (Existenz + Typ: lvmthin -> raw, Verzeichnis -> qcow2) ─
-  local storage_type
-  storage_type="$(pvesm status 2>/dev/null | awk -v s="${PROXMOX_STORAGE}" '$1==s {print $2}')"
-  if [[ -z "${storage_type}" ]]; then
-    log_error "Proxmox-Storage '${PROXMOX_STORAGE}' nicht gefunden (pvesm status)."
-    log_error "Verfügbare Storages:"
-    pvesm status 2>/dev/null | awk 'NR>1 {print "  - " $1 " (" $2 ")"}' || true
-    exit 1
-  fi
-  log_ok "Proxmox-Storage '${PROXMOX_STORAGE}' (Typ: ${storage_type}) gefunden"
-
   # ── Schritt 3: Disk importieren (Ziel: PROXMOX_STORAGE) ───────────────────
-  log "Importiere Disk von Cloud-Image nach ${PROXMOX_STORAGE} (${storage_type}) ..."
-  if [[ "${storage_type}" == "lvmthin" ]]; then
+  log "Importiere Disk von Cloud-Image nach ${PROXMOX_STORAGE} (${PROXMOX_STORAGE_TYPE}) ..."
+  if [[ "${PROXMOX_STORAGE_TYPE}" == "lvmthin" ]]; then
     qm importdisk "${VM_ID}" "${image_path}" "${PROXMOX_STORAGE}" --format raw
   else
     qm importdisk "${VM_ID}" "${image_path}" "${PROXMOX_STORAGE}"
@@ -116,7 +145,7 @@ provision_vm() {
     --serial0 socket \
     --vga serial0
 
-  # ── Schritt 5: Disk auf 300 GiB vergrößern ────────────────────────────────
+  # ── Schritt 5: Disk auf ${VM_DISK_GB} GiB vergrößern ────────────────────────
   log "Vergrößere Disk auf ${VM_DISK_GB} GiB ..."
   qm resize "${VM_ID}" scsi0 "${VM_DISK_GB}G"
   log_ok "Disk auf ${VM_DISK_GB} GiB vergrößert"
