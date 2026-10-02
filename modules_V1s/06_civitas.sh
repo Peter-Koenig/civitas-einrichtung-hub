@@ -54,7 +54,11 @@ install_civitas() {
   patch_masterportal_release_name
   install_cc_cli
   render_inventory
-  setup_wireguard
+  if [[ "${WG_ENABLED}" == "true" ]]; then
+    setup_wireguard
+  else
+    log "WireGuard deaktiviert (WG_ENABLE=false) — Direktbetrieb bzw. HAProxy/Portweiterleitung im selben Netz"
+  fi
   patch_playbook_urls
   cleanup_geodata_ingress
   run_cc_cli_validate
@@ -111,11 +115,11 @@ check_dns_hard() {
   local dns_ok=true
 
   if ! dns_resolves "idm.${DOMAIN}"; then
-    log_error "DNS: idm.${DOMAIN} nicht auflösbar – Eintrag in Hetzner-WebGUI setzen"
+    log_error "DNS: idm.${DOMAIN} nicht auflösbar – Eintrag im DNS setzen"
     dns_ok=false
   fi
   if ! dns_resolves "portal.${DOMAIN}"; then
-    log_error "DNS: portal.${DOMAIN} nicht auflösbar – Eintrag in Hetzner-WebGUI setzen"
+    log_error "DNS: portal.${DOMAIN} nicht auflösbar – Eintrag im DNS setzen"
     dns_ok=false
   fi
 

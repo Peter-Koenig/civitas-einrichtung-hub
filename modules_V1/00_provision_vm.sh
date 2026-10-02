@@ -86,12 +86,27 @@ provision_vm() {
     --agent enabled=1 \
     --onboot 1
 
+  # ── Storage pruefen (Existenz + Typ: lvmthin -> raw, Verzeichnis -> qcow2) ─
+  local storage_type
+  storage_type="$(pvesm status 2>/dev/null | awk -v s="${PROXMOX_STORAGE}" '$1==s {print $2}')"
+  if [[ -z "${storage_type}" ]]; then
+    log_error "Proxmox-Storage '${PROXMOX_STORAGE}' nicht gefunden (pvesm status)."
+    log_error "Verfügbare Storages:"
+    pvesm status 2>/dev/null | awk 'NR>1 {print "  - " $1 " (" $2 ")"}' || true
+    exit 1
+  fi
+  log_ok "Proxmox-Storage '${PROXMOX_STORAGE}' (Typ: ${storage_type}) gefunden"
+
   # ── Schritt 3: Disk importieren (Ziel: PROXMOX_STORAGE) ───────────────────
-  log "Importiere Disk von Cloud-Image nach ${PROXMOX_STORAGE} ..."
-  qm importdisk "${VM_ID}" "${image_path}" "${PROXMOX_STORAGE}"
+  log "Importiere Disk von Cloud-Image nach ${PROXMOX_STORAGE} (${storage_type}) ..."
+  if [[ "${storage_type}" == "lvmthin" ]]; then
+    qm importdisk "${VM_ID}" "${image_path}" "${PROXMOX_STORAGE}" --format raw
+  else
+    qm importdisk "${VM_ID}" "${image_path}" "${PROXMOX_STORAGE}"
+  fi
 
   # ── Schritt 4: Hardware konfigurieren ─────────────────────────────────────
-  # Wichtig: --ide2 zeigt auf PROXMOX_STORAGE (ZFS), nicht auf template-storage
+  # Wichtig: --ide2 zeigt auf PROXMOX_STORAGE (Cloud-Init-ISO), nicht auf template-storage
   log "Konfiguriere Hardware (SCSI, Boot-Reihenfolge, Cloud-Init-ISO) ..."
   qm set "${VM_ID}" \
     --scsihw virtio-scsi-pci \
@@ -108,10 +123,14 @@ provision_vm() {
 
   # ── Schritt 6: Cloud-Init konfigurieren (SSH-Key + statische IP) ──────────
   log "Konfiguriere Cloud-Init (root, SSH-Key, statische IP ${VM_IP_STATIC}) ..."
+  local ipconfig0="ip=${VM_IP_STATIC}/${VM_IP_PREFIX},gw=${VM_GW}"
+  if [[ -n "${VM_IP6_STATIC:-}" ]]; then
+    ipconfig0+=",ip6=${VM_IP6_STATIC}/${VM_IP6_PREFIX},gw6=${VM_GW6}"
+  fi
   qm set "${VM_ID}" \
     --ciuser root \
     --sshkeys "${SSH_PUBKEY_PATH}" \
-    --ipconfig0 "ip=${VM_IP_STATIC}/${VM_IP_PREFIX},gw=${VM_GW},ip6=${VM_IP6_STATIC}/${VM_IP6_PREFIX},gw6=${VM_GW6}"
+    --ipconfig0 "${ipconfig0}"
   log_ok "Cloud-Init konfiguriert (IP ${VM_IP_STATIC}, SSH-Key injiziert)"
 
   # ── Schritt 7: (entfällt – Image verbleibt im Cache) ──────────────────────

@@ -69,6 +69,10 @@ resolve_target_state() {
 # Leerer WG_PRESHARED_KEY → PresharedKey-Zeile wird weggelassen
 # (WireGuard wirft Fehler bei leerem Wert).
 setup_wireguard() {
+  if [[ "${WG_ENABLED}" != "true" ]]; then
+    log "WireGuard deaktiviert (WG_ENABLE=${WG_ENABLED:-false}) — überspringe setup_wireguard"
+    return 0
+  fi
   log "Konfiguriere WireGuard (Schritt 2.4c) …"
 
   if systemctl is-active --quiet "wg-quick@${WG_INTERFACE}"; then
