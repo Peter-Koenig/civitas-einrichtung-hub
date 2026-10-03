@@ -437,6 +437,22 @@ run_cc_cli_validate() {
 }
 
 
+# ── Sicherer Zugriff auf das lokale Ansible-Log (kein Loginhalt auf der Konsole) ─
+# ansible_log_has_pattern prüft ein ERE-Muster im lokalen Ansible-Log, ohne es
+# auszugeben. log_ansible_log_metadata gibt nur Pfad und Zeilenzahl aus.
+ansible_log_has_pattern() {
+  local log_file="$1" pattern="$2"
+  [[ -f "${log_file}" ]] || return 1
+  grep -Eqi "${pattern}" "${log_file}"
+}
+
+log_ansible_log_metadata() {
+  local log_file="$1" lines
+  [[ -f "${log_file}" ]] || { log_warn "Ansible-Log nicht vorhanden: ${log_file}"; return 0; }
+  lines="$(wc -l < "${log_file}" | tr -d '[:space:]')"
+  log "Ansible-Log lokal vorhanden: ${log_file} (${lines} Zeilen)"
+}
+
 # ── Schritt 2.4: cc_cli exec ──────────────────────────────────────────────────
 # Timeout schützt vor unbegrenzt hängenden Deployments.
 run_cc_cli_exec() {
@@ -457,15 +473,14 @@ run_cc_cli_exec() {
 
   local attempt=1
   local transient_re='Status code was 5[0-9][0-9]|Temporarily Unavailable|Connection refused|timed out|Max retries exceeded'
+  local idempotent_404_re='Status code was 404 and not \[204\]'
   while :; do
     local output rc=0
     output=$(cd "${CC_CLI_PLAYBOOK_DIR}" && \
       echo "Y" | timeout "${TIMEOUT_CC_CLI_EXEC}" \
       "${CC_CLI_VENV_PATH}/bin/cc_cli" exec 2>&1) || rc=$?
-    echo "${output}"
-    echo "cc_cli rc=${rc}"
-    ls -la "${ansible_log_dir}"
-    test -f "${ansible_log_file}" && tail -n 80 "${ansible_log_file}" || echo "kein ansible_log_file vorhanden"
+    log "cc_cli exec beendet (rc=${rc}, Versuch ${attempt}/${CC_EXEC_ATTEMPTS})"
+    log_ansible_log_metadata "${ansible_log_file}"
     # Fail-closed: Erfolg nur bei rc==0, außer dem explizit tolerierten 404-Idempotenzfall.
     local failed=false transient=false
     if (( rc != 0 )); then
@@ -475,13 +490,14 @@ run_cc_cli_exec() {
       failed=true
     fi
     if [[ "${failed}" == "true" ]]; then
-      if echo "${output}" | grep -q "Status code was 404 and not \[204\]"; then
+      if echo "${output}" | grep -Eq "${idempotent_404_re}" \
+         || ansible_log_has_pattern "${ansible_log_file}" "${idempotent_404_re}"; then
         log_warn "cc_cli exec: Playbook meldet 404 statt 204 beim Loeschen einer Keycloak-Ressource, toleriert (Idempotenz-Fall)."
         break
       fi
-      if (( rc == 124 )); then
-        transient=true
-      elif echo "${output}" | grep -Eq "${transient_re}"; then
+      if (( rc == 124 )) \
+         || echo "${output}" | grep -Eq "${transient_re}" \
+         || ansible_log_has_pattern "${ansible_log_file}" "${transient_re}"; then
         transient=true
       fi
       if [[ "${transient}" == "true" && ${attempt} -lt ${CC_EXEC_ATTEMPTS} ]]; then
@@ -530,12 +546,7 @@ run_cc_cli_exec() {
         log_error "DIAGNOSE: Alle Passwoerter korrekt im Inventory vorhanden."
         log_error "Fehlerursache liegt vermutlich bei der Ziel-Policy des Dienstes"
         log_error "(z.B. Keycloak password_policy), NICHT beim Passwort-Rendering."
-        log_error "Pruefe Ansible-Log auf konkrete Policy-Fehlermeldung:"
-        if [[ -f "${ansible_log_file}" ]]; then
-          grep -i "password" "${ansible_log_file}" | tail -20 | while read -r line; do
-            log_error "  ${line}"
-          done
-        fi
+        log_error "Ansible-Log zur Analyse: ${ansible_log_file}"
       else
         log_error "DIAGNOSE: Mindestens ein Passwort wurde beim sed-Rendering"
         log_error "veraendert oder ist verschwunden. Charset/sed-Trennzeichen pruefen."
