@@ -18,7 +18,7 @@
 # Enthält verify_phase2(): prüft Namespaces (K8S_NAMESPACES-Array aus
 # 01_config.sh), Deployments, Ingress-Ressourcen, TLS-Zertifikate,
 # Keycloak- und Portal-Erreichbarkeit (HTTPS via HAProxy-Passthrough),
-# WireGuard-Tunnel sowie Konnektivität zu OPNsense.
+# WireGuard-Tunnel sowie Konnektivität zu OPNsense (nur bei WG_ENABLE=true).
 #
 # Abhängigkeiten:
 #   - 02_lib.sh (log_*, VERIFY_ERRORS)

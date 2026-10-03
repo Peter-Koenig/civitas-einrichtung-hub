@@ -119,3 +119,27 @@ gen_policy_password() {
     fi
   done
 }
+
+# ── CHANGEME-Prüfung (nie abbrechend) ─────────────────────────────────────────
+warn_changeme_values() {
+  local _wc_when="${1:-}" _wc_name _wc_val _wc_hits=()
+  while IFS= read -r _wc_name; do
+    [[ "${_wc_name}" == _* || "${_wc_name}" == BASH* ]] && continue
+    [[ "${_wc_name}" == WG_* && "${WG_ENABLED:-true}" != "true" ]] && continue
+    _wc_val="${!_wc_name:-}"
+    [[ "${_wc_val}" == *CHANGEME* ]] || continue
+    if [[ "${_wc_val}" =~ ^[A-Za-z0-9._@:/-]*CHANGEME[A-Za-z0-9._:@/-]*$ && ${#_wc_val} -le 64 ]]; then
+      _wc_hits+=("${_wc_name}=${_wc_val}")
+    else
+      _wc_hits+=("${_wc_name} (enthält CHANGEME)")
+    fi
+  done < <(compgen -v | LC_ALL=C sort)
+  if (( ${#_wc_hits[@]} )); then
+    log_warn "[${_wc_when}] ${#_wc_hits[@]} Variable(n) mit CHANGEME-Platzhalter — bitte prüfen:"
+    local _wc_h
+    for _wc_h in "${_wc_hits[@]}"; do
+      log_warn "    ${_wc_h}"
+    done
+  fi
+  return 0
+}

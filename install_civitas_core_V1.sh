@@ -176,7 +176,11 @@ run_in_vm() {
 # ── Startmeldung ─────────────────────────────────────────────────────────────
 log "============================================"
 log " CIVITAS/CORE V1 — Installation"
-log " Zielplattform: Proxmox-Knoten $(hostname)"
+if [[ "${CIVITAS_CONTEXT}" == "host" ]]; then
+  log " Zielplattform: Proxmox-Knoten $(hostname)"
+else
+  log " Ziel-VM:       $(hostname)"
+fi
 log " Domain:        ${DOMAIN}"
 log " Netzwerkmodus: WireGuard ${WG_ENABLED}"
 log " Storage:       ${PROXMOX_STORAGE}"
@@ -185,6 +189,8 @@ log " k3s:           ${K3S_VERSION}"
 log " Phase:         -1 bis 3 (VM, Vorbedingungen, k3s, Add-ons, cc-cli, Verify) — V1"
 log "============================================"
 log ""
+
+warn_changeme_values "Start"
 
 # ── Phasen ausführen ─────────────────────────────────────────────────────────
 if [[ "${CIVITAS_CONTEXT}" == "host" ]]; then
@@ -202,6 +208,8 @@ else
   run_verification
   login_summary
 fi
+
+warn_changeme_values "Ende"
 
 log ""
 log "============================================"
