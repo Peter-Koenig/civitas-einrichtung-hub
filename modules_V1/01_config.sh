@@ -132,7 +132,10 @@ VM_GW6="${VM_GW6:-fd01:1:1:1:de39:6fff:febe:9962}"  # IPv6-Gateway
 # ── SOHO-Gateway (Default = VM-Gateway) ───────────────────────────────────────
 SOHO_GATEWAY="${SOHO_GATEWAY:-${VM_GW}}"
 
-SSH_PUBKEY_PATH="${HOME}/.ssh/authorized_keys"  # SSH-Public-Key für root-Zugang
+# ── SSH-Zugang zur VM ──
+VM_SSH_PUBKEY="${VM_SSH_PUBKEY:-}"                   # optional: Public Key(s) für direkten Login, eine Zeile pro Key
+VM_REMOVE_INSTALL_KEY="${VM_REMOVE_INSTALL_KEY:-false}"  # true = Installations-Key am Ende aus der VM entfernen
+INSTALL_KEY_DIR="${INSTALL_KEY_DIR:-${HOME}/.local/share/civitas-install/${VM_ID}}"
 
 # ── Remote-Ausführung in der VM ─────────────────────────────────────────────
 VM_REMOTE_INSTALL_DIR="/root/civitas-install"   # Zielverzeichnis für scp/SSH in der VM

@@ -73,16 +73,44 @@ source "${SCRIPT_DIR}/modules_V1s/07_login_summary.sh"
 # ── Ausführungskontext ───────────────────────────────────────────────────────
 CIVITAS_CONTEXT="${CIVITAS_CONTEXT:-host}"
 
+# ── SSH-Zugang zur VM ────────────────────────────────────────────────────────
+ensure_vm_ssh_access() {
+  local target="root@${VM_IP_STATIC}"
+  if ssh "${VM_SSH_OPTS[@]}" -o ConnectTimeout=5 "${target}" true 2>/dev/null; then return 0; fi
+  # Altbestand: VM wurde mit dem alten Verfahren angelegt
+  if ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
+         -o UserKnownHostsFile="${VM_SSH_KNOWN_HOSTS}" "${target}" true 2>/dev/null; then
+    log_warn "Installations-Key ist in der VM unbekannt (Altbestand) — trage ihn über den bisherigen Zugang ein"
+    ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="${VM_SSH_KNOWN_HOSTS}" \
+        "${target}" 'umask 077; mkdir -p ~/.ssh; cat >> ~/.ssh/authorized_keys' < "${INSTALL_KEY}.pub" \
+      || { log_error "Installations-Key konnte nicht eingetragen werden"; exit 1; }
+    ssh "${VM_SSH_OPTS[@]}" -o ConnectTimeout=5 "${target}" true 2>/dev/null && return 0
+  fi
+  log_error "SSH-Zugang zur VM nicht möglich (weder Installations-Key noch bisheriger Zugang)."
+  log_error "Falls sich der Host-Key der VM geändert hat: ssh-keygen -R ${VM_IP_STATIC} -f ${VM_SSH_KNOWN_HOSTS}"
+  exit 1
+}
+
+remove_install_key() {
+  [[ "${VM_REMOVE_INSTALL_KEY:-false}" == "true" ]] || return 0
+  if [[ -z "${VM_SSH_PUBKEY:-}" ]]; then
+    log_warn "VM_REMOVE_INSTALL_KEY=true, aber VM_SSH_PUBKEY leer: Installations-Key bleibt (sonst kein SSH-Zugang)"
+    return 0
+  fi
+  ssh "${VM_SSH_OPTS[@]}" "root@${VM_IP_STATIC}" \
+    "sed -i '/ civitas-install-${VM_ID}\$/d' ~/.ssh/authorized_keys" \
+    && log_ok "Installations-Key aus der VM entfernt"
+}
+
 # ── Funktion: Hop in die VM ──────────────────────────────────────────────────
 run_in_vm() {
-  # Alten SSH-Host-Key entfernen (VM wird bei jedem Scratch-Lauf neu erstellt)
-  ssh-keygen -f "${HOME}/.ssh/known_hosts" -R "${VM_IP_STATIC}" 2>/dev/null || true
+  ensure_vm_ssh_access
   log "Kopiere Skript-Dateien in die VM (${VM_IP_STATIC}) …"
-  ssh -o StrictHostKeyChecking=no \
+  ssh "${VM_SSH_OPTS[@]}" \
       "root@${VM_IP_STATIC}" \
       "mkdir -p ${VM_REMOTE_INSTALL_DIR}" \
       || { log_error "VM ${VM_IP_STATIC} nicht per SSH erreichbar"; exit 1; }
-  scp -o StrictHostKeyChecking=no -r \
+  scp "${VM_SSH_OPTS[@]}" -r \
     "${SCRIPT_DIR}/install_civitas_core_V1s.sh" \
     "${SCRIPT_DIR}/modules_V1s" \
     "${SCRIPT_DIR}/templates_V1s" \
@@ -91,7 +119,7 @@ run_in_vm() {
   log_ok "Skript-Dateien kopiert nach ${VM_REMOTE_INSTALL_DIR}"
 
   if [[ -d "${SCRIPT_DIR}/overlay_V1s" ]]; then
-    scp -o StrictHostKeyChecking=no -r \
+    scp "${VM_SSH_OPTS[@]}" -r \
       "${SCRIPT_DIR}/overlay_V1s" \
       "root@${VM_IP_STATIC}:${VM_REMOTE_INSTALL_DIR}/" \
       || { log_error "Overlay-Verzeichnis konnte nicht kopiert werden"; exit 1; }
@@ -110,7 +138,7 @@ run_in_vm() {
   fi
 
   if [[ -n "${env_file}" ]]; then
-    scp -o StrictHostKeyChecking=no \
+    scp "${VM_SSH_OPTS[@]}" \
       "${env_file}" \
       "root@${VM_IP_STATIC}:${VM_REMOTE_INSTALL_DIR}/.env.local" \
       || { log_error "scp $(basename "${env_file}") fehlgeschlagen"; exit 1; }
@@ -120,7 +148,7 @@ run_in_vm() {
   fi
 
   if [[ -f "${SCRIPT_DIR}/le-certs-backup.yaml" ]]; then
-    scp -o StrictHostKeyChecking=no \
+    scp "${VM_SSH_OPTS[@]}" \
       "${SCRIPT_DIR}/le-certs-backup.yaml" \
       "root@${VM_IP_STATIC}:${VM_REMOTE_INSTALL_DIR}/le-certs-backup.yaml" \
       || { log_error "scp le-certs-backup.yaml fehlgeschlagen"; exit 1; }
@@ -130,7 +158,7 @@ run_in_vm() {
   fi
 
   log "Starte Installation in der VM (SSH-Hop) …"
-  ssh -o StrictHostKeyChecking=no \
+  ssh "${VM_SSH_OPTS[@]}" \
       "root@${VM_IP_STATIC}" \
       "CIVITAS_CONTEXT=vm CIVITAS_DEBUG=${CIVITAS_DEBUG:-false} bash -lc '
         cd ${VM_REMOTE_INSTALL_DIR}
@@ -166,8 +194,10 @@ log ""
 # ── Phasen ausführen ─────────────────────────────────────────────────────────
 if [[ "${CIVITAS_CONTEXT}" == "host" ]]; then
   # Auf dem Proxmox-Host: VM provisionieren + Hop in die VM
+  init_ssh_access
   provision_vm
   run_in_vm
+  remove_install_key
 else
   # In der VM (CIVITAS_CONTEXT=vm): Phasen 0–3 ausführen
   run_preflight

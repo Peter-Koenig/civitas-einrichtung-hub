@@ -27,7 +27,7 @@
 #   - curl (für Cloud-Image-Download)
 #   - ssh (für Verbindungstest nach VM-Start)
 #   - ROOT_PASSWORD als Umgebungsvariable (geprüft in 01_config.sh)
-#   - SSH-Public-Key unter SSH_PUBKEY_PATH (wird in die VM injiziert)
+#   - Installations-Key (ensure_install_key) und VM_SSH_PUBKEY (in die VM injiziert)
 #
 # Idempotenz: Wenn die VM mit der konfigurierten VM_ID bereits existiert,
 # wird die Provisionierung übersprungen.
@@ -37,7 +37,7 @@
 
 check_proxmox_prereqs() {
   local line storage_type storage_status
-  line="$(pvesm status 2>/dev/null | awk -v s="${PROXMOX_STORAGE}" '$1==s {print $2, $3}')"
+  line="$(pvesm status 2>/dev/null | awk -v s="${PROXMOX_STORAGE}" '$1==s {print $2, $3}' || true)"
   storage_type="${line%% *}"
   storage_status="${line##* }"
 
@@ -67,6 +67,61 @@ check_proxmox_prereqs() {
   log_ok "Bridge '${VM_BRIDGE}' vorhanden"
 
   PROXMOX_STORAGE_TYPE="${storage_type}"
+}
+
+ensure_install_key() {
+  INSTALL_KEY="${INSTALL_KEY_DIR}/id_ed25519"
+  if [[ ! -f "${INSTALL_KEY}" ]]; then
+    ( umask 077; mkdir -p "${INSTALL_KEY_DIR}" )
+    chmod 700 "${INSTALL_KEY_DIR}"
+    ssh-keygen -q -t ed25519 -N "" -C "civitas-install-${VM_ID}" -f "${INSTALL_KEY}" \
+      || { log_error "Installations-Key konnte nicht erzeugt werden"; exit 1; }
+    log_ok "Installations-Key erzeugt: ${INSTALL_KEY}"
+  fi
+  [[ -f "${INSTALL_KEY}.pub" ]] || ssh-keygen -y -f "${INSTALL_KEY}" > "${INSTALL_KEY}.pub"
+}
+
+# Gibt die validierten Zeilen aus VM_SSH_PUBKEY auf stdout aus. Return 1 bei ungültiger Zeile.
+validate_vm_pubkeys() {
+  local line tmp
+  [[ -n "${VM_SSH_PUBKEY:-}" ]] || return 0
+  while IFS= read -r line; do
+    line="${line%$'\r'}"
+    [[ -z "${line//[[:space:]]/}" || "${line}" == \#* ]] && continue
+    if [[ "${line}" == *PRIVATE\ KEY* || "${line}" == *CHANGEME* ]]; then
+      log_error "VM_SSH_PUBKEY: Platzhalter oder privater Schlüssel erkannt (nur Public Keys erlaubt)"; return 1
+    fi
+    if ! [[ "${line}" =~ ^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com)[[:space:]] ]]; then
+      log_error "VM_SSH_PUBKEY: Zeile ist kein einfacher Public Key (Optionen wie command= sind nicht erlaubt)"; return 1
+    fi
+    tmp="$(mktemp)"; printf '%s\n' "${line}" > "${tmp}"
+    if ! ssh-keygen -l -f "${tmp}" >/dev/null 2>&1; then
+      rm -f "${tmp}"; log_error "VM_SSH_PUBKEY: ssh-keygen akzeptiert die Zeile nicht"; return 1
+    fi
+    rm -f "${tmp}"
+    printf '%s\n' "${line}"
+  done <<< "${VM_SSH_PUBKEY}"
+}
+
+# Schreibt Installations-Pubkey + VM_SSH_PUBKEY in eine temporäre Datei (0600), gibt den Pfad aus.
+build_sshkeys_file() {
+  local f keys
+  keys="$(validate_vm_pubkeys)" || return 1
+  f="$(mktemp)"; chmod 600 "${f}"
+  cat "${INSTALL_KEY}.pub" > "${f}"
+  [[ -z "${keys}" ]] || printf '%s\n' "${keys}" >> "${f}"
+  echo "${f}"
+}
+
+# Idempotent. Im Host-Zweig des Installers VOR provision_vm aufrufen.
+init_ssh_access() {
+  ensure_install_key
+  VM_SSH_KNOWN_HOSTS="${INSTALL_KEY_DIR}/known_hosts"
+  VM_SSH_OPTS=(-i "${INSTALL_KEY}" -o IdentitiesOnly=yes -o BatchMode=yes
+               -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="${VM_SSH_KNOWN_HOSTS}")
+  if [[ -z "${VM_SSH_PUBKEY:-}" ]]; then
+    log_warn "Kein VM_SSH_PUBKEY gesetzt: SSH-Zugang zur VM nur mit dem Installations-Key auf diesem Host."
+  fi
 }
 
 provision_vm() {
@@ -152,28 +207,31 @@ provision_vm() {
 
   # ── Schritt 6: Cloud-Init konfigurieren (SSH-Key + statische IP) ──────────
   log "Konfiguriere Cloud-Init (root, SSH-Key, statische IP ${VM_IP_STATIC}) ..."
+  init_ssh_access
+  local keyfile
+  keyfile="$(build_sshkeys_file)" || exit 1
   local ipconfig0="ip=${VM_IP_STATIC}/${VM_IP_PREFIX},gw=${VM_GW}"
   if [[ -n "${VM_IP6_STATIC:-}" ]]; then
     ipconfig0+=",ip6=${VM_IP6_STATIC}/${VM_IP6_PREFIX},gw6=${VM_GW6}"
   fi
   qm set "${VM_ID}" \
     --ciuser root \
-    --sshkeys "${SSH_PUBKEY_PATH}" \
-    --ipconfig0 "${ipconfig0}"
+    --sshkeys "${keyfile}" \
+    --ipconfig0 "${ipconfig0}" || { rm -f "${keyfile}"; exit 1; }
+  rm -f "${keyfile}"
   log_ok "Cloud-Init konfiguriert (IP ${VM_IP_STATIC}, SSH-Key injiziert)"
 
   # ── Schritt 7: (entfällt – Image verbleibt im Cache) ──────────────────────
 
   # ── Schritt 8: VM starten und auf SSH warten ──────────────────────────────
+  # Host-Key einer frischen VM entfernen, damit accept-new den neuen Key akzeptiert.
+  ssh-keygen -R "${VM_IP_STATIC}" -f "${VM_SSH_KNOWN_HOSTS}" >/dev/null 2>&1 || true
   log "Starte VM ${VM_ID} ..."
   qm start "${VM_ID}"
   log "Warte auf SSH unter ${VM_IP_STATIC} (max. 120s) ..."
 
   local attempt=0
-  until ssh -o StrictHostKeyChecking=no \
-            -o ConnectTimeout=5 \
-            -o BatchMode=yes \
-            root@"${VM_IP_STATIC}" true 2>/dev/null; do
+  until ssh "${VM_SSH_OPTS[@]}" -o ConnectTimeout=5 root@"${VM_IP_STATIC}" true 2>/dev/null; do
     sleep 5
     (( attempt++ )) || true
     if [[ $attempt -gt 24 ]]; then
@@ -190,7 +248,7 @@ provision_vm() {
   # Vorfalls 2026-08-31/2026-09-05). Die k3s-Node selbst wird separat über
   # --node-name (01_config.sh) gepinnt.
   log "Stabilisiere Cloud-Init-Hostname (preserve_hostname) ..."
-  ssh -o StrictHostKeyChecking=no -o BatchMode=yes root@"${VM_IP_STATIC}" \
+  ssh "${VM_SSH_OPTS[@]}" root@"${VM_IP_STATIC}" \
     'if grep -q "^preserve_hostname:" /etc/cloud/cloud.cfg 2>/dev/null; then
        sed -i "s/^preserve_hostname:.*/preserve_hostname: true/" /etc/cloud/cloud.cfg
      else
