@@ -23,3 +23,7 @@ supplement/*
 !supplement/*.sha256
 !supplement/templates/
 !supplement/templates/**
+
+# Lokale Secrets-Dateien (die Vorlagen *.example sind versioniert)
+.env.local
+.env-v1s.local
