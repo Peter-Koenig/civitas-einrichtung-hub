@@ -29,8 +29,9 @@
 #   ./install_civitas_core_V1.sh
 #
 # ROOT_PASSWORD ist optional (Zugangsregel: VM_SSH_PUBKEY ODER ROOT_PASSWORD,
-# siehe init_ssh_access). Secrets liegen in ${SCRIPT_DIR}/.env.local; der
-# Host-Zweig verlangt diese Datei (require_env_file) und kopiert sie in die VM.
+# siehe init_ssh_access). Secrets liegen in ${HOME}/.env.local (bei root
+# /root/.env.local); der Host-Zweig verlangt diese Datei (require_env_file) und
+# kopiert sie in die VM. Vor dem Aufruf: set -a; source ${HOME}/.env.local; set +a
 #
 # Optionen:
 #   LOG_FILE=/var/log/civitas_install_v1.log ./install_civitas_core_V1.sh
@@ -108,17 +109,27 @@ remove_install_key() {
 }
 
 # ── Env-Datei (Host-Zweig) ───────────────────────────────────────────────────
-# find_env_file liefert den Pfad der Env-Datei in ${SCRIPT_DIR} (eine Quelle der
-# Wahrheit für require_env_file und run_in_vm). Leer, wenn keine Datei vorhanden.
+# Die Env-Datei liegt bewusst außerhalb von ${SCRIPT_DIR}, damit der --delete-Sync
+# des Installations-Repos sie nicht entfernt. Bei root ist ${HOME} = /root.
+HOST_ENV_FILE="${HOME}/.env.local"
+
 find_env_file() {
-  if [[ -f "${SCRIPT_DIR}/.env.local" ]]; then echo "${SCRIPT_DIR}/.env.local"; fi
+  [[ -r "${HOST_ENV_FILE}" ]] && printf '%s\n' "${HOST_ENV_FILE}"
 }
 
 require_env_file() {
-  if [[ -z "$(find_env_file)" ]]; then
-    log_error "Keine Env-Datei in ${SCRIPT_DIR} (.env.local)."
-    log_error "Die VM bekommt nur diese Datei; Variablen aus der Host-Shell erreichen sie nicht."
-    log_error "Liegt sie anderswo: ln -s <Pfad>/.env.local ${SCRIPT_DIR}/.env.local (oder kopieren)."
+  local env_file mode
+  env_file="$(find_env_file)"
+  if [[ -z "${env_file}" ]]; then
+    log_error "Env-Datei fehlt oder ist nicht lesbar: ${HOST_ENV_FILE}"
+    log_error "Die Datei liegt bewusst außerhalb von ${SCRIPT_DIR}, damit der --delete-Sync sie nicht entfernt."
+    log_error "Vor dem Aufruf laden: set -a; source ${HOST_ENV_FILE}; set +a"
+    exit 1
+  fi
+  mode="$(stat -c '%a' "${env_file}" 2>/dev/null || true)"
+  if [[ -n "${mode}" ]] && (( (8#${mode} & 0022) != 0 )); then
+    log_error "Env-Datei ist für group/other schreibbar: ${env_file} (Modus ${mode})"
+    log_error "Korrigieren: chmod 600 ${env_file}"
     exit 1
   fi
 }
