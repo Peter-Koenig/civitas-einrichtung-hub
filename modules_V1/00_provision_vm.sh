@@ -162,6 +162,10 @@ init_ssh_access() {
     exit 1
   fi
   [[ "${ROOT_PASSWORD:-}" != *$'\n'* ]] || { log_error "ROOT_PASSWORD darf keinen Zeilenumbruch enthalten"; exit 1; }
+  if [[ "${ROOT_PASSWORD:-}" == *CHANGEME* ]]; then
+    log_error "ROOT_PASSWORD enthält den Platzhalter CHANGEME — echten Wert setzen oder die Variable leer lassen."
+    exit 1
+  fi
   ensure_install_key
   VM_SSH_KNOWN_HOSTS="${INSTALL_KEY_DIR}/known_hosts"
   VM_SSH_OPTS=(-i "${INSTALL_KEY}" -o IdentitiesOnly=yes -o BatchMode=yes

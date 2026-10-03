@@ -24,11 +24,14 @@
 # Siehe: skriptarchitektur.md (V1), installationsphasen-und-abnahme.md (V1)
 #
 # Aufruf (von Proxmox-Host):
-#   export ROOT_PASSWORD="..."
 #   export SMTP_HOST="..."
 #   export SMTP_USER="..."
 #   export SMTP_PASS="..."
 #   ./install_civitas_core_V1s.sh
+#
+# ROOT_PASSWORD ist optional (Zugangsregel: VM_SSH_PUBKEY ODER ROOT_PASSWORD,
+# siehe init_ssh_access). Secrets liegen in ${SCRIPT_DIR}/.env-v1s.local
+# (Fallback .env.local); der Host-Zweig verlangt diese Datei (require_env_file).
 #
 # Optionen:
 #   LOG_FILE=/var/log/civitas_install_v1.log ./install_civitas_core_V1s.sh
@@ -45,7 +48,7 @@ if [[ -n "$LOG_FILE" ]]; then
 fi
 
 # ── Module laden ─────────────────────────────────────────────────────────────
-source "${SCRIPT_DIR}/modules_V1s/01_config.sh"    # Config + ROOT_PASSWORD check
+source "${SCRIPT_DIR}/modules_V1s/01_config.sh"    # Konfiguration
 source "${SCRIPT_DIR}/modules_V1s/02_lib.sh"
 source "${SCRIPT_DIR}/modules_V1s/00_provision_vm.sh"
 source "${SCRIPT_DIR}/modules_V1s/03_preflight.sh"
