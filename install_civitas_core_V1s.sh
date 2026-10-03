@@ -92,14 +92,18 @@ ensure_vm_ssh_access() {
 }
 
 remove_install_key() {
+  # Entfernt den Key nur aus der laufenden VM. Das Cloud-Init-Laufwerk der VM
+  # enthält ihn weiterhin; ob ein späterer Neustart ihn wieder einträgt, ist nicht verifiziert.
   [[ "${VM_REMOVE_INSTALL_KEY:-false}" == "true" ]] || return 0
   if [[ -z "${VM_SSH_PUBKEY:-}" ]]; then
     log_warn "VM_REMOVE_INSTALL_KEY=true, aber VM_SSH_PUBKEY leer: Installations-Key bleibt (sonst kein SSH-Zugang)"
     return 0
   fi
-  ssh "${VM_SSH_OPTS[@]}" "root@${VM_IP_STATIC}" \
-    "sed -i '/ civitas-install-${VM_ID}\$/d' ~/.ssh/authorized_keys" \
-    && log_ok "Installations-Key aus der VM entfernt"
+  if ssh "${VM_SSH_OPTS[@]}" "root@${VM_IP_STATIC}" "sed -i '/ civitas-install-${VM_ID}\$/d' ~/.ssh/authorized_keys"; then
+    log_ok "Installations-Key aus der VM entfernt"
+  else
+    log_warn "Installations-Key konnte nicht aus der VM entfernt werden"
+  fi
 }
 
 # ── Funktion: Hop in die VM ──────────────────────────────────────────────────

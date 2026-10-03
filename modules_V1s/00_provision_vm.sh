@@ -114,7 +114,10 @@ build_sshkeys_file() {
 }
 
 # Idempotent. Im Host-Zweig des Installers VOR provision_vm aufrufen.
+# Validiert VM_SSH_PUBKEY bereits hier (vor jeder VM-Änderung).
 init_ssh_access() {
+  [[ "${VM_SSH_INIT_DONE:-false}" == "true" ]] && return 0
+  validate_vm_pubkeys >/dev/null || exit 1
   ensure_install_key
   VM_SSH_KNOWN_HOSTS="${INSTALL_KEY_DIR}/known_hosts"
   VM_SSH_OPTS=(-i "${INSTALL_KEY}" -o IdentitiesOnly=yes -o BatchMode=yes
@@ -122,6 +125,7 @@ init_ssh_access() {
   if [[ -z "${VM_SSH_PUBKEY:-}" ]]; then
     log_warn "Kein VM_SSH_PUBKEY gesetzt: SSH-Zugang zur VM nur mit dem Installations-Key auf diesem Host."
   fi
+  VM_SSH_INIT_DONE="true"
 }
 
 provision_vm() {
