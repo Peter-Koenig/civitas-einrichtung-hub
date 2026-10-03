@@ -92,7 +92,10 @@ install_civitas() {
 
   apply_target_state "${resolved_state}"
   local apply_rc=$?
-  ensure_keycloak_admin_user
+  if ! ensure_keycloak_admin_user; then
+    log_error "CIVITAS/CORE-Cluster ist deployt, aber die Keycloak-Admin-Provisionierung ist unvollständig (betroffene Punkte siehe oben)."
+    exit 1
+  fi
 
   if [[ ${apply_rc} -ne 0 ]]; then
     log_error "apply_target_state fehlgeschlagen (Zielzustand: ${resolved_state})"
