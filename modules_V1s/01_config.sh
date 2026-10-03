@@ -138,9 +138,9 @@ CLOUD_IMAGE_CACHE="${CLOUD_IMAGE_CACHE:-/var/lib/vz/template/qcow}"  # Cache-Ver
 VM_IP_STATIC="${VM_IP_STATIC:-192.168.12.139}"  # IPv4-Adresse der VM
 VM_IP_PREFIX="${VM_IP_PREFIX:-24}"              # IPv4-Präfixlänge
 VM_GW="${VM_GW:-192.168.12.1}"                  # IPv4-Gateway
-VM_IP6_STATIC="${VM_IP6_STATIC-fd01:1:1:1::139}"   # IPv6-Adresse der VM (leer = IPv6 deaktivieren)
+VM_IP6_STATIC="${VM_IP6_STATIC:-}"               # IPv6-Adresse der VM (leer = IPv6 aus)
 VM_IP6_PREFIX="${VM_IP6_PREFIX:-64}"            # IPv6-Präfixlänge
-VM_GW6="${VM_GW6:-fd01:1:1:1:de39:6fff:febe:9962}"  # IPv6-Gateway
+VM_GW6="${VM_GW6:-}"                             # IPv6-Gateway (Pflicht, wenn VM_IP6_STATIC gesetzt)
 
 # ── SOHO-Gateway (Default = VM-Gateway) ───────────────────────────────────────
 SOHO_GATEWAY="${SOHO_GATEWAY:-${VM_GW}}"
