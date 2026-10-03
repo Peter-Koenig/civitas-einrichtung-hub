@@ -152,8 +152,9 @@ CREDENTIALS_OUTPUT_PATH="${CREDENTIALS_OUTPUT_PATH:-/root/civitas-install/creden
 # Darf NICHT im CC_CLI_PLAYBOOK_DIR liegen, da dieses nach cc_cli exec
 # bereinigt wird.
 
-# ROOT_PASSWORD wird aus Umgebungsvariable gelesen — nie hartcoden!
-ROOT_PASSWORD="${ROOT_PASSWORD:?'ROOT_PASSWORD muss als Umgebungsvariable gesetzt sein'}"
+# ROOT_PASSWORD optional. Wenn gesetzt, wird es nach dem SSH-Zugang per stdin
+# (chpasswd) in der VM gesetzt, NICHT per qm set --cipassword. Nie hartcoden.
+ROOT_PASSWORD="${ROOT_PASSWORD:-}"
 
 # ── Netzwerkmodus: WireGuard optional (WG_ENABLE) ──────────────────────────────
 # WG_ENABLE=true  (Default): WireGuard aktiv, die WG_*-Secrets sind Pflicht.

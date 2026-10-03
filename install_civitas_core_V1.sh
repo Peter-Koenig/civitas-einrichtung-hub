@@ -120,9 +120,20 @@ require_env_file() {
   fi
 }
 
+# ── Root-Passwort in der VM (optional, per stdin/chpasswd) ───────────────────
+set_root_password() {
+  [[ -n "${ROOT_PASSWORD:-}" ]] || return 0
+  if printf 'root:%s\n' "${ROOT_PASSWORD}" | ssh "${VM_SSH_OPTS[@]}" "root@${VM_IP_STATIC}" chpasswd; then
+    log_ok "Root-Passwort in der VM gesetzt (Konsole)"
+  else
+    log_error "Root-Passwort konnte nicht gesetzt werden"; exit 1
+  fi
+}
+
 # ── Funktion: Hop in die VM ──────────────────────────────────────────────────
 run_in_vm() {
   ensure_vm_ssh_access
+  set_root_password
   log "Kopiere Skript-Dateien in die VM (${VM_IP_STATIC}) …"
   ssh "${VM_SSH_OPTS[@]}" \
       "root@${VM_IP_STATIC}" \
@@ -155,6 +166,10 @@ run_in_vm() {
     "root@${VM_IP_STATIC}:${VM_REMOTE_INSTALL_DIR}/.env.local" \
     || { log_error "scp $(basename "${env_file}") fehlgeschlagen"; exit 1; }
   log_ok "$(basename "${env_file}") nach ${VM_REMOTE_INSTALL_DIR}/.env.local kopiert"
+
+  ssh "${VM_SSH_OPTS[@]}" "root@${VM_IP_STATIC}" \
+    "chmod 700 ${VM_REMOTE_INSTALL_DIR} && chmod 600 ${VM_REMOTE_INSTALL_DIR}/.env.local" \
+    || { log_error "chmod auf .env.local fehlgeschlagen"; exit 1; }
 
   if [[ -f "${SCRIPT_DIR}/le-certs-backup.yaml" ]]; then
     scp "${VM_SSH_OPTS[@]}" \
