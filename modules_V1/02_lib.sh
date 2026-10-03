@@ -119,7 +119,8 @@ warn_changeme_values() {
     [[ "${_wc_name}" == WG_* && "${WG_ENABLED:-true}" != "true" ]] && continue
     _wc_val="${!_wc_name:-}"
     [[ "${_wc_val}" == *CHANGEME* ]] || continue
-    if [[ "${_wc_val}" =~ ^[A-Za-z0-9._@:/-]*CHANGEME[A-Za-z0-9._:@/-]*$ && ${#_wc_val} -le 64 ]]; then
+    if [[ ${#_wc_val} -le 64 && "${_wc_val}" =~ ^[A-Za-z0-9._@:/-]+$ \
+          && "${_wc_val}" =~ (^|[^A-Za-z0-9])CHANGEME([^A-Za-z0-9]|$) ]]; then
       _wc_hits+=("${_wc_name}=${_wc_val}")
     else
       _wc_hits+=("${_wc_name} (enthält CHANGEME)")
