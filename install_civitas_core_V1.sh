@@ -104,6 +104,22 @@ remove_install_key() {
   fi
 }
 
+# ── Env-Datei (Host-Zweig) ───────────────────────────────────────────────────
+# find_env_file liefert den Pfad der Env-Datei in ${SCRIPT_DIR} (eine Quelle der
+# Wahrheit für require_env_file und run_in_vm). Leer, wenn keine Datei vorhanden.
+find_env_file() {
+  if [[ -f "${SCRIPT_DIR}/.env.local" ]]; then echo "${SCRIPT_DIR}/.env.local"; fi
+}
+
+require_env_file() {
+  if [[ -z "$(find_env_file)" ]]; then
+    log_error "Keine Env-Datei in ${SCRIPT_DIR} (.env.local)."
+    log_error "Die VM bekommt nur diese Datei; Variablen aus der Host-Shell erreichen sie nicht."
+    log_error "Liegt sie anderswo: ln -s <Pfad>/.env.local ${SCRIPT_DIR}/.env.local (oder kopieren)."
+    exit 1
+  fi
+}
+
 # ── Funktion: Hop in die VM ──────────────────────────────────────────────────
 run_in_vm() {
   ensure_vm_ssh_access
@@ -132,15 +148,13 @@ run_in_vm() {
     exit 1
   fi
 
-  if [[ -f "${SCRIPT_DIR}/.env.local" ]]; then
-    scp "${VM_SSH_OPTS[@]}" \
-      "${SCRIPT_DIR}/.env.local" \
-      "root@${VM_IP_STATIC}:${VM_REMOTE_INSTALL_DIR}/.env.local" \
-      || { log_error "scp .env.local fehlgeschlagen"; exit 1; }
-    log_ok ".env.local nach ${VM_REMOTE_INSTALL_DIR} kopiert"
-  else
-    log_warn ".env.local nicht gefunden — alle Secrets müssen als Umgebungsvariablen gesetzt sein"
-  fi
+  local env_file
+  env_file="$(find_env_file)"
+  scp "${VM_SSH_OPTS[@]}" \
+    "${env_file}" \
+    "root@${VM_IP_STATIC}:${VM_REMOTE_INSTALL_DIR}/.env.local" \
+    || { log_error "scp $(basename "${env_file}") fehlgeschlagen"; exit 1; }
+  log_ok "$(basename "${env_file}") nach ${VM_REMOTE_INSTALL_DIR}/.env.local kopiert"
 
   if [[ -f "${SCRIPT_DIR}/le-certs-backup.yaml" ]]; then
     scp "${VM_SSH_OPTS[@]}" \
@@ -194,7 +208,9 @@ warn_changeme_values "Start"
 
 # ── Phasen ausführen ─────────────────────────────────────────────────────────
 if [[ "${CIVITAS_CONTEXT}" == "host" ]]; then
-  # Auf dem Proxmox-Host: VM provisionieren + Hop in die VM
+  # Auf dem Proxmox-Host: Env-Datei prüfen, VM-Werte validieren, VM provisionieren, Hop in die VM
+  require_env_file
+  validate_vm_config
   init_ssh_access
   provision_vm
   run_in_vm

@@ -26,7 +26,7 @@
 #   - qm (Proxmox VE)
 #   - curl (für Cloud-Image-Download)
 #   - ssh (für Verbindungstest nach VM-Start)
-#   - ROOT_PASSWORD als Umgebungsvariable (geprüft in 01_config.sh)
+#   - ROOT_PASSWORD optional; Zugangsregel (VM_SSH_PUBKEY oder ROOT_PASSWORD) in init_ssh_access
 #   - Installations-Key (ensure_install_key) und VM_SSH_PUBKEY (in die VM injiziert)
 #
 # Idempotenz: Wenn die VM mit der konfigurierten VM_ID bereits existiert,
@@ -67,6 +67,45 @@ check_proxmox_prereqs() {
   log_ok "Bridge '${VM_BRIDGE}' vorhanden"
 
   PROXMOX_STORAGE_TYPE="${storage_type}"
+}
+
+# ── VM-Konfiguration validieren (vor jeder VM-Änderung) ──────────────────────
+# Prüft Format und Konsistenz der VM-Werte. Läuft im Host-Zweig VOR provision_vm,
+# damit Tippfehler nicht erst nach der VM-Anlage auffallen (der Idempotenz-Check
+# würde den zweiten Lauf sonst überspringen).
+ipv4_to_int() {   # a.b.c.d -> Ganzzahl, Return 1 bei ungültig
+  local ip="$1"
+  [[ "${ip}" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+  local a=$((10#${BASH_REMATCH[1]})) b=$((10#${BASH_REMATCH[2]}))
+  local c=$((10#${BASH_REMATCH[3]})) d=$((10#${BASH_REMATCH[4]}))
+  (( a <= 255 && b <= 255 && c <= 255 && d <= 255 )) || return 1
+  echo $(( (a << 24) | (b << 16) | (c << 8) | d ))
+}
+
+validate_vm_config() {
+  local errs=0 ip gw mask v
+  [[ "${VM_ID}" =~ ^[0-9]+$ ]] && (( VM_ID >= 100 )) || { log_error "VM_ID ungültig: '${VM_ID}' (Zahl >= 100)"; errs=$((errs+1)); }
+  [[ "${VM_NAME}" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]] || { log_error "VM_NAME ungültig: '${VM_NAME}'"; errs=$((errs+1)); }
+  for v in VM_RAM_MB VM_CORES VM_DISK_GB; do
+    [[ "${!v}" =~ ^[0-9]+$ ]] && (( ${!v} > 0 )) || { log_error "${v} ungültig: '${!v}' (positive Zahl)"; errs=$((errs+1)); }
+  done
+  ip="$(ipv4_to_int "${VM_IP_STATIC}")" || { log_error "VM_IP_STATIC ungültig: '${VM_IP_STATIC}'"; errs=$((errs+1)); }
+  gw="$(ipv4_to_int "${VM_GW}")" || { log_error "VM_GW ungültig: '${VM_GW}'"; errs=$((errs+1)); }
+  if [[ "${VM_IP_PREFIX}" =~ ^[0-9]+$ ]] && (( VM_IP_PREFIX >= 8 && VM_IP_PREFIX <= 30 )); then
+    if [[ -n "${ip:-}" && -n "${gw:-}" ]]; then
+      mask=$(( (0xFFFFFFFF << (32 - VM_IP_PREFIX)) & 0xFFFFFFFF ))
+      (( (ip & mask) == (gw & mask) )) || { log_error "VM_GW ${VM_GW} liegt nicht im Subnetz ${VM_IP_STATIC}/${VM_IP_PREFIX}"; errs=$((errs+1)); }
+      (( ip != gw )) || { log_error "VM_GW und VM_IP_STATIC sind identisch"; errs=$((errs+1)); }
+    fi
+  else
+    log_error "VM_IP_PREFIX ungültig: '${VM_IP_PREFIX}' (8..30)"; errs=$((errs+1))
+  fi
+  if [[ -n "${VM_IP6_STATIC:-}" ]]; then      # IPv6 nur prüfen, wenn gesetzt (Opt-in)
+    [[ "${VM_IP6_STATIC}" =~ ^[0-9A-Fa-f:]+$ && "${VM_IP6_STATIC}" == *:*:* ]] || { log_error "VM_IP6_STATIC ungültig: '${VM_IP6_STATIC}'"; errs=$((errs+1)); }
+    [[ "${VM_IP6_PREFIX}" =~ ^[0-9]+$ ]] && (( VM_IP6_PREFIX >= 8 && VM_IP6_PREFIX <= 128 )) || { log_error "VM_IP6_PREFIX ungültig: '${VM_IP6_PREFIX}'"; errs=$((errs+1)); }
+    [[ -n "${VM_GW6:-}" && "${VM_GW6}" =~ ^[0-9A-Fa-f:]+$ && "${VM_GW6}" == *:*:* ]] || { log_error "VM_GW6 fehlt oder ist ungültig (Pflicht, wenn VM_IP6_STATIC gesetzt ist)"; errs=$((errs+1)); }
+  fi
+  (( errs == 0 )) || exit 1
 }
 
 ensure_install_key() {
@@ -118,12 +157,17 @@ build_sshkeys_file() {
 init_ssh_access() {
   [[ "${VM_SSH_INIT_DONE:-false}" == "true" ]] && return 0
   validate_vm_pubkeys >/dev/null || exit 1
+  if [[ -z "${VM_SSH_PUBKEY:-}" && -z "${ROOT_PASSWORD:-}" ]]; then
+    log_error "Kein Zugang für Menschen konfiguriert: mindestens VM_SSH_PUBKEY oder ROOT_PASSWORD setzen."
+    exit 1
+  fi
+  [[ "${ROOT_PASSWORD:-}" != *$'\n'* ]] || { log_error "ROOT_PASSWORD darf keinen Zeilenumbruch enthalten"; exit 1; }
   ensure_install_key
   VM_SSH_KNOWN_HOSTS="${INSTALL_KEY_DIR}/known_hosts"
   VM_SSH_OPTS=(-i "${INSTALL_KEY}" -o IdentitiesOnly=yes -o BatchMode=yes
                -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="${VM_SSH_KNOWN_HOSTS}")
   if [[ -z "${VM_SSH_PUBKEY:-}" ]]; then
-    log_warn "Kein VM_SSH_PUBKEY gesetzt: SSH-Zugang zur VM nur mit dem Installations-Key auf diesem Host."
+    log_warn "Kein VM_SSH_PUBKEY gesetzt: direkter SSH-Login nur mit dem Installations-Key auf diesem Host."
   fi
   VM_SSH_INIT_DONE="true"
 }
