@@ -212,9 +212,9 @@ all:
         inv_checks:
           enable: true
           api:
-            default_max_retries: 20
+            default_max_retries: PLACEHOLDER_API_MAX_RETRIES
           deployment:
-            default_max_retries: 30
+            default_max_retries: PLACEHOLDER_DEPLOYMENT_MAX_RETRIES
 
         inv_email:
           server: "PLACEHOLDER_SMTP_HOST"

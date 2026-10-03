@@ -119,6 +119,16 @@ V1S_DOCKER_INSTALLED_BY_SCRIPT="false"                 # Laufzeit-Flag: Docker v
 TIMEOUT_CC_CLI_EXEC=2700             # Sekunden für cc_cli exec (45 Min; Monitoring-Reaktivierung Turn 5 lädt zusätzliche Helm-Charts)
 TIMEOUT_POD_READY=300               # Sekunden für kubectl wait
 
+# Wartezeit/Wiederholung für cc_cli exec (per .env überschreibbar)
+CC_API_MAX_RETRIES="${CC_API_MAX_RETRIES:-20}"            # inv_checks.api.default_max_retries
+CC_DEPLOYMENT_MAX_RETRIES="${CC_DEPLOYMENT_MAX_RETRIES:-30}"  # inv_checks.deployment.default_max_retries
+CC_EXEC_ATTEMPTS="${CC_EXEC_ATTEMPTS:-2}"                 # Versuche für cc_cli exec bei vorübergehenden Fehlern
+CC_EXEC_RETRY_DELAY="${CC_EXEC_RETRY_DELAY:-30}"          # Sekunden zwischen den Versuchen
+for _v in CC_API_MAX_RETRIES CC_DEPLOYMENT_MAX_RETRIES CC_EXEC_ATTEMPTS CC_EXEC_RETRY_DELAY; do
+  [[ "${!_v}" =~ ^[0-9]+$ ]] && (( ${!_v} >= 1 && ${!_v} <= 600 )) \
+    || { echo "FEHLER: ${_v}='${!_v}' ungültig (Zahl 1..600)" >&2; exit 1; }
+done; unset _v
+
 
 # ── PBS (Proxmox Backup Server) ──────────────────────────────────────────────
 PBS_STORAGE="${PBS_STORAGE-backup-p2d2-kinglui}"    # leer = Backup-Prüfung überspringen

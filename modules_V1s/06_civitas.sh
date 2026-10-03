@@ -368,6 +368,8 @@ render_inventory() {
     -e "s|PLACEHOLDER_PIVAU_PASSWORD|${pw_pivau}|g" \
     -e "s|PLACEHOLDER_V1S_IMAGE_REPOSITORY|${V1S_IMAGE_REF%%:*}|g" \
     -e "s|PLACEHOLDER_V1S_IMAGE_TAG|${V1S_IMAGE_REF##*:}|g" \
+    -e "s|PLACEHOLDER_API_MAX_RETRIES|${CC_API_MAX_RETRIES:-20}|g" \
+    -e "s|PLACEHOLDER_DEPLOYMENT_MAX_RETRIES|${CC_DEPLOYMENT_MAX_RETRIES:-30}|g" \
     -e "s|PLACEHOLDER_KUBECONFIG|config|g" \
     "${tpl}" > "${out}"
 
@@ -453,63 +455,88 @@ run_cc_cli_exec() {
   log "  Inhalt: $(ls -la)"
   log "  Log-Verzeichnis: $(ls -la "${ansible_log_dir}" 2>/dev/null || echo 'leer')"
 
-  local output rc=0
-  output=$(cd "${CC_CLI_PLAYBOOK_DIR}" && \
-    echo "Y" | timeout "${TIMEOUT_CC_CLI_EXEC}" \
-    "${CC_CLI_VENV_PATH}/bin/cc_cli" exec 2>&1) || rc=$?
-  echo "${output}"
-  local cc_cli_rc="${rc}"
-  echo "cc_cli rc=${cc_cli_rc}"
-  ls -la "${ansible_log_dir}"
-  test -f "${ansible_log_file}" && tail -n 80 "${ansible_log_file}" || echo "kein ansible_log_file vorhanden"
-  # Nur echte Infrastrukturfehler abbrechen, 404-Idempotenzfaelle tolerieren
-  if echo "${output}" | grep -q "failed with status: failed"; then
-    if echo "${output}" | grep -q "Status code was 404 and not \[204\]"; then
-      log_warn "cc_cli exec: Playbook meldet 404 statt 204 beim Loeschen einer Keycloak-Ressource, toleriert (Idempotenz-Fall)."
-    else
-      log_error "cc_cli exec: Playbook fehlgeschlagen — Logs pruefen:"
-      log_error "  ${ansible_log_file}"
-      log_error ""
-      log_error "DIAGNOSE: Pruefe Passwort-Integritaet im gerenderten Inventory ..."
-      local inventory_intakt=true
-      if [[ -n "${CONFIG_YAML_PATH:-}" && -f "${CONFIG_YAML_PATH}" && -n "${CREDENTIALS_OUTPUT_PATH:-}" && -f "${CREDENTIALS_OUTPUT_PATH}" ]]; then
-        local pw_checks=("PGADMIN_PASSWORD" "GEOSERVER_PASSWORD" "SUPERSET_PASSWORD" "SUPERSET_DB_SECRET" "SUPERSET_REDIS_PASSWORD" "GRAFANA_PASSWORD" "APISIX_DASHBOARD_PASSWORD" "APISIX_ADMIN_ROLE_KEY" "APISIX_VIEWER_ROLE_KEY" "PIVAU_PASSWORD")
-        for pw_name in "${pw_checks[@]}"; do
-          local pw_value
-          pw_value="$(grep -oP "(?<=^${pw_name}=).*" "${CREDENTIALS_OUTPUT_PATH}" 2>/dev/null || true)"
-          if [[ -n "${pw_value}" ]]; then
-            if ! grep -qF "${pw_value}" "${CONFIG_YAML_PATH}" 2>/dev/null; then
-              log_error "  ✗ ${pw_name}: NICHT im Inventory gefunden -> Rendering-Fehler (sed)"
-              inventory_intakt=false
+  local attempt=1
+  local transient_re='Status code was 5[0-9][0-9]|Temporarily Unavailable|Connection refused|timed out|Max retries exceeded'
+  while :; do
+    local output rc=0
+    output=$(cd "${CC_CLI_PLAYBOOK_DIR}" && \
+      echo "Y" | timeout "${TIMEOUT_CC_CLI_EXEC}" \
+      "${CC_CLI_VENV_PATH}/bin/cc_cli" exec 2>&1) || rc=$?
+    echo "${output}"
+    echo "cc_cli rc=${rc}"
+    ls -la "${ansible_log_dir}"
+    test -f "${ansible_log_file}" && tail -n 80 "${ansible_log_file}" || echo "kein ansible_log_file vorhanden"
+    # Nur echte Infrastrukturfehler abbrechen, 404-Idempotenzfaelle tolerieren
+    if echo "${output}" | grep -q "failed with status: failed"; then
+      if echo "${output}" | grep -q "Status code was 404 and not \[204\]"; then
+        log_warn "cc_cli exec: Playbook meldet 404 statt 204 beim Loeschen einer Keycloak-Ressource, toleriert (Idempotenz-Fall)."
+        break
+      elif (( attempt < CC_EXEC_ATTEMPTS )) && echo "${output}" | grep -Eq "${transient_re}"; then
+        log_warn "cc_cli exec: vorübergehender Fehler (Versuch ${attempt}/${CC_EXEC_ATTEMPTS}) — wiederhole in ${CC_EXEC_RETRY_DELAY}s mit demselben Inventory"
+        sleep "${CC_EXEC_RETRY_DELAY}"
+        attempt=$((attempt + 1))
+        continue
+      else
+        log_error "cc_cli exec: Playbook fehlgeschlagen — Logs pruefen:"
+        log_error "  ${ansible_log_file}"
+        log_error ""
+        log_error "DIAGNOSE: Pruefe Passwort-Integritaet im gerenderten Inventory ..."
+        local inventory_intakt=true
+        if [[ -n "${CONFIG_YAML_PATH:-}" && -f "${CONFIG_YAML_PATH}" && -n "${CREDENTIALS_OUTPUT_PATH:-}" && -f "${CREDENTIALS_OUTPUT_PATH}" ]]; then
+          local script_dir="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+          local tpl="${script_dir}/templates_V1s/inventory.yml.tpl"
+          local -A pw_tokens=(
+            [PGADMIN_PASSWORD]=PLACEHOLDER_PGADMIN_PASSWORD
+            [GEOSERVER_PASSWORD]=PLACEHOLDER_GEOSERVER_PASSWORD
+            [SUPERSET_PASSWORD]=PLACEHOLDER_SUPERSET_ADMIN_PASSWORD
+            [SUPERSET_DB_SECRET]=PLACEHOLDER_SUPERSET_DB_SECRET
+            [SUPERSET_REDIS_PASSWORD]=PLACEHOLDER_SUPERSET_REDIS_PASSWORD
+            [GRAFANA_PASSWORD]=PLACEHOLDER_GRAFANA_PASSWORD
+            [APISIX_DASHBOARD_PASSWORD]=PLACEHOLDER_APISIX_DASHBOARD_PASS
+            [APISIX_ADMIN_ROLE_KEY]=PLACEHOLDER_APISIX_ADMIN_ROLE_KEY
+            [APISIX_VIEWER_ROLE_KEY]=PLACEHOLDER_APISIX_VIEWER_ROLE_KEY
+            [PIVAU_PASSWORD]=PLACEHOLDER_PIVAU_PASSWORD
+          )
+          for pw_name in "${!pw_tokens[@]}"; do
+            local token="${pw_tokens[${pw_name}]}"
+            grep -q "${token}" "${tpl}" 2>/dev/null || continue
+            local pw_value
+            pw_value="$(grep -oP "(?<=^${pw_name}=).*" "${CREDENTIALS_OUTPUT_PATH}" 2>/dev/null || true)"
+            if [[ -n "${pw_value}" ]]; then
+              if ! grep -qF "${pw_value}" "${CONFIG_YAML_PATH}" 2>/dev/null; then
+                log_error "  ✗ ${pw_name}: NICHT im Inventory gefunden -> Rendering-Fehler (sed)"
+                inventory_intakt=false
+              fi
             fi
-          fi
-        done
-      else
-        log_error "  Inventory (${CONFIG_YAML_PATH:-unset}) oder Credentials (${CREDENTIALS_OUTPUT_PATH:-unset}) nicht lesbar"
-        inventory_intakt=false
-      fi
-      if [[ "${inventory_intakt}" == "true" ]]; then
-        log_error "DIAGNOSE: Alle Passwoerter korrekt im Inventory vorhanden."
-        log_error "Fehlerursache liegt vermutlich bei der Ziel-Policy des Dienstes"
-        log_error "(z.B. Keycloak password_policy), NICHT beim Passwort-Rendering."
-        log_error "Pruefe Ansible-Log auf konkrete Policy-Fehlermeldung:"
-        if [[ -f "${ansible_log_file}" ]]; then
-          grep -i "password" "${ansible_log_file}" | tail -20 | while read -r line; do
-            log_error "  ${line}"
           done
+        else
+          log_error "  Inventory (${CONFIG_YAML_PATH:-unset}) oder Credentials (${CREDENTIALS_OUTPUT_PATH:-unset}) nicht lesbar"
+          inventory_intakt=false
         fi
-      else
-        log_error "DIAGNOSE: Mindestens ein Passwort wurde beim sed-Rendering"
-        log_error "veraendert oder ist verschwunden. Charset/sed-Trennzeichen pruefen."
+        if [[ "${inventory_intakt}" == "true" ]]; then
+          log_error "DIAGNOSE: Alle Passwoerter korrekt im Inventory vorhanden."
+          log_error "Fehlerursache liegt vermutlich bei der Ziel-Policy des Dienstes"
+          log_error "(z.B. Keycloak password_policy), NICHT beim Passwort-Rendering."
+          log_error "Pruefe Ansible-Log auf konkrete Policy-Fehlermeldung:"
+          if [[ -f "${ansible_log_file}" ]]; then
+            grep -i "password" "${ansible_log_file}" | tail -20 | while read -r line; do
+              log_error "  ${line}"
+            done
+          fi
+        else
+          log_error "DIAGNOSE: Mindestens ein Passwort wurde beim sed-Rendering"
+          log_error "veraendert oder ist verschwunden. Charset/sed-Trennzeichen pruefen."
+        fi
+        log_warn ""
+        log_warn "Ein erneuter Skriptlauf erzeugt neue Dienst-Passwoerter; auf einem teilweise installierten Cluster passen sie dann nicht mehr zum vorhandenen Zustand."
+        log_warn "Entweder die VM neu aufsetzen oder in der VM im Playbook-Verzeichnis mit dem vorhandenen Inventory erneut starten:"
+        log_warn "  cd ${CC_CLI_PLAYBOOK_DIR} && echo Y | KUBECONFIG=${KUBECONFIG_PATH} ${CC_CLI_VENV_PATH}/bin/cc_cli exec"
+        log_warn ""
+        exit 1
       fi
-      log_warn ""
-      log_warn "Die generierten Passwoerter werden mit diesem Lauf verworfen."
-      log_warn "Beim naechsten Build werden neue, policy-konforme Passwoerter erzeugt."
-      log_warn "Bei wiederholtem Auftreten: Passwort-Laenge in 06_civitas.sh erhoehen."
-      log_warn ""
-      exit 1
     fi
-  fi
+    break
+  done
   log_ok "cc_cli exec erfolgreich abgeschlossen (oder nur mit toleriertem 404)"
 
   # Logfile-Pruefung
