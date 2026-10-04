@@ -107,9 +107,8 @@ TIMEOUT_CC_CLI_EXEC=1800             # Sekunden für cc_cli exec
 TIMEOUT_POD_READY=300               # Sekunden für kubectl wait
 
 # Wartezeit/Wiederholung für cc_cli exec (per .env überschreibbar)
-# Default 60: deckt den beobachteten pgAdmin-Start (ca. 125 s ab Pod-Erstellung)
-# mehrfach ab; das exakte Intervall (delay) liegt im Upstream-Playbook (HYPOTHESE,
-# im naechsten Build am uri-Task des pgAdmin-Checks verifizieren).
+# Default 60 bei delay: 2 s (tasks/templates/api_health.yml) ergibt ~120 s ab
+# Check-Start; der pgAdmin-Check brauchte im Build vom 3.10. ca. 56 s.
 CC_API_MAX_RETRIES="${CC_API_MAX_RETRIES:-60}"            # inv_checks.api.default_max_retries
 CC_DEPLOYMENT_MAX_RETRIES="${CC_DEPLOYMENT_MAX_RETRIES:-30}"  # inv_checks.deployment.default_max_retries
 CC_EXEC_ATTEMPTS="${CC_EXEC_ATTEMPTS:-2}"                 # Versuche für cc_cli exec bei vorübergehenden Fehlern

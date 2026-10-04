@@ -63,13 +63,6 @@ install_civitas() {
   run_cc_cli_validate
   run_cc_cli_exec
 
-  # Logfile-Prüfung nach cc_cli exec
-  local ansible_log="${CC_CLI_PLAYBOOK_DIR}/logs/ansible_run_latest.log"
-  if [[ -f "${ansible_log}" ]]; then
-    log_ok "Ansible-Log gefunden: ${ansible_log}"
-  else
-    log_warn "Ansible-Log NICHT gefunden: ${ansible_log}"
-  fi
 
   # Pods in den erwarteten Namespaces abwarten
   local ns_found=0
@@ -520,6 +513,7 @@ run_cc_cli_exec() {
   export ANSIBLE_VERBOSITY=3
 
   local attempt=1
+  local tolerated_404=false
   local transient_re='Status code was 5[0-9][0-9]|Temporarily Unavailable|Connection refused|timed out|Max retries exceeded'
   local notfound_fixed='Status code was 404 and not [204]'
   while :; do
@@ -560,6 +554,7 @@ run_cc_cli_exec() {
       transient=true
     elif (( fatal_count > 0 && fatal_404 == fatal_count )); then
       log_warn "cc_cli exec: Playbook meldet 404 statt 204 beim Loeschen einer Keycloak-Ressource, toleriert (Idempotenz-Fall)."
+      tolerated_404=true
       break
     elif echo "${output}" | grep -Eq "${transient_re}" || (( fatal_transient > 0 )); then
       transient=true
@@ -623,7 +618,11 @@ run_cc_cli_exec() {
     log_warn ""
     exit 1
   done
-  log_ok "cc_cli exec erfolgreich abgeschlossen (oder nur mit toleriertem 404)"
+  if [[ "${tolerated_404}" == "true" ]]; then
+    log_ok "cc_cli exec mit toleriertem 404-Idempotenzfall abgeschlossen"
+  else
+    log_ok "cc_cli exec erfolgreich abgeschlossen"
+  fi
 
   # Logfile-Pruefung
   if [[ -f "${ansible_log_file}" ]]; then
