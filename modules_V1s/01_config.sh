@@ -127,7 +127,9 @@ CC_API_MAX_RETRIES="${CC_API_MAX_RETRIES:-60}"            # inv_checks.api.defau
 CC_DEPLOYMENT_MAX_RETRIES="${CC_DEPLOYMENT_MAX_RETRIES:-30}"  # inv_checks.deployment.default_max_retries
 CC_EXEC_ATTEMPTS="${CC_EXEC_ATTEMPTS:-2}"                 # Versuche für cc_cli exec bei vorübergehenden Fehlern
 CC_EXEC_RETRY_DELAY="${CC_EXEC_RETRY_DELAY:-30}"          # Sekunden zwischen den Versuchen
-for _v in CC_API_MAX_RETRIES CC_DEPLOYMENT_MAX_RETRIES CC_EXEC_ATTEMPTS CC_EXEC_RETRY_DELAY; do
+IDM_TOKEN_RETRIES="${IDM_TOKEN_RETRIES:-6}"               # Versuche für den Keycloak-Master-Token
+IDM_TOKEN_RETRY_DELAY="${IDM_TOKEN_RETRY_DELAY:-10}"      # Sekunden zwischen den Token-Versuchen
+for _v in CC_API_MAX_RETRIES CC_DEPLOYMENT_MAX_RETRIES CC_EXEC_ATTEMPTS CC_EXEC_RETRY_DELAY IDM_TOKEN_RETRIES IDM_TOKEN_RETRY_DELAY; do
   [[ "${!_v}" =~ ^[0-9]+$ ]] && (( ${!_v} >= 1 && ${!_v} <= 600 )) \
     || { echo "FEHLER: ${_v}='${!_v}' ungültig (Zahl 1..600)" >&2; exit 1; }
 done; unset _v

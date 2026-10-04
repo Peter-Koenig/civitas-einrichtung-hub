@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Stub für curl (IDM/Keycloak-Tests). Antworten über Umgebungsvariablen steuerbar.
-#   CURL_TOKEN=ok|fail    Token-Endpoint
-#   CURL_CLIENTS=four|none|geo_dup   Clients-Liste
-#   CURL_ASSIGN=ok|fail   role-mappings POST
-#   CURL_ASSIGNED=...     role-mappings GET (JSON-Array)
-#   CURL_401_ONCE=1       erzwingt beim ersten role-mappings GET einen 401
+#   CURL_TOKEN=ok|fail      Token-Endpoint (ohne Retry-Simulation)
+#   CURL_TOKEN_FAILS=N      die ersten N Token-Aufrufe scheitern (Retry-Simulation)
+#   CURL_401_ONCE=1         der erste roles?search-Aufruf liefert HTTP 401
+#   CURL_CLIENTS=four|none|geo_dup   Clients-Liste (für assign_admin_roles-Aufrufer)
+#   CURL_ASSIGN=ok|fail     role-mappings POST
+#   CURL_ASSIGNED=...       role-mappings GET (JSON-Array)
 url=""
 method="GET"
 has_w=0
@@ -20,24 +21,55 @@ for a in "$@"; do
   esac
 done
 
+SC="${STUB_CONTROL:-/tmp}"
+
 code="200"
 body=""
 case "$url" in
   *"/protocol/openid-connect/token"*)
-    case "${CURL_TOKEN:-ok}" in
-      ok)   code=200; body='{"access_token":"STUB_TOKEN"}' ;;
-      fail) code=400; body='{"error":"invalid_grant","error_description":"Invalid user credentials"}' ;;
-    esac
+    if [ -n "${CURL_TOKEN_FAILS:-}" ]; then
+      tf="$SC/token_fails"
+      n=0; [ -f "$tf" ] && n=$(cat "$tf")
+      if [ "$n" -lt "$CURL_TOKEN_FAILS" ]; then
+        n=$((n+1)); printf '%s' "$n" > "$tf"
+        code=400; body='{"error":"invalid_grant"}'
+      else
+        code=200; body='{"access_token":"STUB_TOKEN"}'
+      fi
+    else
+      case "${CURL_TOKEN:-ok}" in
+        ok)   code=200; body='{"access_token":"STUB_TOKEN"}' ;;
+        fail) code=400; body='{"error":"invalid_grant","error_description":"Invalid user credentials"}' ;;
+      esac
+    fi
     ;;
   *"/admin/realms/"*"/clients/"*"/roles?search="*)
-    case "$url" in
-      *"clients/geo-client/roles?search=geoAdmin"*) code=200; body='[{"id":"geo-role-id","name":"geoAdmin","clientRole":true}]' ;;
-      *"clients/geo-client2/roles?search=geoAdmin"*) code=200; body='[{"id":"geo-role-id2","name":"geoAdmin","clientRole":true}]' ;;
-      *"clients/superset-client/roles?search=supersetAdmin"*) code=200; body='[{"id":"superset-role-id","name":"supersetAdmin","clientRole":true}]' ;;
-      *"clients/grafana-client/roles?search=grafanaAdmin"*) code=200; body='[{"id":"grafana-role-id","name":"grafanaAdmin","clientRole":true}]' ;;
-      *"clients/operator-client/roles?search=operator"*) code=200; body='[{"id":"operator-role-id","name":"operator","clientRole":true}]' ;;
-      *) code=200; body='[]' ;;
-    esac
+    if [ "${CURL_401_ONCE:-0}" = "1" ]; then
+      rf="$SC/roles_401"
+      n=0; [ -f "$rf" ] && n=$(cat "$rf")
+      if [ "$n" -eq 0 ]; then
+        printf '1' > "$rf"
+        code=401; body=''
+      else
+        case "$url" in
+          *"clients/geo-client/roles?search=geoAdmin"*) code=200; body='[{"id":"geo-role-id","name":"geoAdmin","clientRole":true}]' ;;
+          *"clients/geo-client2/roles?search=geoAdmin"*) code=200; body='[{"id":"geo-role-id2","name":"geoAdmin","clientRole":true}]' ;;
+          *"clients/superset-client/roles?search=supersetAdmin"*) code=200; body='[{"id":"superset-role-id","name":"supersetAdmin","clientRole":true}]' ;;
+          *"clients/grafana-client/roles?search=grafanaAdmin"*) code=200; body='[{"id":"grafana-role-id","name":"grafanaAdmin","clientRole":true}]' ;;
+          *"clients/operator-client/roles?search=operator"*) code=200; body='[{"id":"operator-role-id","name":"operator","clientRole":true}]' ;;
+          *) code=200; body='[]' ;;
+        esac
+      fi
+    else
+      case "$url" in
+        *"clients/geo-client/roles?search=geoAdmin"*) code=200; body='[{"id":"geo-role-id","name":"geoAdmin","clientRole":true}]' ;;
+        *"clients/geo-client2/roles?search=geoAdmin"*) code=200; body='[{"id":"geo-role-id2","name":"geoAdmin","clientRole":true}]' ;;
+        *"clients/superset-client/roles?search=supersetAdmin"*) code=200; body='[{"id":"superset-role-id","name":"supersetAdmin","clientRole":true}]' ;;
+        *"clients/grafana-client/roles?search=grafanaAdmin"*) code=200; body='[{"id":"grafana-role-id","name":"grafanaAdmin","clientRole":true}]' ;;
+        *"clients/operator-client/roles?search=operator"*) code=200; body='[{"id":"operator-role-id","name":"operator","clientRole":true}]' ;;
+        *) code=200; body='[]' ;;
+      esac
+    fi
     ;;
   *"/admin/realms/"*"/clients/"*"/roles/geoAdmin") code=200; body='{"id":"geo-role-id","name":"geoAdmin","clientRole":true}' ;;
   *"/admin/realms/"*"/clients/"*"/roles/supersetAdmin") code=200; body='{"id":"superset-role-id","name":"supersetAdmin","clientRole":true}' ;;

@@ -56,20 +56,46 @@ keycloak_login_ok() {
   return 1
 }
 
+# ── Master-Token holen (mit Wiederholung) ────────────────────────────────
+# Gibt das access_token aus (stdout) und liefert 0 bei Erfolg, 1 sonst.
+fetch_master_token() {
+  local idm_base="$1" master_user="$2" master_pass="$3"
+  local attempt=1 token
+  while (( attempt <= IDM_TOKEN_RETRIES )); do
+    token=$(curl -sk --max-time 10 \
+      "${idm_base}/realms/master/protocol/openid-connect/token" \
+      --data-urlencode "client_id=admin-cli" \
+      --data-urlencode "username=${master_user}" \
+      --data-urlencode "password=${master_pass}" \
+      --data-urlencode "grant_type=password" 2>/dev/null | jq -r '.access_token' 2>/dev/null || true)
+    if [[ -n "${token}" && "${token}" != "null" ]]; then
+      printf '%s' "${token}"
+      return 0
+    fi
+    log_warn "Keycloak-Master-Token nicht erhalten (Versuch ${attempt}/${IDM_TOKEN_RETRIES})"
+    if (( attempt < IDM_TOKEN_RETRIES )); then
+      sleep "${IDM_TOKEN_RETRY_DELAY}"
+    fi
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
 # ── Clients mit einer Rolle (exakte Namensgleichheit) auflösen ───────────
 # Gibt die Client-UUIDs (eine pro Zeile) aus, deren Rolle exakt den Namen
-# ${role} trägt. UUIDs stehen nie im Code; sie werden zur Laufzeit aufgelöst.
+# ${role} trägt. UUIDs stehen nie im Code. Liefert 1, wenn eine Rollenabfrage
+# mit HTTP 401 beantwortet wird (Signal an den Aufrufer, den Token zu erneuern).
 find_clients_with_role() {
-  local idm_base="$1" token="$2" realm="$3" role="$4"
-  local clients client_id roles
-  clients=$(curl -sk --max-time 10 \
-    "${idm_base}/admin/realms/${realm}/clients" \
-    -H "Authorization: Bearer ${token}" 2>/dev/null || echo "[]")
+  local idm_base="$1" token="$2" realm="$3" role="$4" clients="$5"
+  local client_id resp http_code roles
   while IFS= read -r client_id; do
     [[ -n "${client_id}" ]] || continue
-    roles=$(curl -sk --max-time 10 \
+    resp=$(curl -sk --max-time 10 -w $'\n%{http_code}' \
       "${idm_base}/admin/realms/${realm}/clients/${client_id}/roles?search=${role}" \
-      -H "Authorization: Bearer ${token}" 2>/dev/null || echo "[]")
+      -H "Authorization: Bearer ${token}" 2>/dev/null || true)
+    http_code="${resp##*$'\n'}"
+    [[ "${http_code}" == "401" ]] && return 1
+    roles="${resp%$'\n'*}"
     if printf '%s' "${roles}" | jq -e --arg role "${role}" '.[] | select(.name == $role)' >/dev/null 2>&1; then
       printf '%s\n' "${client_id}"
     fi
@@ -87,14 +113,14 @@ ensure_keycloak_admin_user() {
   local realm="${CC_ENVIRONMENT}"
   local idm_base="https://idm.${DOMAIN}"
 
-  # Prüfen ob Namespace + Secret existieren
+  # Fail-closed: fehlender Namespace/Secret/Credentials sind Fehler.
   if ! kubectl get namespace "${ns}" &>/dev/null; then
-    log_warn "Namespace ${ns} nicht gefunden — überspringe Admin-User-Prüfung"
-    return 0
+    log_error "Namespace ${ns} nicht gefunden — IDM-Provisionierung nicht möglich"
+    return 1
   fi
   if ! kubectl get secret "${secret_name}" -n "${ns}" &>/dev/null; then
-    log_warn "Secret ${secret_name} in ${ns} nicht gefunden — überspringe Admin-User-Prüfung"
-    return 0
+    log_error "Secret ${secret_name} in ${ns} nicht gefunden — IDM-Provisionierung nicht möglich"
+    return 1
   fi
 
   local master_user master_pass token
@@ -104,22 +130,13 @@ ensure_keycloak_admin_user() {
     -o jsonpath='{.data.MASTER_PASSWORD}' | base64 -d 2>/dev/null || true)
 
   if [[ -z "${master_user}" || -z "${master_pass}" ]]; then
-    log_warn "Keycloak-Admin-Credentials nicht lesbar — überspringe Admin-User-Prüfung"
-    return 0
+    log_error "Keycloak-Admin-Credentials nicht lesbar — IDM-Provisionierung nicht möglich"
+    return 1
   fi
 
-  # Master-Token holen (--data-urlencode: Sonderzeichen in Username/Passwort sicher codieren)
-  token=$(curl -sk --max-time 10 \
-    "${idm_base}/realms/master/protocol/openid-connect/token" \
-    --data-urlencode "client_id=admin-cli" \
-    --data-urlencode "username=${master_user}" \
-    --data-urlencode "password=${master_pass}" \
-    --data-urlencode "grant_type=password" 2>/dev/null | jq -r '.access_token' 2>/dev/null || true)
-
-  if [[ -z "${token}" || "${token}" == "null" ]]; then
-    log_warn "Keycloak-Master-Token nicht erhalten — überspringe Admin-User-Prüfung"
-    log_warn "  (Keycloak möglicherweise noch nicht vollständig gestartet)"
-    return 0
+  if ! token=$(fetch_master_token "${idm_base}" "${master_user}" "${master_pass}"); then
+    log_error "Keycloak-Master-Token nach ${IDM_TOKEN_RETRIES} Versuchen nicht erhalten"
+    return 1
   fi
 
   # Admin-User im Ziel-Realm ermitteln; bei Bedarf anlegen.
@@ -159,6 +176,12 @@ ensure_keycloak_admin_user() {
     return 1
   fi
 
+  # Clientliste einmal holen (wird an assign_admin_roles übergeben).
+  local clients
+  clients=$(curl -sk --max-time 10 \
+    "${idm_base}/admin/realms/${realm}/clients" \
+    -H "Authorization: Bearer ${token}" 2>/dev/null || echo "[]")
+
   local idm_errors=()
 
   # Login-Test zuerst: Reset nur nötig, wenn ADMIN_PASS nicht funktioniert.
@@ -172,7 +195,7 @@ ensure_keycloak_admin_user() {
   fi
 
   # Rollen als Client-Rollen zuweisen (fail-closed für fehlende/mehrdeutige Rollen).
-  if ! assign_admin_roles "${idm_base}" "${token}" "${realm}" "${admin_id}"; then
+  if ! assign_admin_roles "${idm_base}" "${realm}" "${admin_id}" "${clients}" "${master_user}" "${master_pass}"; then
     idm_errors+=("admin-roles")
   fi
 
@@ -219,7 +242,7 @@ set_user_password() {
 # sind ein Fehler (fail-closed). Zähler: gefunden/bereits zugewiesen/neu
 # zugewiesen/fehlend/mehrdeutig.
 assign_admin_roles() {
-  local idm_base="$1" token="$2" realm="$3" user_id="$4"
+  local idm_base="$1" realm="$2" user_id="$3" clients="$4" master_user="$5" master_pass="$6"
 
   # Alle vier Soll-Rollen sind im Material als Client-Rollen belegt
   # (ansible-keycloak-rollen.txt.masked). optional_roles bleibt leer; hier
@@ -228,13 +251,32 @@ assign_admin_roles() {
   local optional_roles=()
   log "Pruefe Admin-Rollen für User ${user_id} in Realm ${realm} …"
 
+  local token
+  if ! token=$(fetch_master_token "${idm_base}" "${master_user}" "${master_pass}"); then
+    log_error "Token/401: Keycloak-Master-Token nicht erneuerbar"
+    return 1
+  fi
+
   local -i found=0 already=0 newly=0 missing=0 ambiguous=0
   local rc=0
 
   local role
   for role in "${target_roles[@]}"; do
+    local role_matches
+    if ! role_matches=$(find_clients_with_role "${idm_base}" "${token}" "${realm}" "${role}" "${clients}"); then
+      log_warn "Token/401 bei Rollenabfrage für ${role} — erneuere Token einmal"
+      if ! token=$(fetch_master_token "${idm_base}" "${master_user}" "${master_pass}"); then
+        log_error "Token/401: Keycloak-Master-Token nicht erneuerbar"
+        return 1
+      fi
+      if ! role_matches=$(find_clients_with_role "${idm_base}" "${token}" "${realm}" "${role}" "${clients}"); then
+        log_error "Token/401: auch nach Token-Erneuerung nicht autorisiert"
+        return 1
+      fi
+    fi
+
     local -a client_ids=()
-    mapfile -t client_ids < <(find_clients_with_role "${idm_base}" "${token}" "${realm}" "${role}")
+    mapfile -t client_ids < <(printf '%s' "${role_matches}")
     if [[ ${#client_ids[@]} -eq 0 ]]; then
       log_warn "Rolle ${role} in keinem Client gefunden"
       missing=$((missing + 1))
@@ -288,8 +330,13 @@ assign_admin_roles() {
   done
 
   for role in "${optional_roles[@]}"; do
+    local role_matches
+    if ! role_matches=$(find_clients_with_role "${idm_base}" "${token}" "${realm}" "${role}" "${clients}"); then
+      log_warn "Optionale Rolle ${role}: Token/401 — übersprungen"
+      continue
+    fi
     local -a client_ids=()
-    mapfile -t client_ids < <(find_clients_with_role "${idm_base}" "${token}" "${realm}" "${role}")
+    mapfile -t client_ids < <(printf '%s' "${role_matches}")
     if [[ ${#client_ids[@]} -eq 0 ]]; then
       log_warn "Optionale Rolle ${role} in keinem Client gefunden — nur Warnung"
     fi
