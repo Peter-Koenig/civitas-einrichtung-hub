@@ -98,7 +98,7 @@ install_civitas() {
   # (z. B. cert-manager hat erneuert). So geht ein Backup bei IDM-Fehler nicht
   # verloren.
 
-  if [[ "${LE_FRESH_PROD_ISSUED:-false}" == "true" ]]; then
+  if [[ "${LE_FRESH_PROD_ISSUED:-false}" == "true" ]] || cluster_backup_diverges; then
     if ! write_le_backup; then
       log_error "Neu ausgestellte LE-Zertifikate konnten nicht gesichert werden"
       exit 1
