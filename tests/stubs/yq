@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Stub für yq. Steuerung über YQ_MODE:
+#   ok        → "eval" gibt nichts aus, exit 0 (simuliert fehlende/leere Treffer)
+#   mikefarah → "yq --version" gibt "yq (https://github.com/mikefarah/yq) version v4.x" aus
+#   wrong     → "yq --version" gibt Python-Wrapper-Version aus (kislyuk 3.x)
+case "$*" in
+  *"--version"*)
+    case "${YQ_MODE:-wrong}" in
+      mikefarah) echo "yq (https://github.com/mikefarah/yq) version v4.44.3" ;;
+      *) echo "yq 3.4.3" ;;
+    esac
+    exit 0
+    ;;
+esac
+exit 0

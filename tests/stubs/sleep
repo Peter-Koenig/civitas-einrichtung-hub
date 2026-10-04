@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Stub für sleep: no-op, damit Tests schnell laufen.
+exit 0

@@ -267,6 +267,11 @@ Zielzustand für TLS-Zertifikate anhand folgender Logik ermittelt:
   (`RUN_TESTS=false`) und die erfolgreiche Installation der Komponenten
   anhand des Loggings der Ansible-Playbooks (in den Logs unter
   `${CC_V1_REPO_PATH}/logs/`) nachvollziehen.
+- **Stub-Test-Harness:** `tests/run.sh` führt die Stub-Tests für die
+  Installer-Logik aus (keine echten Secrets, kein Cluster, kein Netz).
+  Aufruf: `./tests/run.sh`. Der Exit-Code ist ungleich 0, sobald ein Test
+  fehlschlägt. Stubs liegen unter `tests/stubs/`, Testdaten unter
+  `tests/fixtures/`, Suiten unter `tests/suites/`.
 
 ### 8. p2d2-AddOn (V1s)
 

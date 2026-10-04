@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Stub für timeout: verwirft den Sekundenwert und führt das Kommando aus.
+shift
+exec "$@"

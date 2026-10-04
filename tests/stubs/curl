@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# Stub für curl (IDM/Keycloak-Tests). Antworten über Umgebungsvariablen steuerbar.
+#   CURL_TOKEN=ok|fail    Token-Endpoint
+#   CURL_CLIENTS=four|none|geo_dup   Clients-Liste
+#   CURL_ASSIGN=ok|fail   role-mappings POST
+#   CURL_ASSIGNED=...     role-mappings GET (JSON-Array)
+#   CURL_401_ONCE=1       erzwingt beim ersten role-mappings GET einen 401
+url=""
+method="GET"
+has_w=0
+has_o=0
+prev=""
+for a in "$@"; do
+  case "$a" in
+    https://*) url="$a" ;;
+    -X) prev="X" ;;
+    -w) has_w=1 ;;
+    -o) has_o=1 ;;
+    *) [ "$prev" = "X" ] && { method="$a"; prev=""; } ;;
+  esac
+done
+
+code="200"
+body=""
+case "$url" in
+  *"/protocol/openid-connect/token"*)
+    case "${CURL_TOKEN:-ok}" in
+      ok)   code=200; body='{"access_token":"STUB_TOKEN"}' ;;
+      fail) code=400; body='{"error":"invalid_grant","error_description":"Invalid user credentials"}' ;;
+    esac
+    ;;
+  *"/admin/realms/"*"/clients/"*"/roles?search="*)
+    case "$url" in
+      *"clients/geo-client/roles?search=geoAdmin"*) code=200; body='[{"id":"geo-role-id","name":"geoAdmin","clientRole":true}]' ;;
+      *"clients/geo-client2/roles?search=geoAdmin"*) code=200; body='[{"id":"geo-role-id2","name":"geoAdmin","clientRole":true}]' ;;
+      *"clients/superset-client/roles?search=supersetAdmin"*) code=200; body='[{"id":"superset-role-id","name":"supersetAdmin","clientRole":true}]' ;;
+      *"clients/grafana-client/roles?search=grafanaAdmin"*) code=200; body='[{"id":"grafana-role-id","name":"grafanaAdmin","clientRole":true}]' ;;
+      *"clients/operator-client/roles?search=operator"*) code=200; body='[{"id":"operator-role-id","name":"operator","clientRole":true}]' ;;
+      *) code=200; body='[]' ;;
+    esac
+    ;;
+  *"/admin/realms/"*"/clients/"*"/roles/geoAdmin") code=200; body='{"id":"geo-role-id","name":"geoAdmin","clientRole":true}' ;;
+  *"/admin/realms/"*"/clients/"*"/roles/supersetAdmin") code=200; body='{"id":"superset-role-id","name":"supersetAdmin","clientRole":true}' ;;
+  *"/admin/realms/"*"/clients/"*"/roles/grafanaAdmin") code=200; body='{"id":"grafana-role-id","name":"grafanaAdmin","clientRole":true}' ;;
+  *"/admin/realms/"*"/clients/"*"/roles/operator") code=200; body='{"id":"operator-role-id","name":"operator","clientRole":true}' ;;
+  *"/admin/realms/"*"/clients")
+    case "${CURL_CLIENTS:-four}" in
+      four) body='[{"id":"geo-client","clientId":"geostack"},{"id":"superset-client","clientId":"superset"},{"id":"grafana-client","clientId":"grafana"},{"id":"operator-client","clientId":"operator-app"}]' ;;
+      none) body='[{"id":"c1","clientId":"c1"}]' ;;
+      geo_dup) body='[{"id":"geo-client","clientId":"geostack"},{"id":"geo-client2","clientId":"geostack2"}]' ;;
+    esac
+    ;;
+  *"/role-mappings/clients/"*)
+    if [ "$method" = "POST" ]; then
+      case "${CURL_ASSIGN:-ok}" in
+        ok) code=204; body='' ;;
+        fail) code=400; body='{"errorMessage":"Could not map role"}' ;;
+      esac
+    else
+      code=200; body="${CURL_ASSIGNED:-[]}"
+    fi
+    ;;
+esac
+
+if [ "$has_w" = "1" ] && [ "$has_o" = "1" ]; then
+  printf '%s' "$code"
+elif [ "$has_w" = "1" ]; then
+  printf '%s\n%s' "$body" "$code"
+else
+  printf '%s' "$body"
+fi

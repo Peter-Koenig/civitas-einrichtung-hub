@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Stub für cc_cli: pro Aufruf (Zähler in $STUB_CONTROL/count) gesteuert.
+#   rcs[N]      Exit-Code des N-ten Aufrufs
+#   logfiles[N] Datei, deren Inhalt nach $ANSIBLE_LOG_PATH geschrieben wird
+#   outfiles[N] Datei, deren Inhalt nach stdout geschrieben wird
+c=0
+[ -f "$STUB_CONTROL/count" ] && c=$(cat "$STUB_CONTROL/count")
+c=$((c+1))
+printf '%s' "$c" > "$STUB_CONTROL/count"
+rc=$(sed -n "${c}p" "$STUB_CONTROL/rcs" 2>/dev/null)
+lf=$(sed -n "${c}p" "$STUB_CONTROL/logfiles" 2>/dev/null)
+of=$(sed -n "${c}p" "$STUB_CONTROL/outfiles" 2>/dev/null)
+[ -n "$rc" ] || rc=0
+: > "${ANSIBLE_LOG_PATH:-/dev/null}"
+[ -n "$lf" ] && [ -f "$lf" ] && cat "$lf" > "${ANSIBLE_LOG_PATH:-/dev/null}"
+[ -n "$of" ] && [ -f "$of" ] && cat "$of"
+exit "$rc"

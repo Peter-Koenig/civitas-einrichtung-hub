@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Stub für kubectl. Steuerung über KUBECTL_MODE:
+#   ok       → alle get-Aufrufe liefern 0
+#   no_ns    → "get namespace" liefert Fehler
+#   no_secret→ "get secret" liefert Fehler
+case "${KUBECTL_MODE:-ok}" in
+  no_ns)
+    case "$*" in
+      *"get namespace"*) exit 1 ;;
+    esac
+    ;;
+  no_secret)
+    case "$*" in
+      *"get secret"*) exit 1 ;;
+    esac
+    ;;
+esac
+exit 0
