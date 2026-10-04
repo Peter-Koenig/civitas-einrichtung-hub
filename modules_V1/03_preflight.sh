@@ -227,7 +227,7 @@ check_tools() {
   log "Prüfe Werkzeuge ..."
 
   # Pflicht-Tools → Mapping auf Paketnamen
-  local required_tools=(curl python3 pip3 dig git)
+  local required_tools=(curl python3 pip3 dig git yq rg)
   if [[ "${WG_ENABLED}" == "true" ]]; then
     required_tools+=(wg)
   fi
@@ -238,6 +238,8 @@ check_tools() {
     [curl]="curl"
     [python3]="python3"
     [git]="git"
+    [yq]="yq-go"
+    [rg]="ripgrep"
   )
 
   # Optionale Utilities
@@ -307,6 +309,14 @@ check_tools() {
   else
     log_ok "Alle erforderlichen Werkzeuge vorhanden"
   fi
+
+  # Flavor-Guard: das Debian-Paket 'yq' ist der Python-Wrapper (kislyuk 3.x),
+  # der Installer benötigt 'yq-go' (mikefarah, 'yq eval'-Syntax).
+  if is_installed yq && ! yq --version 2>/dev/null | grep -q mikefarah; then
+    log_error "Falsches yq: das Debian-Paket 'yq' ist der Python-Wrapper (kislyuk 3.x); benötigt wird 'yq-go' (mikefarah)."
+    exit 1
+  fi
+  log "yq: $(yq --version 2>/dev/null || echo 'nicht verfügbar')"
 }
 
 # ── SMTP ──

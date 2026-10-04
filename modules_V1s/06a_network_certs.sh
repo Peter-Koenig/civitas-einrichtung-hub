@@ -376,6 +376,16 @@ verify_certificates() {
     return $?
 }
 
+# ── backup_secret_doc_count: zählt die "kind: Secret"-Dokumente ──────────
+# Dient als Referenz für die yq-Enumeration: liefert yq (fehlt oder falscher
+# Flavor) keine Einträge, muss die Zahl von der erwarteten abweichen und die
+# Aufrufer dürfen nicht fälschlich "Verifikation bestanden" melden.
+backup_secret_doc_count() {
+  local backup_file="$1" count
+  count=$(grep -c '^kind: Secret' "${backup_file}" 2>/dev/null) || true
+  printf '%s' "${count}"
+}
+
 # ── restore_backup_and_switch_to_prod: Backup-Restore mit Controller-Pause ──
 # Zielzustand: restore_backup
 # Stoppt zunaechst den cert-manager Controller, ersetzt Secrets via
@@ -411,6 +421,18 @@ restore_backup_and_switch_to_prod() {
   # Pruefe ob Backup existiert
   if [[ ! -f "${backup_file}" ]]; then
     log "Kein LE-Zertifikats-Backup gefunden (${backup_file})"
+    trap - RETURN
+    return 1
+  fi
+
+  # Secret-Einträge einmal extrahieren und gegen die Dokumentzahl absichern.
+  local expected_secrets
+  expected_secrets=$(backup_secret_doc_count "${backup_file}")
+  local -a secret_entries=()
+  mapfile -t secret_entries < <(yq eval 'select(.kind == "Secret") | "\(.metadata.namespace)/\(.metadata.name)"' \
+    "${backup_file}" 2>/dev/null)
+  if [[ ${#secret_entries[@]} -eq 0 || ${#secret_entries[@]} -ne "${expected_secrets}" ]]; then
+    log_error "Backup-Enumeration fehlgeschlagen: yq lieferte ${#secret_entries[@]} Einträge, Backup enthält ${expected_secrets} Secret-Dokumente (yq fehlt oder falscher Flavor)."
     trap - RETURN
     return 1
   fi
@@ -480,8 +502,7 @@ EOF
   log "Verifiziere wiederhergestellte Zertifikate (VOR Controller-Restart)..."
   local verify_ok=true
   local verify_ns verify_secret
-  for entry in $(yq eval 'select(.kind == "Secret") | "\(.metadata.namespace)/\(.metadata.name)"' \
-    "${backup_file}" 2>/dev/null); do
+  for entry in "${secret_entries[@]}"; do
     verify_ns="${entry%%/*}"
     verify_secret="${entry##*/}"
     local nb_backup nb_cluster
@@ -506,8 +527,7 @@ EOF
 
   log "Lege Certificate-Objekte manuell an (korrekter issuerRef)..."
   local certs_created=0
-  for entry in $(yq eval 'select(.kind == "Secret") | "\(.metadata.namespace)/\(.metadata.name)"' \
-    "${backup_file}" 2>/dev/null); do
+  for entry in "${secret_entries[@]}"; do
     local entry_ns="${entry%%/*}"
     local entry_name="${entry##*/}"
     local hostname="${entry_name%-tls}"
@@ -546,8 +566,7 @@ EOF
   log "Warte auf Certificate READY..."
   sleep 10
   local final_ok=true
-  for entry in $(yq eval 'select(.kind == "Secret") | "\(.metadata.namespace)/\(.metadata.name)"' \
-    "${backup_file}" 2>/dev/null); do
+  for entry in "${secret_entries[@]}"; do
     local entry_ns="${entry%%/*}"
     local entry_name="${entry##*/}"
     local cert_ready
