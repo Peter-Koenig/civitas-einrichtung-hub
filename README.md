@@ -185,6 +185,7 @@ Alternativ können alle Variablen auch direkt als Umgebungsvariablen exportiert 
 | `LE_CERT`                | `false`                     | Steuert die Zertifikats-Strategie. Siehe Detail-Erklärung weiter unten.      |
 | `NO_NEW_LE_CERT`         | `false`                     | Safety-Schalter: `true` → blockiert **alle** neuen Zertifikatsanforderungen  |
 | `CERT_BACKUP_FILE`       | `le-certs-backup.yaml`      | Pfad zum Backup bestehender Let's-Encrypt-Zertifikate (YAML)                |
+| `CERT_BACKUP_MIN_DAYS`   | `30`                        | Mindest-Restlaufzeit (Tage), damit ein LE-Backup als brauchbar gilt        |
 | `APISIX_DASHBOARD`       | `false`                     | `true` → APISIX-Dashboard nach Installation aktivieren                      |
 | `RUN_TESTS`              | `true`                      | `true` → Playwright-E2E-Tests nach der Installation ausführen                |
 | `DOMAIN`                 | `udp.<DOMAIN_NAME>`         | Überschreibt die berechnete vollständige Domain inkl. `udp.`-Präfix          |
@@ -206,15 +207,25 @@ Zielzustand für TLS-Zertifikate anhand folgender Logik ermittelt:
 
 - **`LE_CERT=false`** (Standard): Es werden ausschließlich Let's-Encrypt-Staging-
   Zertifikate verwendet. Es erfolgen keine Production-Anfragen.
-- **`CERT_BACKUP_FILE` vorhanden**: Ein bestehendes Backup (z. B. aus einer
-  vorherigen Installation mit Production-Zertifikaten) wird wiederhergestellt.
-  Dies hat **Vorrang** vor `LE_CERT` — selbst bei `LE_CERT=false` wird ein
-  vorhandenes Backup restauriert.
+- **`CERT_BACKUP_FILE` vorhanden und brauchbar**: Ein bestehendes Backup wird
+  wiederhergestellt. Es hat **Vorrang** vor `LE_CERT`. Brauchbar heißt: richtige
+  Domain, Restlaufzeit von mindestens `CERT_BACKUP_MIN_DAYS` (Default 30) und
+  vollständige Dokumente. Ein unbrauchbares Backup wird mit einer Warnung
+  ignoriert; der Lauf verhält sich dann wie ohne Backup.
 - **`LE_CERT=true` und kein Backup vorhanden**: Es werden neue Let's-Encrypt-
   Production-Zertifikate angefordert.
 - **`NO_NEW_LE_CERT=true`**: Safety-Schalter. Selbst wenn alle Bedingungen für
   eine Production-Anfrage erfüllt sind, wird diese blockiert. Nützlich, um
   versehentliche Raten-Limits bei Let's-Encrypt zu vermeiden.
+
+**Backup-Lebenszyklus:** Ein Backup wird vor dem Restore geprüft (Domain,
+Restlaufzeit, Dokumente). Neu geschrieben wird es nach einer Neuausstellung
+oder wenn das Zertifikat im Cluster vom Backup abweicht (z. B. cert-manager
+hat erneuert). Nach einem erfolgreichen Restore bleibt es unverändert.
+
+> **Passwort-Zeichen:** `ADMIN_PASS` und `TENANT_ADMIN_PASS` dürfen keine
+> Anführungszeichen (`"`/`'`) und keine Backslashes (`\`) enthalten, da sie in
+> Anführungszeichen-Textfelder des Inventory gerendert werden.
 
 **Hinweise zum Arbeitsablauf:**
 
@@ -580,6 +591,7 @@ Alternatively, all variables can be exported directly as environment variables.
 | `LE_CERT`                | `false`                     | Controls the certificate strategy. See detailed explanation below.         |
 | `NO_NEW_LE_CERT`         | `false`                     | Safety switch: `true` → blocks **all** new certificate requests           |
 | `CERT_BACKUP_FILE`       | `le-certs-backup.yaml`      | Path to a backup of existing Let's-Encrypt certificates (YAML)            |
+| `CERT_BACKUP_MIN_DAYS`   | `30`                        | Minimum remaining validity (days) for a LE backup to be usable            |
 | `APISIX_DASHBOARD`       | `false`                     | `true` → enable APISIX dashboard after installation                        |
 | `RUN_TESTS`              | `true`                      | `true` → run Playwright E2E tests after installation                       |
 | `DOMAIN`                 | `udp.<DOMAIN_NAME>`         | Overrides the computed full domain including the `udp.` prefix             |
@@ -601,14 +613,25 @@ target state for TLS certificates based on the following logic:
 
 - **`LE_CERT=false`** (default): Only Let's-Encrypt staging certificates are
   used. No production requests are made.
-- **`CERT_BACKUP_FILE` exists**: An existing backup (e.g., from a previous
-  installation with production certificates) is restored. This takes **precedence**
-  over `LE_CERT` — even with `LE_CERT=false`, an existing backup is restored.
+- **`CERT_BACKUP_FILE` exists and is usable**: An existing backup is restored.
+  It takes **precedence** over `LE_CERT`. Usable means: correct domain, remaining
+  validity of at least `CERT_BACKUP_MIN_DAYS` (default 30), and complete documents.
+  An unusable backup is ignored with a warning; the run then behaves as without a
+  backup.
 - **`LE_CERT=true` and no backup exists**: New Let's-Encrypt production
   certificates are requested.
 - **`NO_NEW_LE_CERT=true`**: Safety switch. Even if all conditions for a
   production request are met, it is blocked. Useful for preventing accidental
   rate-limit hits at Let's-Encrypt.
+
+**Backup lifecycle:** A backup is validated before restore (domain, remaining
+validity, documents). It is rewritten after a fresh issuance or when the
+cluster certificate diverges from the backup (e.g., cert-manager renewed it).
+After a successful restore it remains unchanged.
+
+> **Password characters:** `ADMIN_PASS` and `TENANT_ADMIN_PASS` must not contain
+> quotation marks (`"`/`'`) or backslashes (`\`), because they are rendered into
+> quoted text fields of the inventory.
 
 **Workflow notes:**
 
