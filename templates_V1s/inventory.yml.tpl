@@ -91,7 +91,7 @@ all:
           velero:
             enable: false
             backup:
-              location_name: ""
+              location_name: "disabled"
               access_key: ""
               bucket: ""
               region: ""
