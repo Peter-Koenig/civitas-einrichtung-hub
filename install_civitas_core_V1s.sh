@@ -218,25 +218,34 @@ run_in_vm() {
         ./install_civitas_core_V1s.sh
       '"
   local ssh_exit=$?
+
+  # LE-Zertifikats-Backup VOR der SSH-Exitcode-Auswertung zurückholen, damit
+  # ein in der VM bereits geschriebenes Backup auch im Fehlerfall gesichert
+  # wird (write_le_backup validiert vor dem mv, die VM-Datei ist vertrauenswürdig).
+  # Atomar (tmp im selben Verzeichnis + mv), 0600, nur ersetzen wenn abweichend.
+  if ssh "${VM_SSH_OPTS[@]}" "root@${VM_IP_STATIC}" "test -f ${CERT_BACKUP_FILE}"; then
+    local tmp_host="${CERT_BACKUP_HOST_FILE}.tmp.$$"
+    if scp "${VM_SSH_OPTS[@]}" "root@${VM_IP_STATIC}:${CERT_BACKUP_FILE}" "${tmp_host}"; then
+      if [[ -f "${CERT_BACKUP_HOST_FILE}" ]] && cmp -s "${tmp_host}" "${CERT_BACKUP_HOST_FILE}"; then
+        rm -f "${tmp_host}"
+        log_ok "LE-Zertifikats-Backup unverändert (${CERT_BACKUP_HOST_FILE})"
+      else
+        mv "${tmp_host}" "${CERT_BACKUP_HOST_FILE}"
+        chmod 600 "${CERT_BACKUP_HOST_FILE}"
+        log_ok "LE-Zertifikats-Backup nach ${CERT_BACKUP_HOST_FILE} zurückgeholt"
+      fi
+    else
+      rm -f "${tmp_host}"
+      log_warn "LE-Zertifikats-Backup konnte nicht zurückgeholt werden"
+    fi
+  fi
+
   if [[ "${ssh_exit}" -ne 0 ]]; then
     log_error "SSH-Hop fehlgeschlagen (Exit ${ssh_exit}) — Logs in der VM prüfen"
     log_error "  ssh root@${VM_IP_STATIC}"
     exit "${ssh_exit}"
   fi
   log_ok "Installation in der VM vollständig"
-
-  # LE-Zertifikats-Backup vom Host zurückholen (atomar, 0600), falls vorhanden.
-  if ssh "${VM_SSH_OPTS[@]}" "root@${VM_IP_STATIC}" "test -f ${CERT_BACKUP_FILE}"; then
-    local tmp_host="${CERT_BACKUP_HOST_FILE}.tmp.$$"
-    if scp "${VM_SSH_OPTS[@]}" "root@${VM_IP_STATIC}:${CERT_BACKUP_FILE}" "${tmp_host}"; then
-      mv "${tmp_host}" "${CERT_BACKUP_HOST_FILE}"
-      chmod 600 "${CERT_BACKUP_HOST_FILE}"
-      log_ok "LE-Zertifikats-Backup nach ${CERT_BACKUP_HOST_FILE} zurückgeholt"
-    else
-      rm -f "${tmp_host}"
-      log_warn "LE-Zertifikats-Backup konnte nicht zurückgeholt werden"
-    fi
-  fi
 }
 
 # ── Startmeldung ─────────────────────────────────────────────────────────────

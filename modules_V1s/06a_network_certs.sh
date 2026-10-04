@@ -42,9 +42,14 @@ LE_FRESH_PROD_ISSUED=false
 #   "keep_staging"   | "restore_backup" | "request_prod"
 #
 # Wahrheitstabelle:
-#   LE_CERT=false                     → keep_staging
-#   Backup vorhanden                  → restore_backup
-#   LE_CERT=true, kein Backup         → request_prod
+#   LE_CERT=false                         → keep_staging
+#   Backup vorhanden und brauchbar        → restore_backup
+#   LE_CERT=true, kein brauchbares Backup → request_prod
+#
+# Ein vorhandenes, aber unbrauchbares Backup (falsche Domain, Restlaufzeit
+# unter CERT_BACKUP_MIN_DAYS, Dokumentzahl/tls.crt stimmt nicht) wird
+# ignoriert — backup_usable warnt per log_warn und der Lauf verhält sich wie
+# ohne Backup.
 #
 # Hinweis: LE_REQUESTS_BLOCKED wird hier NICHT abgefragt — die Funktion
 # beschreibt den gewuenschten Zielzustand, unabhaengig von der Ausfuehrbarkeit.
@@ -52,8 +57,7 @@ LE_FRESH_PROD_ISSUED=false
 resolve_target_state() {
     local backup_file="${CERT_BACKUP_FILE}"
 
-
-    if [[ -f "${backup_file}" ]]; then
+    if [[ -f "${backup_file}" ]] && backup_usable "${backup_file}"; then
         echo "restore_backup"
         return 0
     fi
@@ -395,6 +399,98 @@ backup_secret_doc_count() {
   local backup_file="$1" count
   count=$(grep -c '^kind: Secret' "${backup_file}" 2>/dev/null) || true
   printf '%s' "${count}"
+}
+
+# ── backup_usable: prüft ein LE-Backup vor dem Restore ──────────────────────
+# Gibt 0 zurück, wenn das Backup brauchbar ist (richtige Domain, genug
+# Restlaufzeit, Dokumentzahl/tls.crt stimmen). Sonst 1 mit einer Warnung auf
+# stderr (log_warn). Niemals Zertifikatsinhalt ausgeben — nur Secret-Name und
+# Grund. Wird von resolve_target_state per Command Substitution aufgerufen,
+# daher ausschließlich log_warn (stderr), kein echo auf stdout.
+#
+# Ausnahme: LE_REQUESTS_BLOCKED=true hebt die Restlaufzeit-Regel auf (nur
+# Warnung), die Domain-Regel bleibt bestehen.
+backup_usable() {
+  local backup_file="$1"
+  local expected_secrets entry ns name tls_crt sans dns_entries dns_name min_seconds
+  local -a secret_entries=()
+
+  expected_secrets=$(backup_secret_doc_count "${backup_file}")
+  mapfile -t secret_entries < <(yq eval 'select(.kind == "Secret") | "\(.metadata.namespace)/\(.metadata.name)"' \
+    "${backup_file}" 2>/dev/null)
+  if [[ ${#secret_entries[@]} -eq 0 || ${#secret_entries[@]} -ne "${expected_secrets}" ]]; then
+    log_warn "LE-Backup unbrauchbar: yq lieferte ${#secret_entries[@]} Einträge, Backup enthält ${expected_secrets} Secret-Dokumente"
+    return 1
+  fi
+
+  min_seconds=$(( CERT_BACKUP_MIN_DAYS * 86400 ))
+
+  for entry in "${secret_entries[@]}"; do
+    ns="${entry%%/*}"
+    name="${entry##*/}"
+    tls_crt=$(yq eval "select(.metadata.name == \"${name}\") | .data[\"tls.crt\"]" \
+      "${backup_file}" 2>/dev/null | base64 -d 2>/dev/null || true)
+    if [[ -z "${tls_crt}" ]]; then
+      log_warn "LE-Backup unbrauchbar: Secret ${name} ohne gültiges tls.crt"
+      return 1
+    fi
+
+    # Domain-Regel (gilt immer): jeder DNS-Name gleich DOMAIN oder *.DOMAIN.
+    sans=$(printf '%s' "${tls_crt}" | openssl x509 -noout -ext subjectAltName 2>/dev/null || true)
+    dns_entries=$(printf '%s' "${sans}" | grep -oE 'DNS:[^,]+' || true)
+    if [[ -z "${dns_entries}" ]]; then
+      log_warn "LE-Backup unbrauchbar: Secret ${name} ohne DNS-Namen im Zertifikat"
+      return 1
+    fi
+    while IFS= read -r dns_name; do
+      [[ -n "${dns_name}" ]] || continue
+      dns_name="${dns_name#DNS:}"
+      if [[ "${dns_name}" != "${DOMAIN}" && "${dns_name}" != *".${DOMAIN}" ]]; then
+        log_warn "LE-Backup unbrauchbar: Secret ${name} enthält Domain ${dns_name} außerhalb ${DOMAIN}"
+        return 1
+      fi
+    done <<< "${dns_entries}"
+
+    # Restlaufzeit-Regel (entfällt bei LE_REQUESTS_BLOCKED=true).
+    if [[ "${LE_REQUESTS_BLOCKED}" == "true" ]]; then
+      if ! printf '%s' "${tls_crt}" | openssl x509 -noout -checkend "${min_seconds}" >/dev/null 2>&1; then
+        log_warn "LE-Backup-Warnung: Secret ${name} Restlaufzeit unter ${CERT_BACKUP_MIN_DAYS} Tagen (LE_REQUESTS_BLOCKED=true — Restlaufzeit-Regel entfällt)"
+      fi
+    else
+      if ! printf '%s' "${tls_crt}" | openssl x509 -noout -checkend "${min_seconds}" >/dev/null 2>&1; then
+        log_warn "LE-Backup unbrauchbar: Secret ${name} Restlaufzeit unter ${CERT_BACKUP_MIN_DAYS} Tagen"
+        return 1
+      fi
+    fi
+  done
+  return 0
+}
+
+# ── cluster_backup_diverges: weicht tls.crt im Cluster vom Backup ab? ──────
+# Gibt 0 zurück, wenn mindestens ein Secret-tls.crt im Cluster von dem im
+# Backup abweicht (z. B. cert-manager hat erneuert) und das Backup daher neu
+# geschrieben werden muss. Vergleich über den SHA256-Fingerprint, damit
+# whitespace/Zeilenumbrüche in der PEM-Darstellung nicht als Abweichung zählen.
+cluster_backup_diverges() {
+  local backup_file="${CERT_BACKUP_FILE}"
+  [[ -f "${backup_file}" ]] || return 1
+
+  local entry ns name backup_fp cluster_fp
+  while IFS= read -r entry; do
+    [[ -n "${entry}" ]] || continue
+    ns="${entry%%/*}"; name="${entry##*/}"
+    backup_fp=$(yq eval "select(.metadata.name == \"${name}\") | .data[\"tls.crt\"]" \
+      "${backup_file}" 2>/dev/null | base64 -d 2>/dev/null \
+      | openssl x509 -noout -fingerprint -sha256 2>/dev/null || true)
+    cluster_fp=$(kubectl get secret "${name}" -n "${ns}" \
+      -o jsonpath='{.data.tls\.crt}' 2>/dev/null | base64 -d 2>/dev/null \
+      | openssl x509 -noout -fingerprint -sha256 2>/dev/null || true)
+    if [[ -n "${backup_fp}" && -n "${cluster_fp}" && "${backup_fp}" != "${cluster_fp}" ]]; then
+      log "tls.crt von ${ns}/${name} weicht vom Backup ab — Backup wird neu geschrieben"
+      return 0
+    fi
+  done < <(yq eval 'select(.kind == "Secret") | "\(.metadata.namespace)/\(.metadata.name)"' "${backup_file}" 2>/dev/null)
+  return 1
 }
 
 # ── write_le_backup: LE-Zertifikats-Backup atomar in die VM schreiben ─────

@@ -83,27 +83,28 @@ install_civitas() {
   resolved_state=$(resolve_target_state)
   log "Zielzustand fuer Zertifikate: ${resolved_state}"
 
+  # set -e: ein Fehler von apply_target_state beendet das Skript bereits hier.
+  # Der frühere apply_rc-Check war toter Code (apply_target_state erreicht den
+  # Rückgabewert unter set -e bei einem Fehler gar nicht).
   apply_target_state "${resolved_state}"
-  local apply_rc=$?
-  if ! ensure_keycloak_admin_user; then
-    log_error "CIVITAS/CORE-Cluster ist deployt, aber die Keycloak-Admin-Provisionierung ist unvollständig (betroffene Punkte siehe oben)."
-    exit 1
-  fi
 
-  if [[ ${apply_rc} -ne 0 ]]; then
-    log_error "apply_target_state fehlgeschlagen (Zielzustand: ${resolved_state})"
-    exit 1
-  fi
   if ! verify_certificates "${resolved_state}"; then
     log_error "verify_certificates: mindestens ein Host ohne gueltigen Nachweis"
     exit 1
   fi
 
-  # LE-Backup schreiben, wenn Produktivzertifikate frisch ausgestellt wurden.
-  if [[ "${LE_FRESH_PROD_ISSUED:-false}" == "true" ]]; then
+  # LE-Backup VOR der IDM-Provisionierung schreiben: nach Neuausstellung
+  # (LE_FRESH_PROD_ISSUED) oder wenn das Cluster-tls.crt vom Backup abweicht
+  # (z. B. cert-manager hat erneuert). So geht ein Backup bei IDM-Fehler nicht
+  # verloren.
+  if [[ "${LE_FRESH_PROD_ISSUED:-false}" == "true" ]] || cluster_backup_diverges; then
     write_le_backup || log_warn "LE-Backup konnte nicht geschrieben werden"
   fi
 
+  if ! ensure_keycloak_admin_user; then
+    log_error "CIVITAS/CORE-Cluster ist deployt, aber die Keycloak-Admin-Provisionierung ist unvollständig (betroffene Punkte siehe oben)."
+    exit 1
+  fi
 
   configure_pgadmin_ca_trust || log_warn "pgAdmin-CA-Trust fehlgeschlagen — OIDC-Login ueber Keycloak manuell pruefen"
   log_ok "Phase 2 abgeschlossen – CIVITAS/CORE laeuft in Namespaces: ${K8S_NAMESPACES[*]}"

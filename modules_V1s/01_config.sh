@@ -51,6 +51,7 @@ INGRESS_NAMESPACE="ingress-nginx"
 # ── Steuervariablen (aus .env.local) ────────────────────────────────────
 LE_CERT="${LE_CERT:-false}"              # false = nur Staging, true = Staging + Production
 LE_REQUESTS_BLOCKED="${LE_REQUESTS_BLOCKED:-false}" # true = keinerlei neue Zertifikatsanforderungen (Safety-Schalter)
+CERT_BACKUP_MIN_DAYS="${CERT_BACKUP_MIN_DAYS:-30}" # Mindest-Restlaufzeit (Tage), damit ein LE-Backup als brauchbar gilt
 APISIX_DASHBOARD="${APISIX_DASHBOARD:-false}"  # APISIX-Dashboard aktivieren
 RUN_TESTS="${RUN_TESTS:-false}"          # E2E-Tests nach Installation ausführen
 
@@ -128,7 +129,7 @@ CC_EXEC_ATTEMPTS="${CC_EXEC_ATTEMPTS:-2}"                 # Versuche für cc_cli
 CC_EXEC_RETRY_DELAY="${CC_EXEC_RETRY_DELAY:-30}"          # Sekunden zwischen den Versuchen
 IDM_TOKEN_RETRIES="${IDM_TOKEN_RETRIES:-6}"               # Versuche für den Keycloak-Master-Token
 IDM_TOKEN_RETRY_DELAY="${IDM_TOKEN_RETRY_DELAY:-10}"      # Sekunden zwischen den Token-Versuchen
-for _v in CC_API_MAX_RETRIES CC_DEPLOYMENT_MAX_RETRIES CC_EXEC_ATTEMPTS CC_EXEC_RETRY_DELAY IDM_TOKEN_RETRIES IDM_TOKEN_RETRY_DELAY; do
+for _v in CC_API_MAX_RETRIES CC_DEPLOYMENT_MAX_RETRIES CC_EXEC_ATTEMPTS CC_EXEC_RETRY_DELAY IDM_TOKEN_RETRIES IDM_TOKEN_RETRY_DELAY CERT_BACKUP_MIN_DAYS; do
   [[ "${!_v}" =~ ^[0-9]+$ ]] && (( ${!_v} >= 1 && ${!_v} <= 600 )) \
     || { echo "FEHLER: ${_v}='${!_v}' ungültig (Zahl 1..600)" >&2; exit 1; }
 done; unset _v

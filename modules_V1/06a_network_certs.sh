@@ -31,15 +31,25 @@
 
 set -euo pipefail
 
+# Signal: wurden in diesem Lauf Produktivzertifikate frisch ausgestellt?
+# Wird in request_fresh_prod_certificates gesetzt und in install_civitas
+# ausgewertet, um das LE-Backup nur nach Neuausstellung zu schreiben.
+LE_FRESH_PROD_ISSUED=false
+
 # ── resolve_target_state: Zielzustand fuer Zertifikate ermitteln ──────────
 # Reine Entscheidungsfunktion. Fuehrt KEINE kubectl-Aufrufe aus, veraendert
 # KEINEN Cluster-Zustand. Gibt genau einen der drei Strings per stdout zurueck:
 #   "keep_staging"   | "restore_backup" | "request_prod"
 #
 # Wahrheitstabelle:
-#   LE_CERT=false                     → keep_staging
-#   Backup vorhanden                  → restore_backup
-#   LE_CERT=true, kein Backup         → request_prod
+#   LE_CERT=false                         → keep_staging
+#   Backup vorhanden und brauchbar        → restore_backup
+#   LE_CERT=true, kein brauchbares Backup → request_prod
+#
+# Ein vorhandenes, aber unbrauchbares Backup (falsche Domain, Restlaufzeit
+# unter CERT_BACKUP_MIN_DAYS, Dokumentzahl/tls.crt stimmt nicht) wird
+# ignoriert — backup_usable warnt per log_warn und der Lauf verhält sich wie
+# ohne Backup.
 #
 # Hinweis: LE_REQUESTS_BLOCKED wird hier NICHT abgefragt — die Funktion
 # beschreibt den gewuenschten Zielzustand, unabhaengig von der Ausfuehrbarkeit.
@@ -47,8 +57,7 @@ set -euo pipefail
 resolve_target_state() {
     local backup_file="${CERT_BACKUP_FILE}"
 
-
-    if [[ -f "${backup_file}" ]]; then
+    if [[ -f "${backup_file}" ]] && backup_usable "${backup_file}"; then
         echo "restore_backup"
         return 0
     fi
@@ -390,6 +399,146 @@ backup_secret_doc_count() {
   local backup_file="$1" count
   count=$(grep -c '^kind: Secret' "${backup_file}" 2>/dev/null) || true
   printf '%s' "${count}"
+}
+
+# ── backup_usable: prüft ein LE-Backup vor dem Restore ──────────────────────
+# Gibt 0 zurück, wenn das Backup brauchbar ist (richtige Domain, genug
+# Restlaufzeit, Dokumentzahl/tls.crt stimmen). Sonst 1 mit einer Warnung auf
+# stderr (log_warn). Niemals Zertifikatsinhalt ausgeben — nur Secret-Name und
+# Grund. Wird von resolve_target_state per Command Substitution aufgerufen,
+# daher ausschließlich log_warn (stderr), kein echo auf stdout.
+#
+# Ausnahme: LE_REQUESTS_BLOCKED=true hebt die Restlaufzeit-Regel auf (nur
+# Warnung), die Domain-Regel bleibt bestehen.
+backup_usable() {
+  local backup_file="$1"
+  local expected_secrets entry ns name tls_crt sans dns_entries dns_name min_seconds
+  local -a secret_entries=()
+
+  expected_secrets=$(backup_secret_doc_count "${backup_file}")
+  mapfile -t secret_entries < <(yq eval 'select(.kind == "Secret") | "\(.metadata.namespace)/\(.metadata.name)"' \
+    "${backup_file}" 2>/dev/null)
+  if [[ ${#secret_entries[@]} -eq 0 || ${#secret_entries[@]} -ne "${expected_secrets}" ]]; then
+    log_warn "LE-Backup unbrauchbar: yq lieferte ${#secret_entries[@]} Einträge, Backup enthält ${expected_secrets} Secret-Dokumente"
+    return 1
+  fi
+
+  min_seconds=$(( CERT_BACKUP_MIN_DAYS * 86400 ))
+
+  for entry in "${secret_entries[@]}"; do
+    ns="${entry%%/*}"
+    name="${entry##*/}"
+    tls_crt=$(yq eval "select(.metadata.name == \"${name}\") | .data[\"tls.crt\"]" \
+      "${backup_file}" 2>/dev/null | base64 -d 2>/dev/null || true)
+    if [[ -z "${tls_crt}" ]]; then
+      log_warn "LE-Backup unbrauchbar: Secret ${name} ohne gültiges tls.crt"
+      return 1
+    fi
+
+    # Domain-Regel (gilt immer): jeder DNS-Name gleich DOMAIN oder *.DOMAIN.
+    sans=$(printf '%s' "${tls_crt}" | openssl x509 -noout -ext subjectAltName 2>/dev/null || true)
+    dns_entries=$(printf '%s' "${sans}" | grep -oE 'DNS:[^,]+' || true)
+    if [[ -z "${dns_entries}" ]]; then
+      log_warn "LE-Backup unbrauchbar: Secret ${name} ohne DNS-Namen im Zertifikat"
+      return 1
+    fi
+    while IFS= read -r dns_name; do
+      [[ -n "${dns_name}" ]] || continue
+      dns_name="${dns_name#DNS:}"
+      if [[ "${dns_name}" != "${DOMAIN}" && "${dns_name}" != *".${DOMAIN}" ]]; then
+        log_warn "LE-Backup unbrauchbar: Secret ${name} enthält Domain ${dns_name} außerhalb ${DOMAIN}"
+        return 1
+      fi
+    done <<< "${dns_entries}"
+
+    # Restlaufzeit-Regel (entfällt bei LE_REQUESTS_BLOCKED=true).
+    if [[ "${LE_REQUESTS_BLOCKED}" == "true" ]]; then
+      if ! printf '%s' "${tls_crt}" | openssl x509 -noout -checkend "${min_seconds}" >/dev/null 2>&1; then
+        log_warn "LE-Backup-Warnung: Secret ${name} Restlaufzeit unter ${CERT_BACKUP_MIN_DAYS} Tagen (LE_REQUESTS_BLOCKED=true — Restlaufzeit-Regel entfällt)"
+      fi
+    else
+      if ! printf '%s' "${tls_crt}" | openssl x509 -noout -checkend "${min_seconds}" >/dev/null 2>&1; then
+        log_warn "LE-Backup unbrauchbar: Secret ${name} Restlaufzeit unter ${CERT_BACKUP_MIN_DAYS} Tagen"
+        return 1
+      fi
+    fi
+  done
+  return 0
+}
+
+# ── cluster_backup_diverges: weicht tls.crt im Cluster vom Backup ab? ──────
+# Gibt 0 zurück, wenn mindestens ein Secret-tls.crt im Cluster von dem im
+# Backup abweicht (z. B. cert-manager hat erneuert) und das Backup daher neu
+# geschrieben werden muss. Vergleich über den SHA256-Fingerprint, damit
+# whitespace/Zeilenumbrüche in der PEM-Darstellung nicht als Abweichung zählen.
+cluster_backup_diverges() {
+  local backup_file="${CERT_BACKUP_FILE}"
+  [[ -f "${backup_file}" ]] || return 1
+
+  local entry ns name backup_fp cluster_fp
+  while IFS= read -r entry; do
+    [[ -n "${entry}" ]] || continue
+    ns="${entry%%/*}"; name="${entry##*/}"
+    backup_fp=$(yq eval "select(.metadata.name == \"${name}\") | .data[\"tls.crt\"]" \
+      "${backup_file}" 2>/dev/null | base64 -d 2>/dev/null \
+      | openssl x509 -noout -fingerprint -sha256 2>/dev/null || true)
+    cluster_fp=$(kubectl get secret "${name}" -n "${ns}" \
+      -o jsonpath='{.data.tls\.crt}' 2>/dev/null | base64 -d 2>/dev/null \
+      | openssl x509 -noout -fingerprint -sha256 2>/dev/null || true)
+    if [[ -n "${backup_fp}" && -n "${cluster_fp}" && "${backup_fp}" != "${cluster_fp}" ]]; then
+      log "tls.crt von ${ns}/${name} weicht vom Backup ab — Backup wird neu geschrieben"
+      return 0
+    fi
+  done < <(yq eval 'select(.kind == "Secret") | "\(.metadata.namespace)/\(.metadata.name)"' "${backup_file}" 2>/dev/null)
+  return 1
+}
+
+# ── write_le_backup: LE-Zertifikats-Backup atomar in die VM schreiben ─────
+# Sammelt die TLS-Secrets aller Certificate-Objekte (außer civitas-core-ca),
+# validiert Dokumentzahl und tls.crt, schreibt atomar nach CERT_BACKUP_FILE.
+write_le_backup() {
+  local backup_file="${CERT_BACKUP_FILE}"
+  local tmp="${backup_file}.tmp.$$"
+  local -a cert_refs=()
+  local ns_name ns name expected docs tls_count
+
+  while IFS= read -r ns_name; do
+    [[ -n "${ns_name}" ]] || continue
+    cert_refs+=("${ns_name}")
+  done < <(kubectl get certificate --all-namespaces -o json 2>/dev/null \
+    | jq -r '.items[] | select(.metadata.name != "civitas-core-ca") | "\(.metadata.namespace)/\(.spec.secretName)"' 2>/dev/null)
+
+  expected=${#cert_refs[@]}
+  if [[ "${expected}" -eq 0 ]]; then
+    log_error "LE-Backup: keine Certificate-Objekte (außer civitas-core-ca) gefunden"
+    return 1
+  fi
+
+  ( umask 077
+    : > "${tmp}"
+    for ns_name in "${cert_refs[@]}"; do
+      ns="${ns_name%%/*}"; name="${ns_name##*/}"
+      kubectl get secret "${name}" -n "${ns}" -o yaml >> "${tmp}" 2>/dev/null || true
+      echo "---" >> "${tmp}"
+    done )
+
+  docs=$(backup_secret_doc_count "${tmp}")
+  if [[ "${docs}" -ne "${expected}" ]]; then
+    log_error "LE-Backup-Validierung fehlgeschlagen: ${docs} Secret-Dokumente, ${expected} erwartet — Backup verworfen"
+    rm -f "${tmp}"
+    return 1
+  fi
+  tls_count=$(grep -c '^  tls.crt:' "${tmp}" 2>/dev/null || true)
+  if [[ "${tls_count}" -ne "${expected}" ]]; then
+    log_error "LE-Backup-Validierung fehlgeschlagen: ${tls_count} tls.crt-Einträge, ${expected} erwartet — Backup verworfen"
+    rm -f "${tmp}"
+    return 1
+  fi
+
+  mv "${tmp}" "${backup_file}"
+  chmod 600 "${backup_file}"
+  log_ok "LE-Zertifikats-Backup geschrieben: ${backup_file} (${expected} Secret(s))"
+  return 0
 }
 
 # ── restore_backup_and_switch_to_prod: Backup-Restore mit Controller-Pause ──
@@ -805,6 +954,9 @@ EOF
     return 1
   elif [[ ${prod_failed} -gt 0 ]]; then
     return 2
+  fi
+  if [[ ${prod_success} -gt 0 ]]; then
+    LE_FRESH_PROD_ISSUED=true
   fi
   return 0
 }
