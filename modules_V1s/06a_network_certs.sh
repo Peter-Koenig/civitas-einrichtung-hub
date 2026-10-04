@@ -377,6 +377,12 @@ verify_certificates() {
     fi
     log "============================================"
 
+    # Kein leerer Lauf: ohne gefundene TLS-Hosts ist das ein Fehler, kein OK.
+    if [[ ${total} -eq 0 ]]; then
+        log_error "  Keine TLS-Hosts gefunden — verify_certificates ohne Objekt gelaufen"
+        return 1
+    fi
+
     [[ ${failed} -eq 0 ]]
     return $?
 }

@@ -174,31 +174,72 @@ verify_phase2() {
 # Sucht in K8S_NAMESPACES nach den Platzhalter-Literalen TODO:PLEASE,
 # TODO_PLEASE und CHANGE_ME. Ausgabe nur Art + Namespace/Name + key, nie ein
 # Wert. Treffer sind ein Fehler (VERIFY_ERRORS++, return 1).
+#
+# Keine leeren Läufe: kubectl-Ausgabe wird in eine temporäre Datei (0600)
+# gelesen und der Exitcode von kubectl UND jq geprüft. Ein fehlendes
+# data-Feld wird über "(.data // {})" toleriert, damit Secrets/ConfigMaps
+# mit ausschließlich binaryData den Scan nicht abbrechen. Je Namespace muss
+# mindestens eine ConfigMap gelesen werden (kube-root-ca.crt existiert
+# immer); sonst gilt der Scan als fehlgeschlagen, nicht als OK.
 guard_placeholder_literals() {
-  local ns name key value decoded hits=0
-  for ns in "${K8S_NAMESPACES[@]}"; do
-    while IFS=$'\t' read -r name key value; do
-      [[ -n "${name}" ]] || continue
-      decoded="$(printf '%s' "${value}" | base64 -d 2>/dev/null || true)"
-      if printf '%s' "${decoded}" | grep -qE 'TODO:PLEASE|TODO_PLEASE|CHANGE_ME'; then
-        log_error "Platzhalter-Literal: Secret ${ns}/${name} key=${key}"
-        hits=$((hits + 1))
-      fi
-    done < <(kubectl --kubeconfig="${KUBECONFIG_PATH}" get secrets -n "${ns}" -o json 2>/dev/null \
-      | jq -r '.items[] | .metadata.name as $n | .data | to_entries[] | "\($n)\t\(.key)\t\(.value)"' 2>/dev/null)
+  local ns name key value decoded hits=0 scan_errors=0
+  local raw_file scan_file cm_count
+  raw_file="$(mktemp)"
+  scan_file="$(mktemp)"
 
-    while IFS=$'\t' read -r name key value; do
-      [[ -n "${name}" ]] || continue
-      if printf '%s' "${value}" | grep -qE 'TODO:PLEASE|TODO_PLEASE|CHANGE_ME'; then
-        log_error "Platzhalter-Literal: ConfigMap ${ns}/${name} key=${key}"
-        hits=$((hits + 1))
+  for ns in "${K8S_NAMESPACES[@]}"; do
+    # Secrets: kubectl- und jq-Exitcode prüfen (nicht verschlucken).
+    if ! kubectl --kubeconfig="${KUBECONFIG_PATH}" get secrets -n "${ns}" -o json >"${raw_file}" 2>/dev/null; then
+      log_error "Platzhalter-Scan: kubectl get secrets -n ${ns} fehlgeschlagen"
+      scan_errors=$((scan_errors + 1))
+    elif ! jq -r '.items[] | .metadata.name as $n | (.data // {}) | to_entries[] | "\($n)\t\(.key)\t\(.value)"' "${raw_file}" >"${scan_file}" 2>/dev/null; then
+      log_error "Platzhalter-Scan: jq-Auswertung (secrets -n ${ns}) fehlgeschlagen"
+      scan_errors=$((scan_errors + 1))
+    else
+      while IFS=$'\t' read -r name key value; do
+        [[ -n "${name}" ]] || continue
+        decoded="$(printf '%s' "${value}" | base64 -d 2>/dev/null || true)"
+        if printf '%s' "${decoded}" | grep -qE 'TODO:PLEASE|TODO_PLEASE|CHANGE_ME'; then
+          log_error "Platzhalter-Literal: Secret ${ns}/${name} key=${key}"
+          hits=$((hits + 1))
+        fi
+      done < "${scan_file}"
+    fi
+
+    # ConfigMaps: kubectl-Exitcode prüfen, dann Sanity-Check (mindestens eine
+    # ConfigMap je Namespace), dann jq-Exitcode prüfen.
+    if ! kubectl --kubeconfig="${KUBECONFIG_PATH}" get configmaps -n "${ns}" -o json >"${raw_file}" 2>/dev/null; then
+      log_error "Platzhalter-Scan: kubectl get configmaps -n ${ns} fehlgeschlagen"
+      scan_errors=$((scan_errors + 1))
+    else
+      cm_count="$(jq -r '.items | length' "${raw_file}" 2>/dev/null || echo 0)"
+      if [[ "${cm_count}" -eq 0 ]]; then
+        log_error "Platzhalter-Scan: Scan hat keine Objekte gelesen (ConfigMaps in ${ns})"
+        scan_errors=$((scan_errors + 1))
+      elif ! jq -r '.items[] | .metadata.name as $n | (.data // {}) | to_entries[] | "\($n)\t\(.key)\t\(.value)"' "${raw_file}" >"${scan_file}" 2>/dev/null; then
+        log_error "Platzhalter-Scan: jq-Auswertung (configmaps -n ${ns}) fehlgeschlagen"
+        scan_errors=$((scan_errors + 1))
+      else
+        while IFS=$'\t' read -r name key value; do
+          [[ -n "${name}" ]] || continue
+          if printf '%s' "${value}" | grep -qE 'TODO:PLEASE|TODO_PLEASE|CHANGE_ME'; then
+            log_error "Platzhalter-Literal: ConfigMap ${ns}/${name} key=${key}"
+            hits=$((hits + 1))
+          fi
+        done < "${scan_file}"
       fi
-    done < <(kubectl --kubeconfig="${KUBECONFIG_PATH}" get configmaps -n "${ns}" -o json 2>/dev/null \
-      | jq -r '.items[] | .metadata.name as $n | .data | to_entries[] | "\($n)\t\(.key)\t\(.value)"' 2>/dev/null)
+    fi
   done
+
+  rm -f "${raw_file}" "${scan_file}"
 
   if [[ ${hits} -gt 0 ]]; then
     log_error "[PHASE 2] ${hits} Platzhalter-Literal(e) gefunden — Template/Inventory prüfen"
+    (( VERIFY_ERRORS++ )) || true
+    return 1
+  fi
+  if [[ ${scan_errors} -gt 0 ]]; then
+    log_error "[PHASE 2] Platzhalter-Scan unvollständig (${scan_errors} Fehler) — nicht als OK gewertet"
     (( VERIFY_ERRORS++ )) || true
     return 1
   fi

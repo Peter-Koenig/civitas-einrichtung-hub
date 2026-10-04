@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Suite 03: 06a_network_certs.sh — Backup-Secret-Enumeration (yq-Absicherung).
+# Suite 03: 06a_network_certs.sh — Backup-Secret-Enumeration (yq-Absicherung)
+# und verify_certificates ohne leere Läufe.
 # Nur Testwerte, kein Cluster/Netz.
 
 begin_suite "network_certs"
@@ -32,5 +33,14 @@ check "backup_secret_doc_count 3 Secrets" "3" "$(backup_secret_doc_count "$T/thr
 
 mk_backup "$T/zero.yaml" 0
 check "backup_secret_doc_count 0 Secrets" "0" "$(backup_secret_doc_count "$T/zero.yaml")"
+
+# verify_certificates: ohne gefundene TLS-Hosts ist das ein Fehler (kein OK).
+K8S_NAMESPACES=("ns1")
+CERT_BACKUP_FILE="$T/nonexistent.yaml"
+kubectl() { printf '{"items":[]}'; }
+: > "$LOGBUF"
+verify_certificates "keep_staging"; rc=$?
+check "verify_certificates 0 Hosts -> fail" "1" "$rc"
+check "verify_certificates 'keine TLS-Hosts' geloggt" "yes" "$(grep -q 'Keine TLS-Hosts gefunden' "$LOGBUF" && echo yes || echo no)"
 
 rm -rf "$T"

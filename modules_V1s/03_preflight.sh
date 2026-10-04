@@ -227,7 +227,7 @@ check_tools() {
   log "Prüfe Werkzeuge ..."
 
   # Pflicht-Tools → Mapping auf Paketnamen
-  local required_tools=(curl python3 pip3 dig git yq rg)
+  local required_tools=(curl python3 pip3 dig git yq rg jq)
   if [[ "${WG_ENABLED}" == "true" ]]; then
     required_tools+=(wg)
   fi
@@ -240,10 +240,11 @@ check_tools() {
     [git]="git"
     [yq]="yq-go"
     [rg]="ripgrep"
+    [jq]="jq"
   )
 
   # Optionale Utilities
-  local optional_pkgs=(vim jq htop plocate)
+  local optional_pkgs=(vim htop plocate)
 
   # Fehlende Pflichtpakete sammeln
   local required_pkgs=()
