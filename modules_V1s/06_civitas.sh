@@ -106,6 +106,11 @@ install_civitas() {
     exit 1
   fi
 
+  # LE-Backup schreiben, wenn Produktivzertifikate frisch ausgestellt wurden.
+  if [[ "${LE_FRESH_PROD_ISSUED:-false}" == "true" ]]; then
+    write_le_backup || log_warn "LE-Backup konnte nicht geschrieben werden"
+  fi
+
 
   configure_pgadmin_ca_trust || log_warn "pgAdmin-CA-Trust fehlgeschlagen — OIDC-Login ueber Keycloak manuell pruefen"
   log_ok "Phase 2 abgeschlossen – CIVITAS/CORE laeuft in Namespaces: ${K8S_NAMESPACES[*]}"

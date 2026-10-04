@@ -27,3 +27,6 @@ supplement/*
 # Lokale Secrets-Dateien (die Vorlagen *.example sind versioniert)
 .env.local
 .env-v1s.local
+
+# LE-Zertifikats-Backup (enthält private Schlüssel)
+le-certs-backup.yaml

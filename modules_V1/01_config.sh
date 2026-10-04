@@ -160,6 +160,9 @@ if [[ "${CERT_BACKUP_FILENAME}" == /* ]]; then
 else
     CERT_BACKUP_FILE="${VM_REMOTE_INSTALL_DIR}/${CERT_BACKUP_FILENAME}"
 fi
+# Host-Datei (außerhalb von SCRIPT_DIR, damit der --delete-Sync sie nicht entfernt).
+# Wird im Host-Zweig gelesen und nach erfolgreicher Neuausstellung zurückgeholt.
+CERT_BACKUP_HOST_FILE="${CERT_BACKUP_HOST_FILE:-${HOME}/le-certs-backup.yaml}"
 
 # ── Credentials-Ausgabe ─────────────────────────────────────────────────────
 CREDENTIALS_OUTPUT_PATH="${CREDENTIALS_OUTPUT_PATH:-/root/civitas-install/credentials.env}"

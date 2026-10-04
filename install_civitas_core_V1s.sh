@@ -187,12 +187,20 @@ run_in_vm() {
     "chmod 700 ${VM_REMOTE_INSTALL_DIR} && chmod 600 ${VM_REMOTE_INSTALL_DIR}/.env.local" \
     || { log_error "chmod auf .env.local fehlgeschlagen"; exit 1; }
 
-  if [[ -f "${SCRIPT_DIR}/le-certs-backup.yaml" ]]; then
+  # LE-Zertifikats-Backup in die VM kopieren (Host-Datei hat Vorrang).
+  local backup_src=""
+  if [[ -f "${CERT_BACKUP_HOST_FILE}" ]]; then
+    backup_src="${CERT_BACKUP_HOST_FILE}"
+  elif [[ -f "${SCRIPT_DIR}/le-certs-backup.yaml" ]]; then
+    log_warn "Host-Datei ${CERT_BACKUP_HOST_FILE} fehlt — nutze veralteten Pfad ${SCRIPT_DIR}/le-certs-backup.yaml"
+    backup_src="${SCRIPT_DIR}/le-certs-backup.yaml"
+  fi
+  if [[ -n "${backup_src}" ]]; then
     scp "${VM_SSH_OPTS[@]}" \
-      "${SCRIPT_DIR}/le-certs-backup.yaml" \
-      "root@${VM_IP_STATIC}:${VM_REMOTE_INSTALL_DIR}/le-certs-backup.yaml" \
-      || { log_error "scp le-certs-backup.yaml fehlgeschlagen"; exit 1; }
-    log_ok "LE-Zertifikats-Backup nach ${VM_REMOTE_INSTALL_DIR} kopiert"
+      "${backup_src}" \
+      "root@${VM_IP_STATIC}:${CERT_BACKUP_FILE}" \
+      || { log_error "scp $(basename "${backup_src}") fehlgeschlagen"; exit 1; }
+    log_ok "LE-Zertifikats-Backup nach ${CERT_BACKUP_FILE} in der VM kopiert"
   else
     log "Kein LE-Zertifikats-Backup gefunden — Zertifikate werden neu ausgestellt"
   fi
@@ -216,6 +224,19 @@ run_in_vm() {
     exit "${ssh_exit}"
   fi
   log_ok "Installation in der VM vollständig"
+
+  # LE-Zertifikats-Backup vom Host zurückholen (atomar, 0600), falls vorhanden.
+  if ssh "${VM_SSH_OPTS[@]}" "root@${VM_IP_STATIC}" "test -f ${CERT_BACKUP_FILE}"; then
+    local tmp_host="${CERT_BACKUP_HOST_FILE}.tmp.$$"
+    if scp "${VM_SSH_OPTS[@]}" "root@${VM_IP_STATIC}:${CERT_BACKUP_FILE}" "${tmp_host}"; then
+      mv "${tmp_host}" "${CERT_BACKUP_HOST_FILE}"
+      chmod 600 "${CERT_BACKUP_HOST_FILE}"
+      log_ok "LE-Zertifikats-Backup nach ${CERT_BACKUP_HOST_FILE} zurückgeholt"
+    else
+      rm -f "${tmp_host}"
+      log_warn "LE-Zertifikats-Backup konnte nicht zurückgeholt werden"
+    fi
+  fi
 }
 
 # ── Startmeldung ─────────────────────────────────────────────────────────────

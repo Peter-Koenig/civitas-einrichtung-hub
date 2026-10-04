@@ -252,6 +252,11 @@ Zielzustand für TLS-Zertifikate anhand folgender Logik ermittelt:
   Let's-Encrypt-Staging-Zertifikate ausgestellt. Für Production-Zertifikate
   muss `LE_CERT=true` gesetzt werden. Ein Safety-Schalter
   (`NO_NEW_LE_CERT`) kann neue Zertifikatsanforderungen blockieren.
+- **LE-Zertifikats-Backup:** Nach erfolgreicher Neuausstellung von
+  Produktivzertifikaten schreibt der Installer ein Backup nach
+  `CERT_BACKUP_FILE` (VM) und holt es nach `${HOME}/le-certs-backup.yaml`
+  (Host, `CERT_BACKUP_HOST_FILE`) zurück. Die Datei enthält private Schlüssel,
+  wird nie geloggt und ist in `.gitignore` eingetragen.
 - **E2E-Tests:** Playwright-basierte E2E-Tests sind in Vorbereitung
   (steuerbar über `RUN_TESTS`), aber noch nicht vollständig integriert
   (bekannter offener Punkt: `BASE_DOMAIN`-Fehler in der tests-`.env`-

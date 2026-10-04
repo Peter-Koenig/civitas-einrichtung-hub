@@ -31,6 +31,11 @@
 
 set -euo pipefail
 
+# Signal: wurden in diesem Lauf Produktivzertifikate frisch ausgestellt?
+# Wird in request_fresh_prod_certificates gesetzt und in install_civitas
+# ausgewertet, um das LE-Backup nur nach Neuausstellung zu schreiben.
+LE_FRESH_PROD_ISSUED=false
+
 # ── resolve_target_state: Zielzustand fuer Zertifikate ermitteln ──────────
 # Reine Entscheidungsfunktion. Fuehrt KEINE kubectl-Aufrufe aus, veraendert
 # KEINEN Cluster-Zustand. Gibt genau einen der drei Strings per stdout zurueck:
@@ -384,6 +389,54 @@ backup_secret_doc_count() {
   local backup_file="$1" count
   count=$(grep -c '^kind: Secret' "${backup_file}" 2>/dev/null) || true
   printf '%s' "${count}"
+}
+
+# ── write_le_backup: LE-Zertifikats-Backup atomar in die VM schreiben ─────
+# Sammelt die TLS-Secrets aller Certificate-Objekte (außer civitas-core-ca),
+# validiert Dokumentzahl und tls.crt, schreibt atomar nach CERT_BACKUP_FILE.
+write_le_backup() {
+  local backup_file="${CERT_BACKUP_FILE}"
+  local tmp="${backup_file}.tmp.$$"
+  local -a cert_refs=()
+  local ns_name ns name expected docs tls_count
+
+  while IFS= read -r ns_name; do
+    [[ -n "${ns_name}" ]] || continue
+    cert_refs+=("${ns_name}")
+  done < <(kubectl get certificate --all-namespaces -o json 2>/dev/null \
+    | jq -r '.items[] | select(.metadata.name != "civitas-core-ca") | "\(.metadata.namespace)/\(.spec.secretName)"' 2>/dev/null)
+
+  expected=${#cert_refs[@]}
+  if [[ "${expected}" -eq 0 ]]; then
+    log_error "LE-Backup: keine Certificate-Objekte (außer civitas-core-ca) gefunden"
+    return 1
+  fi
+
+  ( umask 077
+    : > "${tmp}"
+    for ns_name in "${cert_refs[@]}"; do
+      ns="${ns_name%%/*}"; name="${ns_name##*/}"
+      kubectl get secret "${name}" -n "${ns}" -o yaml >> "${tmp}" 2>/dev/null || true
+      echo "---" >> "${tmp}"
+    done )
+
+  docs=$(backup_secret_doc_count "${tmp}")
+  if [[ "${docs}" -ne "${expected}" ]]; then
+    log_error "LE-Backup-Validierung fehlgeschlagen: ${docs} Secret-Dokumente, ${expected} erwartet — Backup verworfen"
+    rm -f "${tmp}"
+    return 1
+  fi
+  tls_count=$(grep -c '^  tls.crt:' "${tmp}" 2>/dev/null || true)
+  if [[ "${tls_count}" -ne "${expected}" ]]; then
+    log_error "LE-Backup-Validierung fehlgeschlagen: ${tls_count} tls.crt-Einträge, ${expected} erwartet — Backup verworfen"
+    rm -f "${tmp}"
+    return 1
+  fi
+
+  mv "${tmp}" "${backup_file}"
+  chmod 600 "${backup_file}"
+  log_ok "LE-Zertifikats-Backup geschrieben: ${backup_file} (${expected} Secret(s))"
+  return 0
 }
 
 # ── restore_backup_and_switch_to_prod: Backup-Restore mit Controller-Pause ──
@@ -799,6 +852,9 @@ EOF
     return 1
   elif [[ ${prod_failed} -gt 0 ]]; then
     return 2
+  fi
+  if [[ ${prod_success} -gt 0 ]]; then
+    LE_FRESH_PROD_ISSUED=true
   fi
   return 0
 }
