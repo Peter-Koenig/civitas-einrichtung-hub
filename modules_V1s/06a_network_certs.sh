@@ -69,6 +69,10 @@ resolve_target_state() {
 # Leerer WG_PRESHARED_KEY → PresharedKey-Zeile wird weggelassen
 # (WireGuard wirft Fehler bei leerem Wert).
 setup_wireguard() {
+  if [[ "${WG_ENABLED}" != "true" ]]; then
+    log "WireGuard deaktiviert (WG_ENABLE=${WG_ENABLED:-false}) — überspringe setup_wireguard"
+    return 0
+  fi
   log "Konfiguriere WireGuard (Schritt 2.4c) …"
 
   if systemctl is-active --quiet "wg-quick@${WG_INTERFACE}"; then
@@ -276,7 +280,7 @@ apply_target_state() {
 #   a) Staging-Annotation civitas.io/staging-verified="true" (immer gueltig)
 #   b) Produktivzertifikat READY=True mit issuerRef letsencrypt-prod
 #   c) Backup-Restore mit identischem notBefore-Zeitstempel
-#   d) Staging-Zertifikat READY=True mit issuerRef letsencrypt-staging
+#   d) Staging- oder selfsigned-Zertifikat READY=True
 verify_certificates() {
     local target_state="${1:?target_state muss uebergeben werden}"
     log ""
@@ -316,8 +320,8 @@ verify_certificates() {
                         -o jsonpath='{.spec.issuerRef.name}' 2>/dev/null)
                     ready=$(kubectl get certificate "${cert_name}" -n "${ns}" \
                         -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
-                    if [[ "${ready}" == "True" && "${issuer}" == "letsencrypt-staging" ]]; then
-                        log_ok "  ${host} (${ns}): Nachweis (d) Staging READY"
+                    if [[ "${ready}" == "True" && ( "${issuer}" == "letsencrypt-staging" || "${issuer}" == "selfsigned-issuer" ) ]]; then
+                        log_ok "  ${host} (${ns}): Nachweis (d) Staging/selfsigned READY"
                         ok=$((ok + 1))
                         continue
                     fi

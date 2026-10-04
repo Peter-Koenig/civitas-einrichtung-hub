@@ -156,10 +156,10 @@ fehlerfrei abgeschlossen wurde.
 Die Datei `.env.example` im Repository-Stammverzeichnis dient als Vorlage.
 Empfohlener Arbeitsablauf:
 
-1. `.env.example` nach `.env.local` kopieren
+1. `.env.example` nach `${HOME}/.env.local` kopieren (bei root `/root/.env.local`)
 2. Werte eintragen (Passwörter, Schlüssel, Domain)
 3. `.env.local` **nie** committen (in `.gitignore` eingetragen)
-4. Skript starten — es erkennt `.env.local` automatisch und überträgt es in die VM
+4. Skript starten; der Host-Zweig erwartet `${HOME}/.env.local` und überträgt sie in die VM
 
 Alternativ können alle Variablen auch direkt als Umgebungsvariablen exportiert werden.
 
@@ -219,8 +219,8 @@ Zielzustand für TLS-Zertifikate anhand folgender Logik ermittelt:
 **Hinweise zum Arbeitsablauf:**
 
 - `.env.example` dient ausschließlich als Vorlage — **nie direkt ausführen**.
-- Die Datei `.env.local` wird automatisch vom Skript erkannt und per `scp` in
-  die VM übertragen (bei Ausführung vom Proxmox-Host).
+- Die Datei `${HOME}/.env.local` (bei root `/root/.env.local`) wird vom Host-Zweig
+  erwartet und per `scp` in die VM übertragen.
 - Werte mit `****` in `.env.example` sind Platzhalter und müssen ersetzt werden.
 
 **Weitere Voraussetzungen:**
@@ -541,10 +541,10 @@ installation inside the VM completed successfully.
 The `.env.example` file in the repository root serves as a template.
 Recommended workflow:
 
-1. Copy `.env.example` to `.env.local`
+1. Copy `.env.example` to `${HOME}/.env.local` (as root: `/root/.env.local`)
 2. Fill in the values (passwords, keys, domain)
 3. **Never commit** `.env.local` (it is listed in `.gitignore`)
-4. Start the script — it automatically detects `.env.local` and transfers it to the VM
+4. Start the script; the host context expects `${HOME}/.env.local` and transfers it to the VM
 
 Alternatively, all variables can be exported directly as environment variables.
 
@@ -603,8 +603,8 @@ target state for TLS certificates based on the following logic:
 **Workflow notes:**
 
 - `.env.example` is a template only — **never run it directly**.
-- The `.env.local` file is automatically detected by the script and transferred
-  via `scp` to the VM (when running from the Proxmox host).
+- The `${HOME}/.env.local` file (as root: `/root/.env.local`) is expected by the
+  host context and transferred via `scp` to the VM.
 - Values marked with `****` in `.env.example` are placeholders and must be replaced.
 
 **Further requirements:**

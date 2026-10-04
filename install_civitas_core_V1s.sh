@@ -24,11 +24,15 @@
 # Siehe: skriptarchitektur.md (V1), installationsphasen-und-abnahme.md (V1)
 #
 # Aufruf (von Proxmox-Host):
-#   export ROOT_PASSWORD="..."
 #   export SMTP_HOST="..."
 #   export SMTP_USER="..."
 #   export SMTP_PASS="..."
 #   ./install_civitas_core_V1s.sh
+#
+# ROOT_PASSWORD ist optional (Zugangsregel: VM_SSH_PUBKEY ODER ROOT_PASSWORD,
+# siehe init_ssh_access). Secrets liegen in ${HOME}/.env-v1s.local (bei root
+# /root/.env-v1s.local); der Host-Zweig verlangt diese Datei (require_env_file).
+# Vor dem Aufruf: set -a; source ${HOME}/.env-v1s.local; set +a
 #
 # Optionen:
 #   LOG_FILE=/var/log/civitas_install_v1.log ./install_civitas_core_V1s.sh
@@ -45,7 +49,7 @@ if [[ -n "$LOG_FILE" ]]; then
 fi
 
 # ── Module laden ─────────────────────────────────────────────────────────────
-source "${SCRIPT_DIR}/modules_V1s/01_config.sh"    # Config + ROOT_PASSWORD check
+source "${SCRIPT_DIR}/modules_V1s/01_config.sh"    # Konfiguration
 source "${SCRIPT_DIR}/modules_V1s/02_lib.sh"
 source "${SCRIPT_DIR}/modules_V1s/00_provision_vm.sh"
 source "${SCRIPT_DIR}/modules_V1s/03_preflight.sh"
@@ -73,16 +77,85 @@ source "${SCRIPT_DIR}/modules_V1s/07_login_summary.sh"
 # ── Ausführungskontext ───────────────────────────────────────────────────────
 CIVITAS_CONTEXT="${CIVITAS_CONTEXT:-host}"
 
+# ── SSH-Zugang zur VM ────────────────────────────────────────────────────────
+ensure_vm_ssh_access() {
+  local target="root@${VM_IP_STATIC}"
+  if ssh "${VM_SSH_OPTS[@]}" -o ConnectTimeout=5 "${target}" true 2>/dev/null; then return 0; fi
+  # Altbestand: VM wurde mit dem alten Verfahren angelegt
+  if ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
+         -o UserKnownHostsFile="${VM_SSH_KNOWN_HOSTS}" "${target}" true 2>/dev/null; then
+    log_warn "Installations-Key ist in der VM unbekannt (Altbestand) — trage ihn über den bisherigen Zugang ein"
+    ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="${VM_SSH_KNOWN_HOSTS}" \
+        "${target}" 'umask 077; mkdir -p ~/.ssh; cat >> ~/.ssh/authorized_keys' < "${INSTALL_KEY}.pub" \
+      || { log_error "Installations-Key konnte nicht eingetragen werden"; exit 1; }
+    ssh "${VM_SSH_OPTS[@]}" -o ConnectTimeout=5 "${target}" true 2>/dev/null && return 0
+  fi
+  log_error "SSH-Zugang zur VM nicht möglich (weder Installations-Key noch bisheriger Zugang)."
+  log_error "Falls sich der Host-Key der VM geändert hat: ssh-keygen -R ${VM_IP_STATIC} -f ${VM_SSH_KNOWN_HOSTS}"
+  exit 1
+}
+
+remove_install_key() {
+  # Entfernt den Key nur aus der laufenden VM. Das Cloud-Init-Laufwerk der VM
+  # enthält ihn weiterhin; ob ein späterer Neustart ihn wieder einträgt, ist nicht verifiziert.
+  [[ "${VM_REMOVE_INSTALL_KEY:-false}" == "true" ]] || return 0
+  if [[ -z "${VM_SSH_PUBKEY:-}" ]]; then
+    log_warn "VM_REMOVE_INSTALL_KEY=true, aber VM_SSH_PUBKEY leer: Installations-Key bleibt (sonst kein SSH-Zugang)"
+    return 0
+  fi
+  if ssh "${VM_SSH_OPTS[@]}" "root@${VM_IP_STATIC}" "sed -i '/ civitas-install-${VM_ID}\$/d' ~/.ssh/authorized_keys"; then
+    log_ok "Installations-Key aus der VM entfernt"
+  else
+    log_warn "Installations-Key konnte nicht aus der VM entfernt werden"
+  fi
+}
+
+# ── Env-Datei (Host-Zweig) ───────────────────────────────────────────────────
+# Die Env-Datei liegt bewusst außerhalb von ${SCRIPT_DIR}, damit der --delete-Sync
+# des Installations-Repos sie nicht entfernt. Bei root ist ${HOME} = /root.
+HOST_ENV_FILE="${HOME}/.env-v1s.local"
+
+find_env_file() {
+  [[ -r "${HOST_ENV_FILE}" ]] && printf '%s\n' "${HOST_ENV_FILE}"
+}
+
+require_env_file() {
+  local env_file mode
+  env_file="$(find_env_file)"
+  if [[ -z "${env_file}" ]]; then
+    log_error "Env-Datei fehlt oder ist nicht lesbar: ${HOST_ENV_FILE}"
+    log_error "Die Datei liegt bewusst außerhalb von ${SCRIPT_DIR}, damit der --delete-Sync sie nicht entfernt."
+    log_error "Vor dem Aufruf laden: set -a; source ${HOST_ENV_FILE}; set +a"
+    exit 1
+  fi
+  mode="$(stat -c '%a' "${env_file}" 2>/dev/null || true)"
+  if [[ -n "${mode}" ]] && (( (8#${mode} & 0022) != 0 )); then
+    log_error "Env-Datei ist für group/other schreibbar: ${env_file} (Modus ${mode})"
+    log_error "Korrigieren: chmod 600 ${env_file}"
+    exit 1
+  fi
+}
+
+# ── Root-Passwort in der VM (optional, per stdin/chpasswd) ───────────────────
+set_root_password() {
+  [[ -n "${ROOT_PASSWORD:-}" ]] || return 0
+  if printf 'root:%s\n' "${ROOT_PASSWORD}" | ssh "${VM_SSH_OPTS[@]}" "root@${VM_IP_STATIC}" chpasswd; then
+    log_ok "Root-Passwort in der VM gesetzt (Konsole)"
+  else
+    log_error "Root-Passwort konnte nicht gesetzt werden"; exit 1
+  fi
+}
+
 # ── Funktion: Hop in die VM ──────────────────────────────────────────────────
 run_in_vm() {
-  # Alten SSH-Host-Key entfernen (VM wird bei jedem Scratch-Lauf neu erstellt)
-  ssh-keygen -f "${HOME}/.ssh/known_hosts" -R "${VM_IP_STATIC}" 2>/dev/null || true
+  ensure_vm_ssh_access
+  set_root_password
   log "Kopiere Skript-Dateien in die VM (${VM_IP_STATIC}) …"
-  ssh -o StrictHostKeyChecking=no \
+  ssh "${VM_SSH_OPTS[@]}" \
       "root@${VM_IP_STATIC}" \
       "mkdir -p ${VM_REMOTE_INSTALL_DIR}" \
       || { log_error "VM ${VM_IP_STATIC} nicht per SSH erreichbar"; exit 1; }
-  scp -o StrictHostKeyChecking=no -r \
+  scp "${VM_SSH_OPTS[@]}" -r \
     "${SCRIPT_DIR}/install_civitas_core_V1s.sh" \
     "${SCRIPT_DIR}/modules_V1s" \
     "${SCRIPT_DIR}/templates_V1s" \
@@ -91,7 +164,7 @@ run_in_vm() {
   log_ok "Skript-Dateien kopiert nach ${VM_REMOTE_INSTALL_DIR}"
 
   if [[ -d "${SCRIPT_DIR}/overlay_V1s" ]]; then
-    scp -o StrictHostKeyChecking=no -r \
+    scp "${VM_SSH_OPTS[@]}" -r \
       "${SCRIPT_DIR}/overlay_V1s" \
       "root@${VM_IP_STATIC}:${VM_REMOTE_INSTALL_DIR}/" \
       || { log_error "Overlay-Verzeichnis konnte nicht kopiert werden"; exit 1; }
@@ -102,25 +175,20 @@ run_in_vm() {
     exit 1
   fi
 
-  local env_file=""
-  if [[ -f "${SCRIPT_DIR}/.env-v1s.local" ]]; then
-    env_file="${SCRIPT_DIR}/.env-v1s.local"
-  elif [[ -f "${SCRIPT_DIR}/.env.local" ]]; then
-    env_file="${SCRIPT_DIR}/.env.local"
-  fi
+  local env_file
+  env_file="$(find_env_file)"
+  scp "${VM_SSH_OPTS[@]}" \
+    "${env_file}" \
+    "root@${VM_IP_STATIC}:${VM_REMOTE_INSTALL_DIR}/.env.local" \
+    || { log_error "scp $(basename "${env_file}") fehlgeschlagen"; exit 1; }
+  log_ok "$(basename "${env_file}") nach ${VM_REMOTE_INSTALL_DIR}/.env.local kopiert"
 
-  if [[ -n "${env_file}" ]]; then
-    scp -o StrictHostKeyChecking=no \
-      "${env_file}" \
-      "root@${VM_IP_STATIC}:${VM_REMOTE_INSTALL_DIR}/.env.local" \
-      || { log_error "scp $(basename "${env_file}") fehlgeschlagen"; exit 1; }
-    log_ok "$(basename "${env_file}") nach ${VM_REMOTE_INSTALL_DIR}/.env.local kopiert"
-  else
-    log_warn ".env-v1s.local/.env.local nicht gefunden — alle Secrets müssen als Umgebungsvariablen gesetzt sein"
-  fi
+  ssh "${VM_SSH_OPTS[@]}" "root@${VM_IP_STATIC}" \
+    "chmod 700 ${VM_REMOTE_INSTALL_DIR} && chmod 600 ${VM_REMOTE_INSTALL_DIR}/.env.local" \
+    || { log_error "chmod auf .env.local fehlgeschlagen"; exit 1; }
 
   if [[ -f "${SCRIPT_DIR}/le-certs-backup.yaml" ]]; then
-    scp -o StrictHostKeyChecking=no \
+    scp "${VM_SSH_OPTS[@]}" \
       "${SCRIPT_DIR}/le-certs-backup.yaml" \
       "root@${VM_IP_STATIC}:${VM_REMOTE_INSTALL_DIR}/le-certs-backup.yaml" \
       || { log_error "scp le-certs-backup.yaml fehlgeschlagen"; exit 1; }
@@ -130,7 +198,7 @@ run_in_vm() {
   fi
 
   log "Starte Installation in der VM (SSH-Hop) …"
-  ssh -o StrictHostKeyChecking=no \
+  ssh "${VM_SSH_OPTS[@]}" \
       "root@${VM_IP_STATIC}" \
       "CIVITAS_CONTEXT=vm CIVITAS_DEBUG=${CIVITAS_DEBUG:-false} bash -lc '
         cd ${VM_REMOTE_INSTALL_DIR}
@@ -153,18 +221,31 @@ run_in_vm() {
 # ── Startmeldung ─────────────────────────────────────────────────────────────
 log "============================================"
 log " CIVITAS/CORE V1s — Installation"
-log " Zielplattform: Proxmox-Knoten civitas"
+if [[ "${CIVITAS_CONTEXT}" == "host" ]]; then
+  log " Zielplattform: Proxmox-Knoten $(hostname)"
+else
+  log " Ziel-VM:       $(hostname)"
+fi
 log " Domain:        ${DOMAIN}"
+log " Netzwerkmodus: WireGuard ${WG_ENABLED}"
+log " Storage:       ${PROXMOX_STORAGE}"
+log " Bridge:        ${VM_BRIDGE}"
 log " k3s:           ${K3S_VERSION}"
-log " Phase:         -1 bis 3 (VM, Vorbedingungen, k3s, Add-ons, cc-cli, Verify) — V1"
+log " Phase:         -1 bis 3 (VM, Vorbedingungen, k3s, Add-ons, cc-cli, Verify) — V1s"
 log "============================================"
 log ""
 
+warn_changeme_values "Start"
+
 # ── Phasen ausführen ─────────────────────────────────────────────────────────
 if [[ "${CIVITAS_CONTEXT}" == "host" ]]; then
-  # Auf dem Proxmox-Host: VM provisionieren + Hop in die VM
+  # Auf dem Proxmox-Host: Env-Datei prüfen, VM-Werte validieren, VM provisionieren, Hop in die VM
+  require_env_file
+  validate_vm_config
+  init_ssh_access
   provision_vm
   run_in_vm
+  remove_install_key
 else
   # In der VM (CIVITAS_CONTEXT=vm): Phasen 0–3 ausführen
   run_preflight
@@ -174,6 +255,8 @@ else
   run_verification
   login_summary
 fi
+
+warn_changeme_values "Ende"
 
 log ""
 log "============================================"

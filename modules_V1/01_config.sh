@@ -106,32 +106,49 @@ CC_CLI_PLAYBOOK_DIR="${CC_V1_REPO_PATH}/core_platform"   # Verzeichnis mit playb
 TIMEOUT_CC_CLI_EXEC=1800             # Sekunden für cc_cli exec
 TIMEOUT_POD_READY=300               # Sekunden für kubectl wait
 
+# Wartezeit/Wiederholung für cc_cli exec (per .env überschreibbar)
+# Default 60: deckt den beobachteten pgAdmin-Start (ca. 125 s ab Pod-Erstellung)
+# mehrfach ab; das exakte Intervall (delay) liegt im Upstream-Playbook (HYPOTHESE,
+# im naechsten Build am uri-Task des pgAdmin-Checks verifizieren).
+CC_API_MAX_RETRIES="${CC_API_MAX_RETRIES:-60}"            # inv_checks.api.default_max_retries
+CC_DEPLOYMENT_MAX_RETRIES="${CC_DEPLOYMENT_MAX_RETRIES:-30}"  # inv_checks.deployment.default_max_retries
+CC_EXEC_ATTEMPTS="${CC_EXEC_ATTEMPTS:-2}"                 # Versuche für cc_cli exec bei vorübergehenden Fehlern
+CC_EXEC_RETRY_DELAY="${CC_EXEC_RETRY_DELAY:-30}"          # Sekunden zwischen den Versuchen
+for _v in CC_API_MAX_RETRIES CC_DEPLOYMENT_MAX_RETRIES CC_EXEC_ATTEMPTS CC_EXEC_RETRY_DELAY; do
+  [[ "${!_v}" =~ ^[0-9]+$ ]] && (( ${!_v} >= 1 && ${!_v} <= 600 )) \
+    || { echo "FEHLER: ${_v}='${!_v}' ungültig (Zahl 1..600)" >&2; exit 1; }
+done; unset _v
 
-# ── Netzwerk ─────────────────────────────────────────────────────────────────
-SOHO_GATEWAY="192.168.12.1"
 
 # ── PBS (Proxmox Backup Server) ──────────────────────────────────────────────
-PBS_STORAGE="backup-p2d2-kinglui"
+PBS_STORAGE="${PBS_STORAGE-backup-p2d2-kinglui}"    # leer = Backup-Prüfung überspringen
 
-# ── VM-Provisionierung ────────────────────────────────────────────────────────
-VM_ID="2010"                                # Proxmox VM-ID
-VM_NAME="civitas-core"                      # Anzeigename in Proxmox
-VM_RAM_MB="40960"                           # RAM in MiB (40 GiB)
-VM_CORES="12"                               # vCPUs
-VM_DISK_GB="300"                            # Disk-Größe in GiB
-VM_BRIDGE="vmbr0"                           # Bridge-Netzwerk
-PROXMOX_STORAGE="local-zfs-civitas"          # Proxmox-Storage für VM-Disk
-CLOUD_IMAGE_URL="https://cloud.debian.org/images/cloud/trixie/daily/latest/debian-13-genericcloud-amd64-daily.qcow2"
+# ── VM-Provisionierung (per .env überschreibbar) ──────────────────────────────
+VM_ID="${VM_ID:-2010}"                       # Proxmox VM-ID
+VM_NAME="${VM_NAME:-civitas-core}"           # Anzeigename in Proxmox
+VM_RAM_MB="${VM_RAM_MB:-40960}"              # RAM in MiB (40 GiB)
+VM_CORES="${VM_CORES:-12}"                   # vCPUs
+VM_DISK_GB="${VM_DISK_GB:-300}"              # Disk-Größe in GiB
+VM_BRIDGE="${VM_BRIDGE:-vmbr0}"              # Bridge-Netzwerk
+PROXMOX_STORAGE="${PROXMOX_STORAGE:-local-zfs-civitas}"  # Proxmox-Storage für VM-Disk
+CLOUD_IMAGE_URL="${CLOUD_IMAGE_URL:-https://cloud.debian.org/images/cloud/trixie/daily/latest/debian-13-genericcloud-amd64-daily.qcow2}"
 CLOUD_IMAGE_CACHE="${CLOUD_IMAGE_CACHE:-/var/lib/vz/template/qcow}"  # Cache-Verzeichnis (24h gültig)
 
-# ── VM-Netzwerk (statisch) ────────────────────────────────────────────────────
-VM_IP_STATIC="192.168.12.139"               # IPv4-Adresse der VM
-VM_IP_PREFIX="24"                           # IPv4-Präfixlänge
-VM_GW="192.168.12.1"                        # IPv4-Gateway
-VM_IP6_STATIC="fd01:1:1:1::139"            # IPv6-Adresse der VM (ohne Prefix)
-VM_IP6_PREFIX="64"                          # IPv6-Präfixlänge
-VM_GW6="fd01:1:1:1:de39:6fff:febe:9962"    # IPv6-Gateway
-SSH_PUBKEY_PATH="${HOME}/.ssh/authorized_keys"  # SSH-Public-Key für root-Zugang
+# ── VM-Netzwerk (statisch, per .env überschreibbar) ───────────────────────────
+VM_IP_STATIC="${VM_IP_STATIC:-192.168.12.139}"  # IPv4-Adresse der VM
+VM_IP_PREFIX="${VM_IP_PREFIX:-24}"              # IPv4-Präfixlänge
+VM_GW="${VM_GW:-192.168.12.1}"                  # IPv4-Gateway
+VM_IP6_STATIC="${VM_IP6_STATIC:-}"               # IPv6-Adresse der VM (leer = IPv6 aus)
+VM_IP6_PREFIX="${VM_IP6_PREFIX:-64}"            # IPv6-Präfixlänge
+VM_GW6="${VM_GW6:-}"                             # IPv6-Gateway (Pflicht, wenn VM_IP6_STATIC gesetzt)
+
+# ── SOHO-Gateway (Default = VM-Gateway) ───────────────────────────────────────
+SOHO_GATEWAY="${SOHO_GATEWAY:-${VM_GW}}"
+
+# ── SSH-Zugang zur VM ──
+VM_SSH_PUBKEY="${VM_SSH_PUBKEY:-}"                   # optional: Public Key(s) für direkten Login, eine Zeile pro Key
+VM_REMOVE_INSTALL_KEY="${VM_REMOVE_INSTALL_KEY:-false}"  # true = Installations-Key am Ende aus der VM entfernen
+INSTALL_KEY_DIR="${INSTALL_KEY_DIR:-${HOME}/.local/share/civitas-install/${VM_ID}}"
 
 # ── Remote-Ausführung in der VM ─────────────────────────────────────────────
 VM_REMOTE_INSTALL_DIR="/root/civitas-install"   # Zielverzeichnis für scp/SSH in der VM
@@ -148,14 +165,42 @@ CREDENTIALS_OUTPUT_PATH="${CREDENTIALS_OUTPUT_PATH:-/root/civitas-install/creden
 # Darf NICHT im CC_CLI_PLAYBOOK_DIR liegen, da dieses nach cc_cli exec
 # bereinigt wird.
 
-# ROOT_PASSWORD wird aus Umgebungsvariable gelesen — nie hartcoden!
-ROOT_PASSWORD="${ROOT_PASSWORD:?'ROOT_PASSWORD muss als Umgebungsvariable gesetzt sein'}"
+# ROOT_PASSWORD optional. Wenn gesetzt, wird es nach dem SSH-Zugang per stdin
+# (chpasswd) in der VM gesetzt, NICHT per qm set --cipassword. Nie hartcoden.
+ROOT_PASSWORD="${ROOT_PASSWORD:-}"
+
+# ── Netzwerkmodus: WireGuard optional (WG_ENABLE) ──────────────────────────────
+# WG_ENABLE=true  (Default): WireGuard aktiv, die WG_*-Secrets sind Pflicht.
+# WG_ENABLE=false:            WireGuard aus, WG_* werden ignoriert (nicht Pflicht).
+# Ergebnis: WG_ENABLED=true|false wird exportiert (Groß-/Kleinschreibung egal).
+# Hinweis: log_error ist hier noch nicht verfügbar (02_lib.sh wird nach
+# 01_config.sh gesourct), daher Fehlerausgabe über echo >&2.
+resolve_wg_enable() {
+  local mode="${WG_ENABLE:-true}" v missing=()
+  case "${mode,,}" in
+    true)  WG_ENABLED="true" ;;
+    false) WG_ENABLED="false" ;;
+    *) echo "FEHLER: WG_ENABLE='${mode}' ungültig (true|false)" >&2; return 1 ;;
+  esac
+  if [[ "${WG_ENABLED}" == "true" ]]; then
+    for v in WG_VM_PRIVATE_KEY WG_OPN_PUBLIC_KEY WG_OPN_ENDPOINT; do
+      [[ -n "${!v:-}" ]] || missing+=("${v}")
+    done
+    if [[ ${#missing[@]} -gt 0 ]]; then
+      echo "FEHLER: WG_ENABLE=true, aber Pflichtvariablen fehlen: ${missing[*]} — setzen oder WG_ENABLE=false" >&2
+      return 1
+    fi
+  fi
+  export WG_ENABLED
+}
+resolve_wg_enable || exit 1
 
 # ── WireGuard-Secrets (aus Umgebungsvariablen — nie hartcoden) ────────────────
-WG_VM_PRIVATE_KEY="${WG_VM_PRIVATE_KEY:?'WG_VM_PRIVATE_KEY muss als Umgebungsvariable gesetzt sein'}"
-WG_OPN_PUBLIC_KEY="${WG_OPN_PUBLIC_KEY:?'WG_OPN_PUBLIC_KEY muss als Umgebungsvariable gesetzt sein'}"
+# Bei WG_ENABLE=false duerfen diese leer bleiben.
+WG_VM_PRIVATE_KEY="${WG_VM_PRIVATE_KEY:-}"
+WG_OPN_PUBLIC_KEY="${WG_OPN_PUBLIC_KEY:-}"
 WG_PRESHARED_KEY="${WG_PRESHARED_KEY:-}"  # optional
-WG_OPN_ENDPOINT="${WG_OPN_ENDPOINT:?'WG_OPN_ENDPOINT muss als Umgebungsvariable gesetzt sein'}"
+WG_OPN_ENDPOINT="${WG_OPN_ENDPOINT:-}"
 
 # ── WireGuard-Netzwerk (Klartext) ──────────────────────────────────────────────
 WG_INTERFACE="wg0"

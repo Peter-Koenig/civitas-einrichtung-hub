@@ -18,7 +18,7 @@
 # Enthält verify_phase2(): prüft Namespaces (K8S_NAMESPACES-Array aus
 # 01_config.sh), Deployments, Ingress-Ressourcen, TLS-Zertifikate,
 # Keycloak- und Portal-Erreichbarkeit (HTTPS via HAProxy-Passthrough),
-# WireGuard-Tunnel sowie Konnektivität zu OPNsense.
+# WireGuard-Tunnel sowie Konnektivität zu OPNsense (nur bei WG_ENABLE=true).
 #
 # Abhängigkeiten:
 #   - 02_lib.sh (log_*, VERIFY_ERRORS)
@@ -100,9 +100,10 @@ verify_phase2() {
     (( VERIFY_ERRORS++ )) || true
   fi
 
-  # Hinweis: HAProxy-Architektur (TCP-Passthrough)
+  # Hinweis: HAProxy-Architektur (TCP-Passthrough) im Modus mit WireGuard
   # HAProxy auf OPNsense leitet TLS für *.udp.<DOMAIN> per TCP-Passthrough
-  # an 10.10.10.5:443 weiter. nginx terminiert TLS mit cert-manager-Zertifikaten.
+  # an 10.10.10.5:443 (WireGuard-IP der VM) weiter. nginx terminiert TLS mit
+  # cert-manager-Zertifikaten.
 
   # Keycloak erreichbar (HTTPS via HAProxy-Passthrough, --cacert prüft CA-Trust)
   if curl -sf --max-time 10 \
@@ -130,18 +131,22 @@ verify_phase2() {
   # selbst. ssl-redirect=true (Default) ist korrekt und erwünscht.
 
   # WireGuard-Tunnel aktiv
-  if systemctl is-active --quiet "wg-quick@${WG_INTERFACE}"; then
-    log_ok "[PHASE 2] WireGuard-Tunnel ${WG_INTERFACE} aktiv ... OK"
-  else
-    log_error "[PHASE 2] WireGuard-Tunnel ${WG_INTERFACE} nicht aktiv"
-    (( VERIFY_ERRORS++ )) || true
-  fi
+  if [[ "${WG_ENABLED}" == "true" ]]; then
+    if systemctl is-active --quiet "wg-quick@${WG_INTERFACE}"; then
+      log_ok "[PHASE 2] WireGuard-Tunnel ${WG_INTERFACE} aktiv ... OK"
+    else
+      log_error "[PHASE 2] WireGuard-Tunnel ${WG_INTERFACE} nicht aktiv"
+      (( VERIFY_ERRORS++ )) || true
+    fi
 
-  # Konnektivität zu OPNsense
-  if ping -c2 -W2 "${WG_OPN_IP}" >/dev/null 2>&1; then
-    log_ok "[PHASE 2] WireGuard-Konnektivität zu OPNsense (${WG_OPN_IP}) ... OK"
+    # Konnektivität zu OPNsense
+    if ping -c2 -W2 "${WG_OPN_IP}" >/dev/null 2>&1; then
+      log_ok "[PHASE 2] WireGuard-Konnektivität zu OPNsense (${WG_OPN_IP}) ... OK"
+    else
+      log_error "[PHASE 2] OPNsense ${WG_OPN_IP} nicht erreichbar"
+      (( VERIFY_ERRORS++ )) || true
+    fi
   else
-    log_error "[PHASE 2] OPNsense ${WG_OPN_IP} nicht erreichbar"
-    (( VERIFY_ERRORS++ )) || true
+    log "[PHASE 2] WireGuard deaktiviert (WG_ENABLE=false) — Tunnel-/OPNsense-Prüfung übersprungen"
   fi
 }

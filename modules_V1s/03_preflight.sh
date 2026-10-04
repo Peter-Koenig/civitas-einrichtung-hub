@@ -227,7 +227,10 @@ check_tools() {
   log "Prüfe Werkzeuge ..."
 
   # Pflicht-Tools → Mapping auf Paketnamen
-  local required_tools=(curl python3 pip3 dig wg git)
+  local required_tools=(curl python3 pip3 dig git)
+  if [[ "${WG_ENABLED}" == "true" ]]; then
+    required_tools+=(wg)
+  fi
   local -A tool_to_pkg=(
     [pip3]="python3-pip"
     [dig]="dnsutils"
@@ -336,6 +339,10 @@ check_k3s_version() {
 
 # ── PBS-Backup ──
 check_pbs_backup() {
+  if [[ -z "${PBS_STORAGE:-}" ]]; then
+    log "PBS-Storage nicht konfiguriert (PBS_STORAGE leer) — Backup-Prüfung übersprungen"
+    return 0
+  fi
   log "Prüfe PBS-Storage (${PBS_STORAGE}) ..."
   if ! is_installed pvesm; then
     log_warn "Nicht auf Proxmox-Host — PBS-Prüfung auf Host-Ebene vornehmen"

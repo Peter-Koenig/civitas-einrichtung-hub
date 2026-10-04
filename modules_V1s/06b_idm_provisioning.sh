@@ -33,10 +33,54 @@
 set -euo pipefail
 
 
+# ── Login-Test (Password-Grant) für den Admin-User ──────────────────────
+# Prüft, ob sich ADMIN_EMAIL/ADMIN_PASS direkt am Ziel-Realm anmelden können.
+# Loggt bei Fehler nur HTTP-Status und error/error_description — nie das
+# Passwort und nie ein Token. Rückgabe: 0 = Login ok, 1 = Login fehlgeschlagen.
+keycloak_login_ok() {
+  local idm_base="$1" realm="$2" username="$3" password="$4"
+  local response http_code body err
+  response=$(curl -sk --max-time 10 -w $'\n%{http_code}' \
+    "${idm_base}/realms/${realm}/protocol/openid-connect/token" \
+    --data-urlencode "client_id=admin-cli" \
+    --data-urlencode "username=${username}" \
+    --data-urlencode "password=${password}" \
+    --data-urlencode "grant_type=password" 2>/dev/null) || true
+  http_code="${response##*$'\n'}"
+  body="${response%$'\n'*}"
+  if [[ "${http_code}" == "200" ]]; then
+    return 0
+  fi
+  err=$(printf '%s' "${body}" | jq -r '[.error, .error_description] | map(select(. != null)) | join(": ")' 2>/dev/null || true)
+  log_warn "Keycloak-Login für ${username} in Realm ${realm} fehlgeschlagen (HTTP ${http_code})${err:+ — ${err}}"
+  return 1
+}
+
+# ── Clients mit einer Rolle (exakte Namensgleichheit) auflösen ───────────
+# Gibt die Client-UUIDs (eine pro Zeile) aus, deren Rolle exakt den Namen
+# ${role} trägt. UUIDs stehen nie im Code; sie werden zur Laufzeit aufgelöst.
+find_clients_with_role() {
+  local idm_base="$1" token="$2" realm="$3" role="$4"
+  local clients client_id roles
+  clients=$(curl -sk --max-time 10 \
+    "${idm_base}/admin/realms/${realm}/clients" \
+    -H "Authorization: Bearer ${token}" 2>/dev/null || echo "[]")
+  while IFS= read -r client_id; do
+    [[ -n "${client_id}" ]] || continue
+    roles=$(curl -sk --max-time 10 \
+      "${idm_base}/admin/realms/${realm}/clients/${client_id}/roles?search=${role}" \
+      -H "Authorization: Bearer ${token}" 2>/dev/null || echo "[]")
+    if printf '%s' "${roles}" | jq -e --arg role "${role}" '.[] | select(.name == $role)' >/dev/null 2>&1; then
+      printf '%s\n' "${client_id}"
+    fi
+  done < <(printf '%s' "${clients}" | jq -r '.[].id' 2>/dev/null)
+}
+
 # ── Admin-User im Realm erzwingen ───────────────────────────────────────
 # Stellt sicher, dass der Admin-User (ADMIN_EMAIL) im Ziel-Realm existiert,
 # ein initiales Passwort gesetzt hat und die notwendigen Admin-Rollen
-# zugewiesen bekommt.
+# (Client-Rollen) zugewiesen bekommt. Fail-closed: Fehler werden gesammelt
+# und am Ende mit Rückgabewert ungleich 0 gemeldet.
 ensure_keycloak_admin_user() {
   local ns="${CC_ENVIRONMENT}-access-stack"
   local secret_name="${CC_ENVIRONMENT}-keycloak-admin"
@@ -78,7 +122,7 @@ ensure_keycloak_admin_user() {
     return 0
   fi
 
-  # Prüfen ob Admin im Ziel-Realm existiert
+  # Admin-User im Ziel-Realm ermitteln; bei Bedarf anlegen.
   local admin_id
   admin_id=$(curl -sk --max-time 10 \
     "${idm_base}/admin/realms/${realm}/users" \
@@ -86,150 +130,173 @@ ensure_keycloak_admin_user() {
     -H "Content-Type: application/json" \
     2>/dev/null | jq -r ".[] | select(.email==\"${ADMIN_EMAIL}\") | .id" 2>/dev/null || true)
 
-  if [[ -n "${admin_id}" ]]; then
-    log_ok "Admin-User ${ADMIN_EMAIL} existiert bereits in Realm ${realm}"
-    # Passwort und Rollen trotzdem sicherstellen (für Idempotenz)
-    set_user_password "${idm_base}" "${token}" "${realm}" "${admin_id}"
-    assign_admin_roles "${idm_base}" "${token}" "${realm}" "${admin_id}"
-    return 0
-  fi
-
-  # Admin-User anlegen
-  log "Lege Admin-User ${ADMIN_EMAIL} in Realm ${realm} an …"
-  local http_code user_payload
-  user_payload=$(jq -nc --arg email "${ADMIN_EMAIL}" '{email:$email,username:$email,enabled:true}')
-  http_code=$(curl -sk --max-time 10 -w "%{http_code}" -o /dev/null \
-    "${idm_base}/admin/realms/${realm}/users" \
-    -X POST \
-    -H "Authorization: Bearer ${token}" \
-    -H "Content-Type: application/json" \
-    -d "${user_payload}" 2>/dev/null || true)
-
-  if [[ "${http_code}" == "201" ]]; then
-    log_ok "Admin-User ${ADMIN_EMAIL} in Realm ${realm} angelegt"
-
-    # User-ID nach dem Anlegen ermitteln
-    local new_user_id
-    new_user_id=$(curl -sk --max-time 10 \
+  if [[ -z "${admin_id}" || "${admin_id}" == "null" ]]; then
+    log "Lege Admin-User ${ADMIN_EMAIL} in Realm ${realm} an …"
+    local user_payload http_code
+    user_payload=$(jq -nc --arg email "${ADMIN_EMAIL}" '{email:$email,username:$email,enabled:true}')
+    http_code=$(curl -sk --max-time 10 -w "%{http_code}" -o /dev/null \
       "${idm_base}/admin/realms/${realm}/users" \
+      -X POST \
       -H "Authorization: Bearer ${token}" \
       -H "Content-Type: application/json" \
-      2>/dev/null | jq -r ".[] | select(.email==\"${ADMIN_EMAIL}\") | .id" 2>/dev/null || true)
+      -d "${user_payload}" 2>/dev/null || true)
 
-    if [[ -n "${new_user_id}" ]]; then
-      set_user_password "${idm_base}" "${token}" "${realm}" "${new_user_id}"
-      assign_admin_roles "${idm_base}" "${token}" "${realm}" "${new_user_id}"
+    if [[ "${http_code}" == "201" ]]; then
+      log_ok "Admin-User ${ADMIN_EMAIL} in Realm ${realm} angelegt"
+      admin_id=$(curl -sk --max-time 10 \
+        "${idm_base}/admin/realms/${realm}/users" \
+        -H "Authorization: Bearer ${token}" \
+        -H "Content-Type: application/json" \
+        2>/dev/null | jq -r ".[] | select(.email==\"${ADMIN_EMAIL}\") | .id" 2>/dev/null || true)
     else
-      log_warn "Konnte User-ID für ${ADMIN_EMAIL} nicht ermitteln"
-      log_warn "  Passwort und Rollen müssen manuell gesetzt werden:"
-      log_warn "  ${idm_base}/admin/master/console/#/realms/${realm}/users"
+      log_error "Admin-User ${ADMIN_EMAIL} konnte nicht angelegt werden (HTTP ${http_code})"
+      return 1
     fi
-  else
-    log_warn "Admin-User ${ADMIN_EMAIL} konnte nicht angelegt werden (HTTP ${http_code})"
-    log_warn "  User manuell in Keycloak anlegen: ${idm_base}/admin/master/console/#/realms/${realm}/users"
   fi
+
+  if [[ -z "${admin_id}" || "${admin_id}" == "null" ]]; then
+    log_error "Konnte User-ID für ${ADMIN_EMAIL} nicht ermitteln"
+    return 1
+  fi
+
+  local idm_errors=()
+
+  # Login-Test zuerst: Reset nur nötig, wenn ADMIN_PASS nicht funktioniert.
+  if keycloak_login_ok "${idm_base}" "${realm}" "${ADMIN_EMAIL}" "${ADMIN_PASS}"; then
+    log_ok "Login mit ADMIN_PASS funktioniert — Passwort-Reset nicht nötig"
+  else
+    set_user_password "${idm_base}" "${token}" "${realm}" "${admin_id}"
+    if ! keycloak_login_ok "${idm_base}" "${realm}" "${ADMIN_EMAIL}" "${ADMIN_PASS}"; then
+      idm_errors+=("admin-login")
+    fi
+  fi
+
+  # Rollen als Client-Rollen zuweisen (fail-closed für fehlende/mehrdeutige Rollen).
+  if ! assign_admin_roles "${idm_base}" "${token}" "${realm}" "${admin_id}"; then
+    idm_errors+=("admin-roles")
+  fi
+
+  if [[ ${#idm_errors[@]} -gt 0 ]]; then
+    log_error "Keycloak-Admin-Provisionierung unvollständig: ${idm_errors[*]}"
+    return 1
+  fi
+  return 0
 }
 
 
 # ── Passwort für Admin-User setzen ──────────────────────────────────────
-# Setzt das initiale Passwort auf ADMIN_PASS (nicht temporär).
+# Setzt das initiale Passwort auf ADMIN_PASS (nicht temporär). Loggt bei
+# Fehler HTTP-Code und Keycloak-errorMessage/error/error_description,
+# nie den Request-Body oder das Passwort.
 set_user_password() {
   local idm_base="$1" token="$2" realm="$3" user_id="$4"
 
   log "Setze Passwort für User ${user_id} in Realm ${realm} …"
-  local http_code pw_payload
+  local pw_payload response http_code body err
   pw_payload=$(jq -nc --arg pw "${ADMIN_PASS}" '{type:"password",value:$pw,temporary:false}')
-  http_code=$(curl -sk --max-time 10 -w "%{http_code}" -o /dev/null \
+  response=$(curl -sk --max-time 10 -w $'\n%{http_code}' \
     "${idm_base}/admin/realms/${realm}/users/${user_id}/reset-password" \
     -X PUT \
     -H "Authorization: Bearer ${token}" \
     -H "Content-Type: application/json" \
-    -d "${pw_payload}" 2>/dev/null || true)
+    -d "${pw_payload}" 2>/dev/null) || true
+  http_code="${response##*$'\n'}"
+  body="${response%$'\n'*}"
 
   if [[ "${http_code}" == "204" ]]; then
     log_ok "Passwort für ${ADMIN_EMAIL} gesetzt (nicht temporär)"
-  else
-    log_warn "Passwort setzen fehlgeschlagen (HTTP ${http_code})"
+    return 0
   fi
+  err=$(printf '%s' "${body}" | jq -r '[.errorMessage, .error, .error_description] | map(select(. != null)) | join(": ")' 2>/dev/null || true)
+  log_warn "Passwort setzen fehlgeschlagen (HTTP ${http_code})${err:+ — ${err}}"
+  return 1
 }
 
 
-# ── Admin-Rollen zuweisen ───────────────────────────────────────────────
-# Weist dem Admin-User die wichtigsten Rollen zu: geoAdmin, supersetAdmin,
-# grafanaAdmin, operator. Idempotent: bereits zugewiesene Rollen werden
-# nicht doppelt gebucht.
+# ── Admin-Rollen zuweisen (Client-Rollen) ───────────────────────────────
+# Weist dem Admin-User die Rollen geoAdmin, supersetAdmin, grafanaAdmin und
+# operator als Client-Rollen zu. Idempotent; fehlende oder mehrdeutige Rollen
+# sind ein Fehler (fail-closed). Zähler: gefunden/bereits zugewiesen/neu
+# zugewiesen/fehlend/mehrdeutig.
 assign_admin_roles() {
   local idm_base="$1" token="$2" realm="$3" user_id="$4"
 
+  # Alle vier Soll-Rollen sind im Material als Client-Rollen belegt
+  # (ansible-keycloak-rollen.txt.masked). optional_roles bleibt leer; hier
+  # landen nur Rollen, deren Existenz im Upstream nicht belegbar ist.
   local target_roles=("geoAdmin" "supersetAdmin" "grafanaAdmin" "operator")
-  log "Prüfe Admin-Rollen für User ${user_id} in Realm ${realm} …"
+  local optional_roles=()
+  log "Pruefe Admin-Rollen für User ${user_id} in Realm ${realm} …"
 
-  # Verfügbare Realm-Rollen abrufen
-  local available_roles
-  available_roles=$(curl -sk --max-time 10 \
-    "${idm_base}/admin/realms/${realm}/roles" \
-    -H "Authorization: Bearer ${token}" \
-    2>/dev/null || echo "[]")
+  local -i found=0 already=0 newly=0 missing=0 ambiguous=0
+  local rc=0
 
-  # Bereits zugewiesene Rollen abrufen
-  local assigned_roles
-  assigned_roles=$(curl -sk --max-time 10 \
-    "${idm_base}/admin/realms/${realm}/users/${user_id}/role-mappings/realm" \
-    -H "Authorization: Bearer ${token}" \
-    2>/dev/null || echo "[]")
-
-  # Zu vergebende Rollen sammeln
-  local to_assign=()
-  local new_count=0
-  local skip_count=0
-
+  local role
   for role in "${target_roles[@]}"; do
-    # Prüfen ob bereits zugewiesen (Idempotenz)
-    if echo "${assigned_roles}" | jq -e ".[] | select(.name==\"${role}\")" >/dev/null 2>&1; then
-      log_ok "Rolle ${role} bereits zugewiesen — überspringe"
-      (( skip_count++ )) || true
+    local -a client_ids=()
+    mapfile -t client_ids < <(find_clients_with_role "${idm_base}" "${token}" "${realm}" "${role}")
+    if [[ ${#client_ids[@]} -eq 0 ]]; then
+      log_warn "Rolle ${role} in keinem Client gefunden"
+      missing=$((missing + 1))
+      rc=1
       continue
     fi
+    if [[ ${#client_ids[@]} -gt 1 ]]; then
+      log_warn "Rolle ${role} in mehreren Clients gefunden (${client_ids[*]}) — mehrdeutig"
+      ambiguous=$((ambiguous + 1))
+      rc=1
+      continue
+    fi
+    found=$((found + 1))
+    local client_id="${client_ids[0]}"
 
-    # Rollen-ID in verfügbaren Rollen suchen
     local role_id
-    role_id=$(echo "${available_roles}" | jq -r ".[] | select(.name==\"${role}\") | .id" 2>/dev/null || true)
-    if [[ -z "${role_id}" ]]; then
-      log_warn "Rolle ${role} im Realm nicht gefunden — überspringe"
+    role_id=$(curl -sk --max-time 10 \
+      "${idm_base}/admin/realms/${realm}/clients/${client_id}/roles/${role}" \
+      -H "Authorization: Bearer ${token}" 2>/dev/null | jq -r '.id' 2>/dev/null || true)
+    if [[ -z "${role_id}" || "${role_id}" == "null" ]]; then
+      log_warn "Rolle ${role} im Client ${client_id} nicht auflösbar"
+      missing=$((missing + 1))
+      rc=1
       continue
     fi
 
-    to_assign+=("{\"id\":\"${role_id}\",\"name\":\"${role}\"}")
-    (( new_count++ )) || true
+    local assigned
+    assigned=$(curl -sk --max-time 10 \
+      "${idm_base}/admin/realms/${realm}/users/${user_id}/role-mappings/clients/${client_id}" \
+      -H "Authorization: Bearer ${token}" 2>/dev/null || echo "[]")
+    if printf '%s' "${assigned}" | jq -e --arg role "${role}" '.[] | select(.name == $role)' >/dev/null 2>&1; then
+      already=$((already + 1))
+      continue
+    fi
+
+    local payload http_code
+    payload=$(jq -nc --arg id "${role_id}" --arg name "${role}" '[{id:$id,name:$name}]')
+    http_code=$(curl -sk --max-time 10 -w "%{http_code}" -o /dev/null \
+      "${idm_base}/admin/realms/${realm}/users/${user_id}/role-mappings/clients/${client_id}" \
+      -X POST \
+      -H "Authorization: Bearer ${token}" \
+      -H "Content-Type: application/json" \
+      -d "${payload}" 2>/dev/null || true)
+    if [[ "${http_code}" == "204" ]]; then
+      log_ok "Rolle ${role} zugewiesen (Client ${client_id})"
+      newly=$((newly + 1))
+    else
+      log_warn "Rolle ${role} konnte nicht zugewiesen werden (HTTP ${http_code})"
+      rc=1
+    fi
   done
 
-  # Keine neuen Rollen → fertig
-  if [[ ${#to_assign[@]} -eq 0 ]]; then
-    log_ok "${skip_count} Rolle(n) bereits vorhanden, keine neuen zuzuweisen"
-    return 0
-  fi
+  for role in "${optional_roles[@]}"; do
+    local -a client_ids=()
+    mapfile -t client_ids < <(find_clients_with_role "${idm_base}" "${token}" "${realm}" "${role}")
+    if [[ ${#client_ids[@]} -eq 0 ]]; then
+      log_warn "Optionale Rolle ${role} in keinem Client gefunden — nur Warnung"
+    fi
+  done
 
-  # JSON-Array aus den zu vergebenden Rollen bauen
-  local payload
-  payload=$(printf ',%s' "${to_assign[@]}")
-  payload="[${payload:1}]"
-
-  log "Weise ${new_count} neue Rolle(n) zu: $(echo "${payload}" | jq -r '.[].name' | tr '\n' ' ' | sed 's/ $//')"
-  local http_code
-  http_code=$(curl -sk --max-time 10 -w "%{http_code}" -o /dev/null \
-    "${idm_base}/admin/realms/${realm}/users/${user_id}/role-mappings/realm" \
-    -X POST \
-    -H "Authorization: Bearer ${token}" \
-    -H "Content-Type: application/json" \
-    -d "${payload}" 2>/dev/null || true)
-
-  if [[ "${http_code}" == "204" ]]; then
-    log_ok "${new_count} Admin-Rolle(n) erfolgreich zugewiesen"
-  else
-    log_warn "Rollen-Zuweisung fehlgeschlagen (HTTP ${http_code})"
-    log_warn "  Payload: ${payload}"
-    log_warn "  Manuell nachholen: ${idm_base}/admin/master/console/#/realms/${realm}/users"
-  fi
+  log "Admin-Rollen: gefunden=${found}, bereits zugewiesen=${already}, neu zugewiesen=${newly}, fehlend=${missing}, mehrdeutig=${ambiguous}"
+  return "${rc}"
 }
 
 
