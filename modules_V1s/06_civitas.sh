@@ -97,8 +97,12 @@ install_civitas() {
   # (LE_FRESH_PROD_ISSUED) oder wenn das Cluster-tls.crt vom Backup abweicht
   # (z. B. cert-manager hat erneuert). So geht ein Backup bei IDM-Fehler nicht
   # verloren.
-  if [[ "${LE_FRESH_PROD_ISSUED:-false}" == "true" ]] || cluster_backup_diverges; then
-    write_le_backup || log_warn "LE-Backup konnte nicht geschrieben werden"
+
+  if [[ "${LE_FRESH_PROD_ISSUED:-false}" == "true" ]]; then
+    if ! write_le_backup; then
+      log_error "Neu ausgestellte LE-Zertifikate konnten nicht gesichert werden"
+      exit 1
+    fi
   fi
 
   if ! ensure_keycloak_admin_user; then
