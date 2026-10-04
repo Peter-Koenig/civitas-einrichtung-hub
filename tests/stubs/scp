@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Stub für scp.
+# Zeichnet den Aufruf auf SCP_CALL_LOG auf (falls gesetzt), immer Erfolg.
+if [[ -n "${SCP_CALL_LOG:-}" ]]; then
+  printf 'scp %s\n' "$*" >> "${SCP_CALL_LOG}"
+fi
+exit 0

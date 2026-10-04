@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Stub für ssh-keygen.
+# Steuerung über SSHKEYGEN_REJECT (doppelpunktgetrennte Basenamen, die `-y` ablehnen).
+#   -y -f <pfad>  privater Schlüssel ohne Passphrase prüfen (stdout: Dummy-Pubkey)
+#   -l -f <pfad>  Fingerprint ausgeben
+#   -R            no-op
+mode=""
+file=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -y) mode="y" ;;
+    -l) mode="l" ;;
+    -R) mode="R" ;;
+    -f) file="$2"; shift ;;
+    -P) shift ;;   # Passphrase-Wert überspringen
+  esac
+  shift
+done
+
+case "${mode}" in
+  R) exit 0 ;;
+  l) echo "256 SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA (ED25519)"; exit 0 ;;
+esac
+
+base="$(basename "${file}")"
+if [[ -n "${SSHKEYGEN_REJECT:-}" ]]; then
+  IFS=':' read -r -a rej <<< "${SSHKEYGEN_REJECT}"
+  for r in "${rej[@]}"; do
+    [[ "${base}" == "${r}" ]] && exit 1
+  done
+fi
+exit 0

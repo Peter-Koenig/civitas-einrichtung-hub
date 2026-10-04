@@ -51,6 +51,10 @@ Aufruf:
 Kontext (Env ADDON_CONTEXT):
   host (Default)  Selbstkopie auf die Ziel-VM + automatischer Lauf dort
   vm              Install-/Uninstall-Phasen direkt in der VM ausführen
+
+SSH-Schlüssel (Host-Kontext):
+  ADDON_SSH_KEY_FILE  optionaler Pfad zu einem privaten Schlüssel (Admin-Key)
+  INSTALL_KEY_DIR     Ablage des Installer-Schlüssels (sonst wird dort gesucht)
 USAGE
   exit 0
 fi
@@ -75,6 +79,11 @@ export KUBECONFIG="${KUBECONFIG:-${HOME}/.kube/config}"
 # ── Host→VM-Selbstkopie (analog install_civitas_core_V1s.sh) ──────────────────
 export ADDON_CONTEXT="${ADDON_CONTEXT:-host}"
 export VM_IP_STATIC="${VM_IP_STATIC:-192.168.12.139}"
+# SSH-Zugang (Defaults spiegeln den Installer, 01_config.sh):
+export VM_ID="${VM_ID:-2010}"
+export INSTALL_KEY_DIR="${INSTALL_KEY_DIR:-${HOME}/.local/share/civitas-install/${VM_ID}}"
+export ADDON_SSH_KEY_FILE="${ADDON_SSH_KEY_FILE:-}"   # optional: Pfad zu einer privaten Schlüsseldatei
+export ADDON_SSH_KNOWN_HOSTS="${ADDON_SSH_KNOWN_HOSTS:-${INSTALL_KEY_DIR}/known_hosts}"
 export VM_REMOTE_INSTALL_DIR="${VM_REMOTE_INSTALL_DIR:-/root/p2d2-addon}"
 # .env liegt laut Konvention im Elternverzeichnis (wird im VM-Kontext gesourct).
 export ADDON_ENV_FILE="${ADDON_ENV_FILE:-${SCRIPT_DIR}/../.env.p2d2-addon}"
@@ -91,6 +100,7 @@ log_warn()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ⚠ $*" >&2; }
 log_error() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✗ $*" >&2; }
 
 # ── Module laden ───────────────────────────────────────────────────────────────
+source "${SCRIPT_DIR}/modules_addon_V1s/addon_05_ssh.sh"
 source "${SCRIPT_DIR}/modules_addon_V1s/addon_00_postgresql.sh"
 source "${SCRIPT_DIR}/modules_addon_V1s/addon_10_geoserver.sh"
 source "${SCRIPT_DIR}/modules_addon_V1s/addon_20_mapproxy.sh"
@@ -178,16 +188,17 @@ preflight_addon() {
 # ── Funktion: Selbstkopie auf die Ziel-VM (mit automatischem Lauf) ───────────
 run_in_vm_addon() {
   local mode="${1:-}"
-  # Alten SSH-Host-Key entfernen (VM wird bei Scratch-Läufen ggf. neu erstellt).
-  ssh-keygen -f "${HOME}/.ssh/known_hosts" -R "${VM_IP_STATIC}" 2>/dev/null || true
+
+  # SSH-Schlüssel auswählen (Installer-Schlüssel oder ADDON_SSH_KEY_FILE).
+  addon_ssh_select_key
 
   log "Kopiere AddOn-Skriptdateien in die VM (${VM_IP_STATIC}) …"
-  ssh -o StrictHostKeyChecking=no \
+  ssh "${ADDON_SSH_OPTS[@]}" \
       "root@${VM_IP_STATIC}" \
       "mkdir -p ${VM_REMOTE_INSTALL_DIR}" \
       || { log_error "VM ${VM_IP_STATIC} nicht per SSH erreichbar"; exit 1; }
 
-  scp -o StrictHostKeyChecking=no -r \
+  scp "${ADDON_SSH_OPTS[@]}" -r \
     "${SCRIPT_DIR}/p2d2-civitas-addon-v1s.sh" \
     "${SCRIPT_DIR}/modules_addon_V1s" \
     "root@${VM_IP_STATIC}:${VM_REMOTE_INSTALL_DIR}/" \
@@ -195,7 +206,7 @@ run_in_vm_addon() {
   log_ok "Skript + Module kopiert nach ${VM_REMOTE_INSTALL_DIR}"
 
   if [[ -d "${SCRIPT_DIR}/overlay_addon_V1s" ]]; then
-    scp -o StrictHostKeyChecking=no -r \
+    scp "${ADDON_SSH_OPTS[@]}" -r \
       "${SCRIPT_DIR}/overlay_addon_V1s" \
       "root@${VM_IP_STATIC}:${VM_REMOTE_INSTALL_DIR}/" \
       || { log_error "Overlay-Verzeichnis konnte nicht kopiert werden"; exit 1; }
@@ -208,7 +219,7 @@ run_in_vm_addon() {
   # Supplement-Verzeichnis (GeoTIFF-Mosaic) — optional, aber mitkopieren, damit die
   # Mosaic-Anlage im VM-Kontext ihre Daten nachweisbar aus dem Supplement-Ordner bezieht.
   if [[ -d "${ADDON_SUPPLEMENT_DIR}" ]]; then
-    scp -o StrictHostKeyChecking=no -r \
+    scp "${ADDON_SSH_OPTS[@]}" -r \
       "${ADDON_SUPPLEMENT_DIR}" \
       "root@${VM_IP_STATIC}:${VM_REMOTE_INSTALL_DIR}/" \
       || { log_warn "Supplement-Verzeichnis konnte nicht kopiert werden (nicht fatal)"; }
@@ -220,10 +231,14 @@ run_in_vm_addon() {
   # .env-Datei: auf der VM ins ELTERNVERZEICHNIS des Install-Dirs legen, damit die
   # Konvention `source ../.env.p2d2-addon` dort unverändert funktioniert.
   if [[ -f "${ADDON_ENV_FILE}" ]]; then
-    scp -o StrictHostKeyChecking=no \
+    scp "${ADDON_SSH_OPTS[@]}" \
       "${ADDON_ENV_FILE}" \
       "root@${VM_IP_STATIC}:${VM_REMOTE_INSTALL_DIR}/../.env.p2d2-addon" \
       || { log_error "scp $(basename "${ADDON_ENV_FILE}") fehlgeschlagen"; exit 1; }
+    # Rechte wie der Installer für .env.local (0600).
+    ssh "${ADDON_SSH_OPTS[@]}" "root@${VM_IP_STATIC}" \
+      "chmod 600 ${VM_REMOTE_INSTALL_DIR}/../.env.p2d2-addon" \
+      || { log_warn "chmod 600 der .env-Datei fehlgeschlagen (nicht fatal)"; }
     log_ok "$(basename "${ADDON_ENV_FILE}") kopiert nach ${VM_REMOTE_INSTALL_DIR}/../"
   else
     log_warn ".env.p2d2-addon nicht gefunden (${ADDON_ENV_FILE}) — Werte manuell in der VM setzen"
@@ -243,7 +258,7 @@ run_in_vm_addon() {
   log "Dateien kopiert nach ${VM_REMOTE_INSTALL_DIR} — starte vollautonomen Lauf:"
   log "  ssh root@${VM_IP_STATIC} \"cd ${VM_REMOTE_INSTALL_DIR} && ${remote_cmd}\""
   log "============================================"
-  ssh -o StrictHostKeyChecking=no \
+  ssh "${ADDON_SSH_OPTS[@]}" \
       "root@${VM_IP_STATIC}" \
       "cd ${VM_REMOTE_INSTALL_DIR} && ${remote_cmd}" \
     || { log_error "Lauf in der VM fehlgeschlagen — bitte VM-Log prüfen"; exit 1; }

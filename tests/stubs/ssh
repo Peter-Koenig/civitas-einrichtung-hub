@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Stub für ssh.
+# Steuerung über SSH_REJECT (doppelpunktgetrennte Basenamen, die abgelehnt werden).
+# Zeichnet `-i <pfad>` auf SSH_CALL_LOG auf (falls gesetzt).
+key=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -i) key="$2"; shift ;;
+  esac
+  shift
+done
+
+if [[ -n "${SSH_CALL_LOG:-}" ]]; then
+  printf 'ssh -i %s\n' "${key}" >> "${SSH_CALL_LOG}"
+fi
+
+base="$(basename "${key}")"
+if [[ -n "${SSH_REJECT:-}" ]]; then
+  IFS=':' read -r -a rej <<< "${SSH_REJECT}"
+  for r in "${rej[@]}"; do
+    [[ "${base}" == "${r}" ]] && exit 1
+  done
+fi
+exit 0
