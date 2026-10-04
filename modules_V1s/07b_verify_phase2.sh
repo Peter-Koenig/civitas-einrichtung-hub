@@ -46,21 +46,37 @@ verify_phase2() {
     return 1
   fi
 
-  # Pods der Plattform (aggregiert ueber alle K8S_NAMESPACES)
-  local total_pods=0 total_running=0 total_failed=0
+  # Pods der Plattform (aggregiert ueber alle K8S_NAMESPACES).
+  # Job-Pods in Phase Succeeded werden separat gezählt; alle übrigen müssen
+  # Running sein und alle Container ready.
+  local total_running=0 total_completed=0
+  local failing_pods=()
+  local ns
   for ns in "${K8S_NAMESPACES[@]}"; do
-    local p_ns r_ns f_ns
-    p_ns="$(kubectl --kubeconfig="${KUBECONFIG_PATH}" get pods -n "${ns}" -o name 2>/dev/null | wc -l)"
-    r_ns="$(kubectl --kubeconfig="${KUBECONFIG_PATH}" get pods -n "${ns}" --field-selector=status.phase=Running -o name 2>/dev/null | wc -l)"
-    f_ns="$(kubectl --kubeconfig="${KUBECONFIG_PATH}" get pods -n "${ns}" --field-selector=status.phase!=Running,status.phase!=Succeeded -o name 2>/dev/null | wc -l)"
-    total_pods=$(( total_pods + p_ns ))
-    total_running=$(( total_running + r_ns ))
-    total_failed=$(( total_failed + f_ns ))
+    local completed
+    completed="$(kubectl --kubeconfig="${KUBECONFIG_PATH}" get pods -n "${ns}" \
+      --field-selector=status.phase=Succeeded -o name 2>/dev/null | wc -l | tr -d ' ')"
+    total_completed=$(( total_completed + completed ))
+    local pod_name pod_phase pod_ready
+    while IFS=$'\t' read -r pod_name pod_phase pod_ready; do
+      [[ -n "${pod_name}" ]] || continue
+      if [[ "${pod_phase}" == "Running" && "${pod_ready}" == "true" ]]; then
+        total_running=$(( total_running + 1 ))
+      else
+        failing_pods+=("${ns}/${pod_name}")
+      fi
+    done < <(kubectl --kubeconfig="${KUBECONFIG_PATH}" get pods -n "${ns}" \
+      --field-selector=status.phase!=Succeeded -o json 2>/dev/null \
+      | jq -r '.items[] | [.metadata.name, .status.phase, (([.status.containerStatuses[]?.ready] | all))] | @tsv')
   done
-  if [[ "$total_pods" -gt 0 ]] && [[ "$total_failed" -eq 0 ]]; then
-    log_ok "[PHASE 2] ${total_running}/${total_pods} Pods Running ... OK"
+  if [[ ${#failing_pods[@]} -eq 0 ]]; then
+    if [[ "${total_completed}" -gt 0 ]]; then
+      log_ok "[PHASE 2] ${total_running} Running, ${total_completed} Completed (Job) ... OK"
+    else
+      log_ok "[PHASE 2] ${total_running} Pods Running ... OK"
+    fi
   else
-    log_error "[PHASE 2] ${total_failed} Pod(s) nicht Running (${total_running}/${total_pods})"
+    log_error "[PHASE 2] ${#failing_pods[@]} Pod(s) nicht Ready: ${failing_pods[*]}"
     (( VERIFY_ERRORS++ )) || true
   fi
 

@@ -40,8 +40,17 @@ dns_resolves()  { dig +short "$1" | grep -q '.'; }
 wait_pods_ready() {
   local namespace="$1"
   local timeout="${2:-$TIMEOUT_POD_READY}"
-  kubectl wait --for=condition=Ready pods --all \
-    -n "$namespace" --timeout="${timeout}s"
+  # Job-Pods in Phase Succeeded werden ausgenommen: sie werden nie Ready und
+  # würden kubectl wait bis zum Timeout blockieren.
+  local count
+  count=$(kubectl get pods -n "$namespace" \
+    --field-selector=status.phase!=Succeeded -o name 2>/dev/null | wc -l | tr -d ' ')
+  if [[ "${count:-0}" -eq 0 ]]; then
+    return 0
+  fi
+  kubectl wait --for=condition=Ready pods \
+    -n "$namespace" --timeout="${timeout}s" \
+    --field-selector=status.phase!=Succeeded
 }
 
 # ── Fehlercount-Mechanismus (für Phase 3) ────────────────────────────────────
