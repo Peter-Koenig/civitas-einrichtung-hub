@@ -520,7 +520,12 @@ write_le_backup() {
       ns="${ns_name%%/*}"; name="${ns_name##*/}"
       kubectl get secret "${name}" -n "${ns}" -o yaml >> "${tmp}" 2>/dev/null || true
       echo "---" >> "${tmp}"
-    done )
+    done
+    # Trailing-Separator entfernen: ein abschließendes "---" erzeugt ein
+    # leeres Dokument, das die Dokument-Zählung (backup_secret_doc_count)
+    # verfälscht und das Backup als unbrauchbar erscheinen lässt.
+    sed -i '${/^---$/d;}' "${tmp}"
+  )
 
   docs=$(backup_secret_doc_count "${tmp}")
   if [[ "${docs}" -ne "${expected}" ]]; then
