@@ -332,8 +332,6 @@ render_inventory() {
   local pw_pgadmin;            pw_pgadmin="$(gen_policy_password 24 | sed 's/[&|\\$]/\\&/g' || echo "CHANGEME_pgadmin")"
   local pw_apisix_admin_role;    pw_apisix_admin_role="$(gen_policy_password 24 | sed 's/[&|\\$]/\\&/g' || echo "CHANGEME_adminrole")"
   local pw_apisix_viewer_role;   pw_apisix_viewer_role="$(gen_policy_password 24 | sed 's/[&|\\$]/\\&/g' || echo "CHANGEME_viewerrole")"
-  local pw_apisix_dashboard_jwt; pw_apisix_dashboard_jwt="$(openssl rand -base64 12 | tr -d '\n' | sed 's/[&|\\$]/\\&/g' || echo "CHANGEME_jwt")"
-  local pw_apisix_dashboard_pass;pw_apisix_dashboard_pass="$(gen_policy_password 24 | sed 's/[&|\\$]/\\&/g' || echo "CHANGEME_dashpass")"
   local pw_superset_db;        pw_superset_db="$(gen_policy_password 42 | sed 's/[&|\\$]/\\&/g' || echo "CHANGEME_superset_db")"
   local pw_superset_redis;     pw_superset_redis="$(gen_policy_password 24 | sed 's/[&|\\$]/\\&/g' || echo "CHANGEME_superset_redis")"
   local pw_superset_admin;     pw_superset_admin="$(gen_policy_password 24 | sed 's/[&|\\$]/\\&/g' || echo "CHANGEME_superset_admin")"
@@ -383,9 +381,6 @@ render_inventory() {
     -e "s|PLACEHOLDER_STORAGECLASS_LOC|${STORAGECLASS_LOC:-local-path}|g" \
     -e "s|PLACEHOLDER_CERTMANAGER_ISSUER|${CERT_MANAGER_ISSUER:-selfsigned-issuer}|g" \
     -e "s|PLACEHOLDER_APISIX_DASHBOARD|${APISIX_DASHBOARD:-false}|g" \
-    -e "s|PLACEHOLDER_APISIX_JWT_SECRET|${pw_apisix_dashboard_jwt}|g" \
-    -e "s|PLACEHOLDER_APISIX_DASHBOARD_USER|admin@${DOMAIN}|g" \
-    -e "s|PLACEHOLDER_APISIX_DASHBOARD_PASS|${pw_apisix_dashboard_pass}|g" \
     -e "s|PLACEHOLDER_INGRESSCLASS|${INGRESS_CLASS:-nginx}|g" \
     -e "s|PLACEHOLDER_ADMINEMAIL|${ADMIN_EMAIL}|g" \
     -e "s|PLACEHOLDER_SMTP_HOST|${SMTP_HOST}|g" \
@@ -450,8 +445,6 @@ GEOSERVER_PASSWORD="${pw_geoserver}"
 SUPERSET_USER="admin"
 SUPERSET_PASSWORD="${pw_superset_admin}"
 GRAFANA_PASSWORD="${pw_grafana}"
-APISIX_DASHBOARD_USER="admin@${DOMAIN}"
-APISIX_DASHBOARD_PASSWORD="${pw_apisix_dashboard_pass}"
 TENANT_ADMIN_USER="tenantadmin@${DOMAIN}"
 TENANT_ADMIN_PASSWORD="${tenant_admin_password}"
 APISIX_ETCD_ROOT_PASSWORD="${pw_apisix_etcd_root}"
@@ -602,7 +595,6 @@ run_cc_cli_exec() {
         [SUPERSET_DB_SECRET]=PLACEHOLDER_SUPERSET_DB_SECRET
         [SUPERSET_REDIS_PASSWORD]=PLACEHOLDER_SUPERSET_REDIS_PASSWORD
         [GRAFANA_PASSWORD]=PLACEHOLDER_GRAFANA_PASSWORD
-        [APISIX_DASHBOARD_PASSWORD]=PLACEHOLDER_APISIX_DASHBOARD_PASS
         [APISIX_ADMIN_ROLE_KEY]=PLACEHOLDER_APISIX_ADMIN_ROLE_KEY
         [APISIX_VIEWER_ROLE_KEY]=PLACEHOLDER_APISIX_VIEWER_ROLE_KEY
         [PIVAU_PASSWORD]=PLACEHOLDER_PIVAU_PASSWORD

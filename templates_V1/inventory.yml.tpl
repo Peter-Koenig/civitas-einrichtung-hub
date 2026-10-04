@@ -145,10 +145,6 @@ all:
             enable: true
             dashboard:
               enable: PLACEHOLDER_APISIX_DASHBOARD
-              jwt_secret: "PLACEHOLDER_APISIX_JWT_SECRET"
-              admin:
-                username: "admin@PLACEHOLDER_DOMAIN"
-                password: "PLACEHOLDER_APISIX_DASHBOARD_PASS"
             etcd:
               replicas: 1
               rootPassword: "PLACEHOLDER_APISIX_ETCD_ROOT_PASSWORD"
