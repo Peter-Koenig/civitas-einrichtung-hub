@@ -14,4 +14,6 @@ of=$(sed -n "${c}p" "$STUB_CONTROL/outfiles" 2>/dev/null)
 : > "${ANSIBLE_LOG_PATH:-/dev/null}"
 [ -n "$lf" ] && [ -f "$lf" ] && cat "$lf" > "${ANSIBLE_LOG_PATH:-/dev/null}"
 [ -n "$of" ] && [ -f "$of" ] && cat "$of"
+sleep_secs=$(cat "$STUB_CONTROL/sleep" 2>/dev/null || true)
+[ -n "$sleep_secs" ] && sleep "$sleep_secs"
 exit "$rc"

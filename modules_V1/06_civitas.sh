@@ -538,11 +538,42 @@ run_cc_cli_exec() {
     ln -sfn "ansible_attempt_${attempt}.log" "${latest_log}"
     log "  Versuch ${attempt}/${CC_EXEC_ATTEMPTS}: Ansible-Log ${ansible_log_file}"
 
-    local output rc=0
-    output=$(cd "${CC_CLI_PLAYBOOK_DIR}" && \
-      umask 077 && \
+    local raw_file="${ansible_log_dir}/cc_cli_raw_${attempt}.txt"
+    rm -f "${raw_file}"
+
+    local rc=0
+    # cc_cli im Hintergrund; der volle Output geht ausschließlich in die
+    # Rohdatei (0600, eindeutiger Name pro Versuch), nie auf die Konsole.
+    ( cd "${CC_CLI_PLAYBOOK_DIR}" || exit 125
+      umask 077
+      exec > "${raw_file}" 2>&1
       echo "Y" | timeout "${TIMEOUT_CC_CLI_EXEC}" \
-      "${CC_CLI_VENV_PATH}/bin/cc_cli" exec 2>&1) || rc=$?
+        "${CC_CLI_VENV_PATH}/bin/cc_cli" exec
+    ) &
+    local cc_pid=$!
+
+    # Sicherer Live-Fortschritt (Heartbeat): kein Rohoutput, keine Secrets.
+    # Das cc_cli-Statusformat ist nicht belastbar belegbar, daher kein Parsen
+    # des Rohoutputs (Ansible-Ausgabe bei Verbosity 3 enthält Inventory-Objekte).
+    local heartbeat_interval="${CC_EXEC_HEARTBEAT_INTERVAL:-30}"
+    ( local hb_start hb_now hb_lines=0
+      hb_start=$(date +%s)
+      while kill -0 "${cc_pid}" 2>/dev/null; do
+        sleep "${heartbeat_interval}"
+        if kill -0 "${cc_pid}" 2>/dev/null; then
+          hb_now=$(date +%s)
+          hb_lines=0
+          [[ -f "${ansible_log_file}" ]] && hb_lines=$(wc -l < "${ansible_log_file}" 2>/dev/null || true)
+          log "cc_cli läuft: Versuch ${attempt}/${CC_EXEC_ATTEMPTS}, $(( hb_now - hb_start )) s, Ansible-Log ${hb_lines} Zeilen"
+        fi
+      done
+    ) &
+    local heartbeat_pid=$!
+
+    wait "${cc_pid}" && rc=0 || rc=$?
+    kill "${heartbeat_pid}" 2>/dev/null || true
+    wait "${heartbeat_pid}" 2>/dev/null || true
+
     [[ -f "${ansible_log_file}" ]] && chmod 600 "${ansible_log_file}"
     log "cc_cli exec beendet (rc=${rc}, Versuch ${attempt}/${CC_EXEC_ATTEMPTS})"
     log_ansible_log_metadata "${ansible_log_file}"
@@ -551,10 +582,11 @@ run_cc_cli_exec() {
     if (( rc != 0 )); then
       failed=true
     fi
-    if echo "${output}" | grep -qF "failed with status: failed"; then
+    if grep -qF "failed with status: failed" "${raw_file}"; then
       failed=true
     fi
     if [[ "${failed}" != "true" ]]; then
+      rm -f "${raw_file}"
       break
     fi
 
@@ -569,8 +601,9 @@ run_cc_cli_exec() {
     elif (( fatal_count > 0 && fatal_404 == fatal_count )); then
       log_warn "cc_cli exec: Playbook meldet 404 statt 204 beim Loeschen einer Keycloak-Ressource, toleriert (Idempotenz-Fall)."
       tolerated_404=true
+      rm -f "${raw_file}"
       break
-    elif echo "${output}" | grep -Eq "${transient_re}" || (( fatal_transient > 0 )); then
+    elif grep -Eq "${transient_re}" "${raw_file}" || (( fatal_transient > 0 )); then
       transient=true
     fi
 
@@ -578,6 +611,7 @@ run_cc_cli_exec() {
       log_warn "cc_cli exec: vorübergehender Fehler (Versuch ${attempt}/${CC_EXEC_ATTEMPTS}, rc=${rc}) — wiederhole in ${CC_EXEC_RETRY_DELAY}s mit demselben Inventory"
       sleep "${CC_EXEC_RETRY_DELAY}"
       attempt=$((attempt + 1))
+      rm -f "${raw_file}"
       continue
     fi
     log_error "cc_cli exec: Playbook fehlgeschlagen — Logs pruefen:"
@@ -631,6 +665,7 @@ run_cc_cli_exec() {
     log_warn "Entweder die VM neu aufsetzen oder in der VM im Playbook-Verzeichnis mit dem vorhandenen Inventory erneut starten:"
     log_warn "  cd ${CC_CLI_PLAYBOOK_DIR} && echo Y | KUBECONFIG=${KUBECONFIG_PATH} ${CC_CLI_VENV_PATH}/bin/cc_cli exec"
     log_warn ""
+    rm -f "${raw_file}"
     exit 1
   done
   if [[ "${tolerated_404}" == "true" ]]; then
