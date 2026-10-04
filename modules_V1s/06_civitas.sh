@@ -336,6 +336,17 @@ render_inventory() {
   local pw_grafana;            pw_grafana="$(gen_policy_password 24 | sed 's/[&|\\$]/\\&/g' || echo "CHANGEME_grafana")"
   local pw_geoserver;          pw_geoserver="$(gen_policy_password 16 | sed 's/[&|\\$]/\\&/g' || echo "CHANGEME_geoserver")"
   local pw_pivau;              pw_pivau="$(gen_policy_password 24 | sed 's/[&|\\$]/\\&/g' || echo "CHANGEME_pivau")"
+  local tenant_admin_password
+  if [[ -n "${TENANT_ADMIN_PASS:-}" ]]; then
+    if ! echo "${TENANT_ADMIN_PASS}" | grep -qP '(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^a-zA-Z0-9]).{12,}'; then
+      log_warn "TENANT_ADMIN_PASS erfüllt nicht die Keycloak-Passwort-Policy"
+      log_warn "Erforderlich: ≥12 Zeichen, min. 1 Ziffer, 1 Groß-, 1 Kleinbuchstabe, 1 Sonderzeichen"
+    fi
+    tenant_admin_password="$(echo "${TENANT_ADMIN_PASS}" | sed 's/[&|\\$]/\\&/g')"
+  else
+    tenant_admin_password="$(gen_policy_password 24 | sed 's/[&|\\$]/\\&/g' || echo "CHANGEME_tenantadmin")"
+  fi
+  local pw_apisix_etcd_root;  pw_apisix_etcd_root="$(gen_policy_password 24 | sed 's/[&|\\$]/\\&/g' || echo "CHANGEME_etcdroot")"
 
   # sed-Trennzeichen '|' vermeidet Konflikte mit '/' in URLs und Pfaden.
   # Reihenfolge: spezifischere Token vor generischeren (kein Überschreiben).
@@ -358,6 +369,8 @@ render_inventory() {
     -e "s|PLACEHOLDER_SMTP_PASS|${SMTP_PASS}|g" \
     -e "s|PLACEHOLDER_SMTP_FROM|${SMTP_FROM:-no-reply@${DOMAIN_NAME}}|g" \
     -e "s|PLACEHOLDER_KEYCLOAK_ADMIN_PASSWORD|${pw_keycloak}|g" \
+    -e "s|PLACEHOLDER_TENANT_ADMIN_PASSWORD|${tenant_admin_password}|g" \
+    -e "s|PLACEHOLDER_APISIX_ETCD_ROOT_PASSWORD|${pw_apisix_etcd_root}|g" \
     -e "s|PLACEHOLDER_PGADMIN_PASSWORD|${pw_pgadmin}|g" \
     -e "s|PLACEHOLDER_APISIX_ADMIN_ROLE_KEY|${pw_apisix_admin_role}|g" \
     -e "s|PLACEHOLDER_APISIX_VIEWER_ROLE_KEY|${pw_apisix_viewer_role}|g" \
@@ -415,6 +428,9 @@ APISIX_VIEWER_ROLE_KEY="${pw_apisix_viewer_role}"
 SUPERSET_DB_SECRET="${pw_superset_db}"
 SUPERSET_REDIS_PASSWORD="${pw_superset_redis}"
 PIVAU_PASSWORD="${pw_pivau}"
+TENANT_ADMIN_USER="tenantadmin@${DOMAIN}"
+TENANT_ADMIN_PASSWORD="${tenant_admin_password}"
+APISIX_ETCD_ROOT_PASSWORD="${pw_apisix_etcd_root}"
 CREDENTIALS_EOF
   chmod 600 "${CREDENTIALS_OUTPUT_PATH}"
   log_ok "Credentials gespeichert: ${CREDENTIALS_OUTPUT_PATH}"
@@ -566,6 +582,8 @@ run_cc_cli_exec() {
         [APISIX_ADMIN_ROLE_KEY]=PLACEHOLDER_APISIX_ADMIN_ROLE_KEY
         [APISIX_VIEWER_ROLE_KEY]=PLACEHOLDER_APISIX_VIEWER_ROLE_KEY
         [PIVAU_PASSWORD]=PLACEHOLDER_PIVAU_PASSWORD
+        [TENANT_ADMIN_PASSWORD]=PLACEHOLDER_TENANT_ADMIN_PASSWORD
+        [APISIX_ETCD_ROOT_PASSWORD]=PLACEHOLDER_APISIX_ETCD_ROOT_PASSWORD
       )
       for pw_name in "${!pw_tokens[@]}"; do
         local token="${pw_tokens[${pw_name}]}"

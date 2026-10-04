@@ -165,4 +165,43 @@ verify_phase2() {
   else
     log "[PHASE 2] WireGuard deaktiviert (WG_ENABLE=false) — Tunnel-/OPNsense-Prüfung übersprungen"
   fi
+
+  # Platzhalter-Literale (TODO:PLEASE/TODO_PLEASE/CHANGE_ME) im Cluster prüfen.
+  guard_placeholder_literals
+}
+
+# ── guard_placeholder_literals: Literal-Scan über Secrets/ConfigMaps ──────
+# Sucht in K8S_NAMESPACES nach den Platzhalter-Literalen TODO:PLEASE,
+# TODO_PLEASE und CHANGE_ME. Ausgabe nur Art + Namespace/Name + key, nie ein
+# Wert. Treffer sind ein Fehler (VERIFY_ERRORS++, return 1).
+guard_placeholder_literals() {
+  local ns name key value decoded hits=0
+  for ns in "${K8S_NAMESPACES[@]}"; do
+    while IFS=$'\t' read -r name key value; do
+      [[ -n "${name}" ]] || continue
+      decoded="$(printf '%s' "${value}" | base64 -d 2>/dev/null || true)"
+      if printf '%s' "${decoded}" | grep -qE 'TODO:PLEASE|TODO_PLEASE|CHANGE_ME'; then
+        log_error "Platzhalter-Literal: Secret ${ns}/${name} key=${key}"
+        hits=$((hits + 1))
+      fi
+    done < <(kubectl --kubeconfig="${KUBECONFIG_PATH}" get secrets -n "${ns}" -o json 2>/dev/null \
+      | jq -r '.items[] | .metadata.name as $n | .data | to_entries[] | "\($n)\t\(.key)\t\(.value)"' 2>/dev/null)
+
+    while IFS=$'\t' read -r name key value; do
+      [[ -n "${name}" ]] || continue
+      if printf '%s' "${value}" | grep -qE 'TODO:PLEASE|TODO_PLEASE|CHANGE_ME'; then
+        log_error "Platzhalter-Literal: ConfigMap ${ns}/${name} key=${key}"
+        hits=$((hits + 1))
+      fi
+    done < <(kubectl --kubeconfig="${KUBECONFIG_PATH}" get configmaps -n "${ns}" -o json 2>/dev/null \
+      | jq -r '.items[] | .metadata.name as $n | .data | to_entries[] | "\($n)\t\(.key)\t\(.value)"' 2>/dev/null)
+  done
+
+  if [[ ${hits} -gt 0 ]]; then
+    log_error "[PHASE 2] ${hits} Platzhalter-Literal(e) gefunden — Template/Inventory prüfen"
+    (( VERIFY_ERRORS++ )) || true
+    return 1
+  fi
+  log_ok "[PHASE 2] Keine Platzhalter-Literale (TODO:PLEASE/TODO_PLEASE/CHANGE_ME) in Secrets/ConfigMaps ... OK"
+  return 0
 }

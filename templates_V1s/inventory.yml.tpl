@@ -91,7 +91,7 @@ all:
           velero:
             enable: false
             backup:
-              location_name: "CHANGE_ME"
+              location_name: ""
               access_key: ""
               bucket: ""
               region: ""
@@ -143,10 +143,27 @@ all:
               notUsername: true
               forceExpiredPasswordChange: false
               passwordHistory: 5
+          tenant:
+            tenant_first_name: Admin
+            tenant_surname: Tenant
+            tenant_email: "tenantadmin@PLACEHOLDER_DOMAIN"
+            tenant_username: "tenantadmin@PLACEHOLDER_DOMAIN"
+            tenant_password: "PLACEHOLDER_TENANT_ADMIN_PASSWORD"
+            realm_name: PLACEHOLDER_ENVIRONMENT
+            scope: "openid"
+            enable_events: true
+            enable_adminEvents: true
           apisix:
             enable: true
             dashboard:
               enable: PLACEHOLDER_APISIX_DASHBOARD
+              jwt_secret: "PLACEHOLDER_APISIX_JWT_SECRET"
+              admin:
+                username: "admin@PLACEHOLDER_DOMAIN"
+                password: "PLACEHOLDER_APISIX_DASHBOARD_PASS"
+            etcd:
+              replicas: 1
+              rootPassword: "PLACEHOLDER_APISIX_ETCD_ROOT_PASSWORD"
             api_credentials:
               admin_role: "PLACEHOLDER_APISIX_ADMIN_ROLE_KEY"
               viewer_role: "PLACEHOLDER_APISIX_VIEWER_ROLE_KEY"
@@ -174,7 +191,7 @@ all:
         inv_da:
           superset:
             enable: true
-            mapbox_api_token: "TODO_PLEASE_SET_A_VALUE"
+            mapbox_api_token: ""
             db_secret: "PLACEHOLDER_SUPERSET_DB_SECRET"
             admin_user_name: admin
             admin_user_password: "PLACEHOLDER_SUPERSET_ADMIN_PASSWORD"
@@ -240,4 +257,4 @@ all:
               virtuoso:
                 password: "PLACEHOLDER_PIVAU_PASSWORD"
             hub_search:
-              api_key: "CHANGE_ME"
+              api_key: ""
