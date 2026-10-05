@@ -356,19 +356,14 @@ addon_preflight_cert_issuer() {
 }
 
 # addon_install_cert_issuer — liefert den Issuer für install_addon_frontend (F1).
-# Nutzt ADDON_CERT_ISSUER_RESOLVED, wenn das Preflight ihn gesetzt hat; sonst wird
-# selbst aufgelöst und der ClusterIssuer geprüft (Einzelaufruf/Test).
+# Reiner Wert auf stdout (G1): keine Logs, keine Ready-Prüfung — sonst gerät der
+# Log-Text in die Befehlssubstitution. Die Ready-Prüfung macht der Aufrufer.
 addon_install_cert_issuer() {
-  local issuer
   if [[ -n "${ADDON_CERT_ISSUER_RESOLVED:-}" ]]; then
-    issuer="${ADDON_CERT_ISSUER_RESOLVED}"
-    log_ok "Zertifikats-Issuer aus Preflight übernommen: ${issuer}"
+    printf '%s' "${ADDON_CERT_ISSUER_RESOLVED}"
   else
-    issuer="$(addon_resolve_cert_issuer)" || return 1
-    addon_ensure_cert_issuer_ready "${issuer}" || return 1
+    addon_resolve_cert_issuer
   fi
-  printf '%s' "${issuer}"
-  return 0
 }
 
 # addon_frontend_host <stage> / addon_frontend_svc <stage> — Stage-Mapping.
@@ -429,14 +424,16 @@ EOF
 }
 
 # ── Ingress (idempotent, je Stage) ─────────────────────────────────────────────
+# Rückgabewerte (G3): 0 = angelegt/vorhanden, 1 = RBAC fehlt (Warnung, Manifest
+# ausgegeben), 2 = Sperre verletzt (fatal), 3 = Rendern/apply fehlgeschlagen (fatal).
 ensure_addon_frontend_ingress() {
   local stage="$1" issuer="$2"
-  [[ -n "${stage}" && -n "${issuer}" ]] || { log_error "ensure_addon_frontend_ingress: Stage und Issuer erforderlich"; return 1; }
+  [[ -n "${stage}" && -n "${issuer}" ]] || { log_error "ensure_addon_frontend_ingress: Stage und Issuer erforderlich"; return 3; }
 
   local svc host secret
   svc="$(addon_frontend_svc "${stage}")"
   host="$(addon_frontend_host "${stage}")"
-  [[ -n "${svc}" && -n "${host}" ]] || { log_error "ensure_addon_frontend_ingress: unbekannte Stage '${stage}' (main|dev|de1|de2|fv)"; return 1; }
+  [[ -n "${svc}" && -n "${host}" ]] || { log_error "ensure_addon_frontend_ingress: unbekannte Stage '${stage}' (main|dev|de1|de2|fv)"; return 3; }
   secret="${host}-tls"
 
   if kubectl get ingress "${svc}" -n "${ADDON_NS}" &>/dev/null; then
@@ -452,8 +449,7 @@ ensure_addon_frontend_ingress() {
     return 0
   fi
 
-  # U3: Sperre bei ACME-Issuer und fehlendem TLS-Secret. Rückgabewert 2 kennzeichnet
-  # die Sperre als fatal (F2); install_addon_frontend unterscheidet 2 von 1.
+  # U3: Sperre bei ACME-Issuer und fehlendem TLS-Secret (Rückgabewert 2, fatal).
   if [[ "${P2D2_CERT_BLOCK_NEW_REQUESTS:-false}" == "true" ]] && addon_cert_is_acme "${issuer}"; then
     if ! kubectl -n "${ADDON_NS}" get secret "${secret}" &>/dev/null; then
       log_error "P2D2_CERT_BLOCK_NEW_REQUESTS=true und Secret ${secret} fehlt — keine neue Zertifikatsanforderung für ${host}"
@@ -462,7 +458,7 @@ ensure_addon_frontend_ingress() {
   fi
 
   local manifest
-  manifest="$(addon_render_ingress "${stage}" "${issuer}")" || return 1
+  manifest="$(addon_render_ingress "${stage}" "${issuer}")" || return 3
 
   if ! kubectl auth can-i create ingresses.networking.k8s.io -n "${ADDON_NS}" &>/dev/null; then
     log_error "RBAC: keine create-Berechtigung auf ingresses.networking.k8s.io in ${ADDON_NS} — bitte manuell anwenden:"
@@ -471,7 +467,7 @@ ensure_addon_frontend_ingress() {
   fi
 
   printf '%s\n' "${manifest}" | kubectl apply -f - \
-    || { log_error "kubectl apply fehlgeschlagen für Ingress ${svc}"; return 1; }
+    || { log_error "kubectl apply fehlgeschlagen für Ingress ${svc}"; return 3; }
   log_ok "Ingress ${svc} angelegt (${host} -> ${svc}:80; TLS-Secret ${secret}, Issuer ${issuer})"
 }
 
@@ -626,21 +622,31 @@ install_addon_frontend() {
   #    ohne die Variable (Einzelaufruf/Test) wird selbst aufgelöst und geprüft.
   local cert_issuer
   cert_issuer="$(addon_install_cert_issuer)" || return 1
+  if [[ -n "${ADDON_CERT_ISSUER_RESOLVED:-}" ]]; then
+    log_ok "Zertifikats-Issuer aus Preflight übernommen: ${cert_issuer}"
+  else
+    addon_ensure_cert_issuer_ready "${cert_issuer}" || return 1
+  fi
+  local -a ingress_failed=()
   for stage in main dev de1 de2 fv; do
     ensure_addon_frontend_ingress "${stage}" "${cert_issuer}" || {
       local ing_rc=$?
-      if [[ "${ing_rc}" -eq 2 ]]; then
-        log_error "Ingress ${stage}: Sperre verletzt — Abbruch"
-        return 2
-      fi
-      log_warn "Ingress ${stage} nicht angelegt — bitte manuell (siehe Ausgabe oben)"
+      case "${ing_rc}" in
+        2) log_error "Ingress ${stage}: Sperre verletzt — Abbruch"; return 2 ;;
+        3) log_error "Ingress ${stage}: Rendern/apply fehlgeschlagen — Abbruch"; return 3 ;;
+        *) log_warn "Ingress ${stage} nicht angelegt — bitte manuell (siehe Ausgabe oben)"; ingress_failed+=("${stage}") ;;
+      esac
     }
   done
 
   # 5) Image-Build ist bereits als vorgelagerter Teilschritt gelaufen
   #     (install_addon_frontend_build, vom Hauptskript vor diesem Modul aufgerufen).
   log "  Image-Build: bereits durch install_addon_frontend_build erfolgt (vorgelagerter Schritt)"
-  log_ok "AddOn 30 Frontend: Secrets + ConfigMaps + Manifeste + Ingress angewendet"
+  if [[ ${#ingress_failed[@]} -gt 0 ]]; then
+    log_warn "AddOn 30 Frontend: Secrets + ConfigMaps + Manifeste angewendet — Ingress fehlt für: ${ingress_failed[*]}"
+  else
+    log_ok "AddOn 30 Frontend: Secrets + ConfigMaps + Manifeste + Ingress angewendet"
+  fi
   return 0
 }
 
