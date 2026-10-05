@@ -273,9 +273,7 @@ fi
 
 # ADDON_DOMAIN aus DOMAIN_NAME ableiten, wenn nicht explizit gesetzt (B1).
 # Läuft auch für --uninstall, da uninstall_addon_frontend die Hosts daraus bildet.
-if [[ -z "${ADDON_DOMAIN:-}" && -n "${DOMAIN_NAME:-}" ]]; then
-  export ADDON_DOMAIN="udp.${DOMAIN_NAME}"
-fi
+addon_derive_domain
 
 # ── Fail-Fast-Vorprüfungen ─────────────────────────────────────────────────────
 # Zuerst der Konfigurationsvertrag (zentrale Validierung, nur Install), dann die

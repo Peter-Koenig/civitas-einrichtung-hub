@@ -52,6 +52,16 @@ addon_validate_nonempty() {
   return 0
 }
 
+# addon_derive_domain
+# Leitet ADDON_DOMAIN aus DOMAIN_NAME ab, wenn nicht explizit gesetzt (B1).
+# Leer -> udp.${DOMAIN_NAME}; explizit gesetzt -> unverändert. Läuft auch im
+# Uninstall-Pfad, da uninstall_addon_frontend die Hosts daraus bildet.
+addon_derive_domain() {
+  if [[ -z "${ADDON_DOMAIN:-}" && -n "${DOMAIN_NAME:-}" ]]; then
+    export ADDON_DOMAIN="udp.${DOMAIN_NAME}"
+  fi
+}
+
 # addon_validate_config
 # Zentrale Validierung der .env.p2d2-addon (Konfigurationsvertrag).
 addon_validate_config() {
