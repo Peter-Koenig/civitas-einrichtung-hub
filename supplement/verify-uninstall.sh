@@ -25,6 +25,9 @@ set -uo pipefail
 NS="${NS:-cc-prd-geodata-stack}"
 DBNS="${DBNS:-cc-prd-database-stack}"
 DOMAIN="${DOMAIN:-udp.data-dna.eu}"
+# Uninstall-TLS-Handhabung (Schritt 2c-3): auto/true = <host>-tls-Secrets sind
+# erlaubt und werden als bewusst behalten gemeldet; false = strikt (Reste).
+KEEP_TLS="${KEEP_TLS:-auto}"
 # IAM/Keycloak (analog addon_25_iam.sh)
 IAM_REALM="${IAM_REALM:-cc-prd}"
 IAM_NS="${IAM_NS:-cc-prd-access-stack}"
@@ -58,8 +61,11 @@ fe_tls=$(kubectl -n "$NS" get secret -o name 2>/dev/null \
   | grep -E "^secret/(www|dev|f-de1|f-de2|f-fv)\.${DOMAIN}-tls$" || true)
 if [[ -z "$fe_tls" ]]; then
   log_ok "keine Frontend-TLS-Secrets (<host>-tls)"
+elif [[ "$KEEP_TLS" == "false" ]]; then
+  note_reste "Frontend-TLS-Secrets vorhanden (KEEP_TLS=false — Rest):"
+  printf '      %s\n' $fe_tls
 else
-  note_reste "Frontend-TLS-Secrets vorhanden:"
+  log_ok "Frontend-TLS-Secrets vorhanden (bewusst behalten, KEEP_TLS=${KEEP_TLS}):"
   printf '      %s\n' $fe_tls
 fi
 

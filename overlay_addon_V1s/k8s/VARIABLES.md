@@ -124,6 +124,7 @@ ConfigMaps/Secrets. Sie sind optional und haben Defaults.
 |---|---|---|
 | `P2D2_CERT_ISSUER` | `auto` | Issuer der AddOn-Ingresses: `auto` leitet aus den Core-Ingresses in `ADDON_IAM_NS` ab; alternativ `selfsigned-issuer`, `letsencrypt-staging`, `letsencrypt-prod`. |
 | `P2D2_CERT_BLOCK_NEW_REQUESTS` | `false` | `true` verhindert bei ACME-Issuern neue Zertifikatsanforderungen (Secret `<host>-tls` muss existieren). |
+| `P2D2_UNINSTALL_KEEP_TLS` | `auto` | Uninstall: `auto` behält `<host>-tls` bei ACME-Issuer, `true` immer, `false` löscht immer. |
 
 ---
 

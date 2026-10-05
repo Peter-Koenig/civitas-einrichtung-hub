@@ -41,7 +41,9 @@ Stages und ihre Ressourcen-Suffixe:
 ### 1.1 Was normalerweise entfernt wird
 
 - **Je Stage:** Deployment, Service, ConfigMap, Secret, Ingress (Name = Service-Name),
-  TLS-Secret `<host>-tls`, Alt-PVC `<svc>-code`.
+  Certificate (ausdrücklich gelöscht), Alt-PVC `<svc>-code`. Das TLS-Secret
+  `<host>-tls` bleibt bei ACME-Issuern erhalten (`P2D2_UNINSTALL_KEEP_TLS=auto`),
+  bei `false` wird es gelöscht.
 - **Basis:** ConfigMap `p2d2-base-config`, Secret `p2d2-base-secret`.
 - **Webhook-Controller:** Deployment/Service `p2d2-webhook-controller`,
   ServiceAccount `p2d2-webhook-controller`, Role `p2d2-webhook-controller-role`,
@@ -54,7 +56,8 @@ Stages und ihre Ressourcen-Suffixe:
 ```bash
 # Alle p2d2-Workloads/Configs im GeoData-Namespace:
 kubectl -n "$NS" get deploy,svc,cm,secret,ingress,pvc,jobs -o name | grep -E 'p2d2|f-de1|f-de2|f-fv'
-# TLS-Secrets des Frontends (cert-manager):
+# TLS-Secrets des Frontends (cert-manager): bei KEEP_TLS != false sind diese
+# bewusst behalten und KEINE Reste; nur bei KEEP_TLS=false sind sie Reste.
 kubectl -n "$NS" get secret -o name | grep -E "^secret/(www|dev|f-de1|f-de2|f-fv)\.$DOMAIN-tls$"
 ```
 
@@ -69,6 +72,7 @@ for s in p2d2-main p2d2-dev p2d2-f-de1 p2d2-f-de2 p2d2-f-fv; do
 done
 kubectl -n "$NS" delete cm p2d2-main-config p2d2-dev-config p2d2-f-de1-config p2d2-f-de2-config p2d2-f-fv-config --ignore-not-found
 kubectl -n "$NS" delete secret p2d2-main-secret p2d2-dev-secret p2d2-f-de1-secret p2d2-f-de2-secret p2d2-f-fv-secret --ignore-not-found
+# Nur bei KEEP_TLS=false (ACME-Secrets werden sonst bewusst behalten):
 kubectl -n "$NS" delete secret "www.$DOMAIN-tls" "dev.$DOMAIN-tls" "f-de1.$DOMAIN-tls" "f-de2.$DOMAIN-tls" "f-fv.$DOMAIN-tls" --ignore-not-found
 
 kubectl -n "$NS" delete cm p2d2-base-config --ignore-not-found
