@@ -1,25 +1,8 @@
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: p2d2-f-fv-config
-  namespace: cc-prd-geodata-stack
-data:
-  DB_USER: P2D2-FV
-  WFST_WORKSPACE: fv
-  PUBLIC_WFST_WORKSPACE: fv
-  PUBLIC_SITE_URL: https://f-fv.udp.data-dna.eu
-  # Server-seitiger WFS-T-Endpoint je Stage (mit Workspace-Pfad).
-  WFST_ENDPOINT: https://geoportal.udp.data-dna.eu/geoserver/fv/ows
-  WFST_ENDPOINT_FV: https://geoportal.udp.data-dna.eu/geoserver/fv/ows
-  WFST_USERNAME: p2d2_wfst_fv
-  WFST_USER_FV: p2d2_wfst_fv
-# Secret p2d2-f-fv-secret: wird von apply_addon_secrets() aus .env.p2d2-addon befüllt.
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: p2d2-f-fv
-  namespace: cc-prd-geodata-stack
+  namespace: __P2D2_NAMESPACE__
 spec:
   replicas: 1
   selector:
@@ -29,12 +12,12 @@ spec:
     metadata:
       labels:
         app: p2d2-f-fv
+      annotations:
+        p2d2-addon/config-hash: "__P2D2_CONFIG_HASH__"
     spec:
       containers:
         - name: astro
-          # Image-basierte Auslieferung (statt node:20-slim + PVC).
-          # Image wird per k8s/frontend/build-fv.sh auf dem k3s-Node gebaut.
-          image: p2d2-frontend-fv:v1s-2026-09-18
+          image: __P2D2_IMAGE__
           imagePullPolicy: IfNotPresent
           command: ["node", "dist/server/entry.mjs"]
           ports:
@@ -83,7 +66,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: p2d2-f-fv
-  namespace: cc-prd-geodata-stack
+  namespace: __P2D2_NAMESPACE__
 spec:
   type: ClusterIP
   selector:

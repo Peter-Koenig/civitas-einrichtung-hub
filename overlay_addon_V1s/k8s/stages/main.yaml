@@ -1,26 +1,8 @@
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: p2d2-main-config
-  namespace: cc-prd-geodata-stack
-data:
-  DB_USER: P2D2-MAIN
-  WFST_WORKSPACE: main
-  PUBLIC_WFST_WORKSPACE: main
-  PUBLIC_SITE_URL: https://www.udp.data-dna.eu
-  # Server-seitiger WFS-T-Endpoint je Stage (mit Workspace-Pfad).
-  # Beide Schreibweisen (plain + suffigiert) werden vom Code unterstützt.
-  WFST_ENDPOINT: https://geoportal.udp.data-dna.eu/geoserver/main/ows
-  WFST_ENDPOINT_MAIN: https://geoportal.udp.data-dna.eu/geoserver/main/ows
-  WFST_USERNAME: p2d2_wfst_main
-  WFST_USER_MAIN: p2d2_wfst_main
-# Secret p2d2-main-secret: wird von apply_addon_secrets() aus .env.p2d2-addon befüllt.
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: p2d2-main
-  namespace: cc-prd-geodata-stack
+  namespace: __P2D2_NAMESPACE__
 spec:
   replicas: 1
   selector:
@@ -30,12 +12,17 @@ spec:
     metadata:
       labels:
         app: p2d2-main
+      annotations:
+        # Rollout bei Konfigurationsänderung (F3): Hash der nicht-sensitiven
+        # Basis- + Stage-ConfigMap-Daten, ersetzt durch addon_render_stage_manifest.
+        p2d2-addon/config-hash: "__P2D2_CONFIG_HASH__"
     spec:
       containers:
         - name: astro
-          # Image-basierte Auslieferung (statt node:20-slim + PVC).
-          # Image wird per k8s/frontend/build-main.sh auf dem k3s-Node gebaut.
-          image: p2d2-frontend-main:v1s-2026-09-18
+          # Image-basierte Auslieferung (statt node:20-slim + PVC). Das Image wird
+          # ausschliesslich über __P2D2_IMAGE__ gerendert (F6), der Tag kommt aus
+          # install_addon_frontend_build (deterministisch, cfg-<12-hex>).
+          image: __P2D2_IMAGE__
           imagePullPolicy: IfNotPresent
           command: ["node", "dist/server/entry.mjs"]
           ports:
@@ -84,7 +71,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: p2d2-main
-  namespace: cc-prd-geodata-stack
+  namespace: __P2D2_NAMESPACE__
 spec:
   type: ClusterIP
   selector:

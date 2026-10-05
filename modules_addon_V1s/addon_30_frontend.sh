@@ -6,14 +6,16 @@
 #
 # Ist-Stand (Turn 55, 2026-09-20): de1 end-to-end verifiziert (HTTP 200, TLS, WFS).
 # Generalisiert auf alle 5 Stages (main/dev/de1/de2/fv):
-#   - Basis-ConfigMap/-Secret (atomar, alle 5 Basis-Secret-Keys)
-#   - 5 Stage-Manifeste (image-basiert, stages/<stage>.yaml)
+#   - Basis-/Stage-ConfigMaps werden aus .env.p2d2-addon generiert (F2, Allowlist)
+#   - Basis-/Stage-Secrets atomar aus .env.p2d2-addon (apply_addon_secrets)
+#   - 5 Stage-Manifeste als Templates (image-basiert, stages/<stage>.yaml, F3/F6)
 #   - Ingress je Stage (ensure_addon_frontend_ingress, RBAC-Selbstprüfung)
-#   - Image-Build-Hinweis (Node-Schritt: frontend/build-stage.sh <stage>)
 #
 # Image-Build (k3s-Node, Docker/k3s-ctr):
 #   overlay_addon_V1s/k8s/frontend/build-stage.sh <stage>   # main|dev|de1|de2|fv
 #   Wrapper: build-{main,dev,de1,de2,fv}.sh
+#   Tag: deterministisch cfg-<12-hex> (F4, addon_compute_image_tag), Übergabe über
+#   .frontend-tag-<stage> unter ${VM_REMOTE_INSTALL_DIR} (F6).
 #
 # WICHTIG (Turn 57): Dieses Modul darf NICHT isoliert gesourct werden — ADDON_NS und
 # ADDON_DOMAIN müssen vorher vom Hauptskript (p2d2-civitas-addon-v1s.sh, Zeile 39/41)
@@ -39,6 +41,137 @@ addon_frontend_guard() {
 # _addon_get <name> — liest eine Variable indirekt über ihren Namen (leer wenn ungesetzt).
 _addon_get() {
   printf '%s' "${!1:-}"
+}
+
+# addon_yaml_quote <wert> — gibt den Wert YAML-sicher (doppelt gequotet) aus.
+addon_yaml_quote() {
+  local v="$1"
+  v="${v//\\/\\\\}"
+  v="${v//\"/\\\"}"
+  printf '"%s"' "${v}"
+}
+
+# addon_configmap_base — YAML der Basis-ConfigMap (stdout). Ausschliesslich
+# nicht-sensitive Werte aus der Allowlist (F1), deterministische Key-Reihenfolge.
+addon_configmap_base() {
+  local ns="${ADDON_NS:-}"
+  cat <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: p2d2-base-config
+  namespace: ${ns}
+  labels:
+    app.kubernetes.io/managed-by: p2d2-addon
+data:
+  APP_DEBUG: $(addon_yaml_quote "$(_addon_get P2D2_BASE_APP_DEBUG)")
+  DEFAULT_CATEGORY_ICON: $(addon_yaml_quote "$(_addon_get P2D2_BASE_DEFAULT_CATEGORY_ICON)")
+  DB_HOST: $(addon_yaml_quote "$(_addon_get P2D2_BASE_DB_HOST)")
+  DB_PORT: $(addon_yaml_quote "$(_addon_get P2D2_BASE_DB_PORT)")
+  DB_NAME: $(addon_yaml_quote "$(_addon_get P2D2_BASE_DB_NAME)")
+  WFST_NAMESPACE: $(addon_yaml_quote "$(_addon_get P2D2_BASE_WFST_NAMESPACE)")
+  PUBLIC_WFST_ENDPOINT: $(addon_yaml_quote "$(_addon_get P2D2_BASE_PUBLIC_WFST_ENDPOINT)")
+  PUBLIC_MAPSERVER_URL: $(addon_yaml_quote "$(_addon_get P2D2_BASE_PUBLIC_MAPSERVER_URL)")
+  SMTP_HOST: $(addon_yaml_quote "$(_addon_get P2D2_BASE_SMTP_HOST)")
+  SMTP_PORT: $(addon_yaml_quote "$(_addon_get P2D2_BASE_SMTP_PORT)")
+  SMTP_SECURE: $(addon_yaml_quote "$(_addon_get P2D2_BASE_SMTP_SECURE)")
+  SMTP_USER: $(addon_yaml_quote "$(_addon_get P2D2_BASE_SMTP_USER)")
+  CONTACT_EMAIL_TO: $(addon_yaml_quote "$(_addon_get P2D2_BASE_CONTACT_EMAIL_TO)")
+  CONTACT_EMAIL_FROM: $(addon_yaml_quote "$(_addon_get P2D2_BASE_CONTACT_EMAIL_FROM)")
+EOF
+}
+
+# addon_configmap_stage <key> — YAML der Stage-ConfigMap (stdout).
+addon_configmap_stage() {
+  local key="$1" cm suffix
+  case "${key}" in
+    MAIN)    cm="p2d2-main-config";  suffix="MAIN" ;;
+    DEVELOP) cm="p2d2-dev-config";   suffix="DEVELOP" ;;
+    DE1)     cm="p2d2-f-de1-config"; suffix="DE1" ;;
+    DE2)     cm="p2d2-f-de2-config"; suffix="DE2" ;;
+    FV)      cm="p2d2-f-fv-config";  suffix="FV" ;;
+  esac
+  local ns="${ADDON_NS:-}"
+  local db_user wfst_ws site wfst_ep wfst_user
+  db_user="$(_addon_get "P2D2_${key}_DB_USER")"
+  wfst_ws="$(_addon_get "P2D2_${key}_WFST_WORKSPACE")"
+  site="$(_addon_get "P2D2_${key}_PUBLIC_SITE_URL")"
+  wfst_ep="$(_addon_get "P2D2_${key}_WFST_ENDPOINT")"
+  wfst_user="$(_addon_get "P2D2_${key}_WFST_USERNAME")"
+  cat <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${cm}
+  namespace: ${ns}
+  labels:
+    app.kubernetes.io/managed-by: p2d2-addon
+data:
+  DB_USER: $(addon_yaml_quote "${db_user}")
+  WFST_WORKSPACE: $(addon_yaml_quote "${wfst_ws}")
+  PUBLIC_WFST_WORKSPACE: $(addon_yaml_quote "${wfst_ws}")
+  PUBLIC_SITE_URL: $(addon_yaml_quote "${site}")
+  WFST_ENDPOINT: $(addon_yaml_quote "${wfst_ep}")
+  WFST_ENDPOINT_${suffix}: $(addon_yaml_quote "${wfst_ep}")
+  WFST_USERNAME: $(addon_yaml_quote "${wfst_user}")
+  WFST_USER_${suffix}: $(addon_yaml_quote "${wfst_user}")
+EOF
+}
+
+# addon_configmap_hash <key> — Hash der Basis- + Stage-ConfigMap-Daten (Rollout).
+addon_configmap_hash() {
+  local key="$1"
+  local combined
+  combined="$(addon_configmap_base; addon_configmap_stage "${key}")"
+  printf '%s' "${combined}" | sha256sum | awk '{print $1}'
+}
+
+# addon_render_stage_manifest <template> <namespace> <image> <config_hash>
+addon_render_stage_manifest() {
+  local template="$1" ns="$2" image="$3" hash="$4"
+  sed -e "s|__P2D2_NAMESPACE__|${ns}|g" \
+      -e "s|__P2D2_IMAGE__|${image}|g" \
+      -e "s|__P2D2_CONFIG_HASH__|${hash}|g" \
+      "${template}"
+}
+
+# addon_stage_key <stage> — bildet den kleinen Stage-Namen auf den Env-Suffix ab.
+addon_stage_key() {
+  case "$1" in
+    main) printf 'MAIN' ;;
+    dev)  printf 'DEVELOP' ;;
+    de1)  printf 'DE1' ;;
+    de2)  printf 'DE2' ;;
+    fv)   printf 'FV' ;;
+  esac
+}
+
+# addon_compute_image_tag <stage> <git_host> <git_repo_path> <git_branch> \
+#     <commit_sha> <script_sha> <build_script> <site_url> <wfst_endpoint> \
+#     <wfst_workspace> <mapserver_url> <icon>
+# Reine Funktion (F4): bildet aus sortierten NAME=WERT-Zeilen den SHA-256 und gibt
+# die ersten 12 Hex-Zeichen als cfg-<12-hex> aus. Die Eingaben sind ausschliesslich
+# nicht-sensitive Produkt- und Buildwerte — niemals Tokens, Passwörter oder andere
+# Secrets in den Hash aufnehmen. Ohne Git-/Cluster-Zugriff testbar.
+addon_compute_image_tag() {
+  local stage="$1" git_host="$2" git_repo_path="$3" git_branch="$4" \
+        commit_sha="$5" script_sha="$6" build_script="$7" site_url="$8" \
+        wfst_endpoint="$9" wfst_workspace="${10}" mapserver_url="${11}" icon="${12}"
+  local canonical
+  canonical="$(printf '%s\n' \
+    "BUILD_SCRIPT=${build_script}" \
+    "COMMIT_SHA=${commit_sha}" \
+    "DEFAULT_CATEGORY_ICON=${icon}" \
+    "GIT_BRANCH=${git_branch}" \
+    "GIT_HOST=${git_host}" \
+    "GIT_REPO_PATH=${git_repo_path}" \
+    "PUBLIC_MAPSERVER_URL=${mapserver_url}" \
+    "PUBLIC_SITE_URL=${site_url}" \
+    "PUBLIC_WFST_ENDPOINT=${wfst_endpoint}" \
+    "PUBLIC_WFST_WORKSPACE=${wfst_workspace}" \
+    "SCRIPT_SHA=${script_sha}" \
+    "STAGE=${stage}")"
+  printf 'cfg-%s' "$(printf '%s' "${canonical}" | sha256sum | awk '{print substr($1,1,12)}')"
 }
 
 # _addon_ensure_secret <namespace> <name> <key=value>...
@@ -189,8 +322,9 @@ EOF
 install_addon_frontend_build() {
   log "=== AddOn 30: Frontend-Image-Build (5 Stages, k3s-Node) ==="
 
-  local overlay_dir
+  local overlay_dir tag_dir
   overlay_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../overlay_addon_V1s/k8s" && pwd)"
+  tag_dir="${VM_REMOTE_INSTALL_DIR:-/root/p2d2-addon}"
   local build_script="${overlay_dir}/frontend/build-stage.sh"
   if [[ ! -x "${build_script}" ]]; then
     log_error "build-stage.sh nicht gefunden/ausführbar: ${build_script}"
@@ -227,14 +361,24 @@ install_addon_frontend_build() {
     return 1
   fi
 
-  local stage build_failed=0
+  local stage tag_file tag build_failed=0
   for stage in main dev de1 de2 fv; do
+    tag_file="${tag_dir}/.frontend-tag-${stage}"
     log "  Image-Build ${stage} (${build_script} ${stage}) …"
-    if ! "${build_script}" "${stage}"; then
+    # F6: build-stage.sh schreibt den berechneten Tag (cfg-<12-hex>) in die
+    # Zustandsdatei; install_addon_frontend liest ihn und rendert __P2D2_IMAGE__.
+    if ! FRONTEND_TAG_FILE="${tag_file}" "${build_script}" "${stage}"; then
       log_error "Image-Build ${stage} fehlgeschlagen — Abbruch"
       build_failed=1
       break
     fi
+    tag="$(cat "${tag_file}" 2>/dev/null || true)"
+    if [[ -z "${tag}" ]]; then
+      log_error "Image-Build ${stage}: kein Tag in ${tag_file} — build-stage.sh prüfen"
+      build_failed=1
+      break
+    fi
+    log_ok "Image-Build ${stage}: Tag ${tag} geschrieben"
   done
 
   # ── Docker ggf. wieder deinstallieren (auch bei Build-Fehler) ──────────────
@@ -264,23 +408,41 @@ install_addon_frontend() {
   local ns="${ADDON_NS}"
   local overlay_dir
   overlay_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../overlay_addon_V1s/k8s" && pwd)"
+  local tag_dir="${VM_REMOTE_INSTALL_DIR:-/root/p2d2-addon}"
 
   # 1) Secrets aus .env.p2d2-addon befüllen (Basis + 5 Stages, atomar, nur Erstanlage).
   apply_addon_secrets || return 1
 
-  # 2) Basis-ConfigMap (nicht-sensibel; Secret wird von apply_addon_secrets verwaltet).
-  kubectl apply -f "${overlay_dir}/base.yaml" \
-    || { log_error "kubectl apply base.yaml fehlgeschlagen"; return 1; }
+  # 2) Basis-ConfigMap generieren und anwenden (nicht-sensibel, Allowlist F1).
+  addon_configmap_base | kubectl apply -f - \
+    || { log_error "kubectl apply Basis-ConfigMap fehlgeschlagen"; return 1; }
   log_ok "Basis-ConfigMap angewendet (p2d2-base-config)"
 
-  # 3) Stage-Manifeste (ConfigMap + Deployment + Service je Stage, image-basiert).
-  local stage
+  # 3) Stage-ConfigMaps generieren, Manifeste rendern und anwenden.
+  local stage key tag_file tag image hash manifest
   for stage in main dev de1 de2 fv; do
-    local manifest="${overlay_dir}/stages/${stage}.yaml"
+    key="$(addon_stage_key "${stage}")"
+
+    addon_configmap_stage "${key}" | kubectl apply -f - \
+      || { log_error "kubectl apply Stage-ConfigMap ${stage} fehlgeschlagen"; return 1; }
+    log_ok "Stage ${stage}: ConfigMap angewendet"
+
+    # Image-Tag aus der Zustandsdatei lesen (install_addon_frontend_build schreibt sie).
+    tag_file="${tag_dir}/.frontend-tag-${stage}"
+    tag=""
+    [[ -f "${tag_file}" ]] && tag="$(cat "${tag_file}" 2>/dev/null || true)"
+    if [[ -z "${tag}" ]]; then
+      log_error "Image-Tag fehlt für Stage ${stage} (${tag_file}) — zuerst install_addon_frontend_build ausführen"
+      return 1
+    fi
+    image="p2d2-frontend-${stage}:${tag}"
+    hash="$(addon_configmap_hash "${key}")"
+
+    manifest="${overlay_dir}/stages/${stage}.yaml"
     if [[ -f "${manifest}" ]]; then
-      kubectl apply -f "${manifest}" \
+      addon_render_stage_manifest "${manifest}" "${ns}" "${image}" "${hash}" | kubectl apply -f - \
         || { log_error "kubectl apply ${manifest} fehlgeschlagen"; return 1; }
-      log_ok "Stage ${stage}: Manifest angewendet"
+      log_ok "Stage ${stage}: Manifest angewendet (${image})"
     else
       log_warn "Stage-Manifest fehlt: ${manifest} — übersprungen"
     fi
@@ -294,10 +456,8 @@ install_addon_frontend() {
 
   # 5) Image-Build ist bereits als vorgelagerter Teilschritt gelaufen
   #     (install_addon_frontend_build, vom Hauptskript vor diesem Modul aufgerufen).
-  #     Für manuelle Einzel-Builds auf dem k3s-Node:
-  #       ./overlay_addon_V1s/k8s/frontend/build-stage.sh <stage>   # main|dev|de1|de2|fv
   log "  Image-Build: bereits durch install_addon_frontend_build erfolgt (vorgelagerter Schritt)"
-  log_ok "AddOn 30 Frontend: Secrets + Manifeste + Ingress angewendet"
+  log_ok "AddOn 30 Frontend: Secrets + ConfigMaps + Manifeste + Ingress angewendet"
   return 0
 }
 

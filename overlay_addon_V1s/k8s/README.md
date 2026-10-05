@@ -1,11 +1,18 @@
 # p2d2 Frontend-Pods (CIVITAS/CORE)
 
-Manifeste für die fünf Frontend-Pods (Astro-SSR) im Namespace `cc-prd-geodata-stack`.
+Manifeste (Templates) für die fünf Frontend-Pods (Astro-SSR). Namespace und Image
+werden zur Laufzeit gerendert (`ADDON_NS`, `__P2D2_IMAGE__`), die ConfigMaps/Secrets
+erzeugt `modules_addon_V1s/addon_30_frontend.sh` aus `.env.p2d2-addon`.
 
 ## Struktur
 
-- `base.yaml` — gemeinsame Basis-Werte (ConfigMap `p2d2-base-config` + Secret `p2d2-base-secret`)
-- `stages/<stage>.yaml` — je Stage: PVC, ConfigMap (stage-spezifisch), Secret (stage-spezifisch), Deployment, Service
+- `stages/<stage>.yaml` — je Stage ein Deployment + Service als Template
+  (`__P2D2_NAMESPACE__`, `__P2D2_IMAGE__`, `__P2D2_CONFIG_HASH__`). Die ConfigMap
+  (`p2d2-<stage>-config`) und die Basis-ConfigMap (`p2d2-base-config`) werden
+  generiert, nicht mehr als Manifest abgelegt.
+- `frontend/build-stage.sh` — baut das Runtime-Image je Stage (Tag `cfg-<12-hex>`,
+  deterministisch aus nicht-sensitiven Buildwerten), `frontend/build-<stage>.sh`
+  sind dünne Wrapper.
 - `builder-job.yaml` — Builder-Job (git clone → npm ci → npm run build:<stage> → PVC)
 - `webhook-controller/` — Webhook-Controller (Node.js) + Deployment + RBAC
 - `VARIABLES.md` — Variablen-Ledger (Kategorie/Quelle/Status aller Variablen, ohne echte Werte)
@@ -39,12 +46,11 @@ Manifeste für die fünf Frontend-Pods (Astro-SSR) im Namespace `cc-prd-geodata-
 
 ## Anwendung
 
-```bash
-kubectl apply -f k8s/base.yaml
-kubectl apply -f k8s/stages/
-kubectl apply -f k8s/builder-job.yaml
-kubectl apply -f k8s/webhook-controller/deployment.yaml -f k8s/webhook-controller/rbac.yaml
-```
+Die ConfigMaps, Secrets und Stage-Manifeste werden nicht mehr manuell mit
+`kubectl apply` eingespielt, sondern vom AddOn-Skript erzeugt und angewendet
+(`install_addon_frontend_build` baut die Images, `install_addon_frontend` rendert
+und wendet die Manifeste an). Die Stage-Manifeste sind Templates und daher nicht
+direkt `kubectl apply`-fähig.
 
 ## Bewusst weggelassen (gegenüber Standalone `deploy-branch.sh`)
 
