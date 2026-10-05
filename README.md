@@ -205,15 +205,15 @@ Alternativ können alle Variablen auch direkt als Umgebungsvariablen exportiert 
 Das Skript verwendet eine Entscheidungsfunktion (`resolve_target_state`), die den
 Zielzustand für TLS-Zertifikate anhand folgender Logik ermittelt:
 
-- **`LE_CERT=false`** (Standard): Es werden ausschließlich Let's-Encrypt-Staging-
-  Zertifikate verwendet. Es erfolgen keine Production-Anfragen.
+- **`LE_CERT=false`** (Standard): keine Let's-Encrypt-Zertifikate, interne CA
+  (`selfsigned-issuer`).
 - **`CERT_BACKUP_FILE` vorhanden und brauchbar**: Ein bestehendes Backup wird
   wiederhergestellt. Es hat **Vorrang** vor `LE_CERT`. Brauchbar heißt: richtige
   Domain, Restlaufzeit von mindestens `CERT_BACKUP_MIN_DAYS` (Default 30) und
   vollständige Dokumente. Ein unbrauchbares Backup wird mit einer Warnung
   ignoriert; der Lauf verhält sich dann wie ohne Backup.
-- **`LE_CERT=true` und kein Backup vorhanden**: Es werden neue Let's-Encrypt-
-  Production-Zertifikate angefordert.
+- **`LE_CERT=true` und kein Backup vorhanden**: Let's-Encrypt-Zertifikate werden
+  zugelassen (erst Staging-Test, dann Produktion).
 - **`LE_REQUESTS_BLOCKED=true`**: Safety-Schalter. Selbst wenn alle Bedingungen für
   eine Production-Anfrage erfüllt sind, wird diese blockiert. Nützlich, um
   versehentliche Raten-Limits bei Let's-Encrypt zu vermeiden.
@@ -259,10 +259,10 @@ hat erneuert). Nach einem erfolgreichen Restore bleibt es unverändert.
 - **Abhängigkeit von OPNsense/HAProxy:** Ohne eine korrekt konfigurierte
   OPNsense-Instanz mit HAProxy und WireGuard-Tunnel sind alle Endpunkte von
   außen nicht erreichbar (siehe Abschnitt 3).
-- **Zertifikats-Management:** Standardmäßig werden nur
-  Let's-Encrypt-Staging-Zertifikate ausgestellt. Für Production-Zertifikate
-  muss `LE_CERT=true` gesetzt werden. Ein Safety-Schalter
-  (`LE_REQUESTS_BLOCKED`) kann neue Zertifikatsanforderungen blockieren.
+- **Zertifikats-Management:** Standardmäßig werden keine Let's-Encrypt-Zertifikate
+  ausgestellt (interne CA `selfsigned-issuer`). Für Production-Zertifikate muss
+  `LE_CERT=true` gesetzt werden. Ein Safety-Schalter (`LE_REQUESTS_BLOCKED`) kann
+  neue Zertifikatsanforderungen blockieren.
 - **LE-Zertifikats-Backup:** Nach erfolgreicher Neuausstellung von
   Produktivzertifikaten schreibt der Installer ein Backup nach
   `CERT_BACKUP_FILE` (VM) und holt es nach `${HOME}/le-certs-backup.yaml`
@@ -611,15 +611,15 @@ Alternatively, all variables can be exported directly as environment variables.
 The script uses a decision function (`resolve_target_state`) that determines the
 target state for TLS certificates based on the following logic:
 
-- **`LE_CERT=false`** (default): Only Let's-Encrypt staging certificates are
-  used. No production requests are made.
+- **`LE_CERT=false`** (default): no Let's-Encrypt certificates, internal CA
+  (`selfsigned-issuer`).
 - **`CERT_BACKUP_FILE` exists and is usable**: An existing backup is restored.
   It takes **precedence** over `LE_CERT`. Usable means: correct domain, remaining
   validity of at least `CERT_BACKUP_MIN_DAYS` (default 30), and complete documents.
   An unusable backup is ignored with a warning; the run then behaves as without a
   backup.
-- **`LE_CERT=true` and no backup exists**: New Let's-Encrypt production
-  certificates are requested.
+- **`LE_CERT=true` and no backup exists**: Let's-Encrypt certificates are allowed
+  (first staging test, then production).
 - **`LE_REQUESTS_BLOCKED=true`**: Safety switch. Even if all conditions for a
   production request are met, it is blocked. Useful for preventing accidental
   rate-limit hits at Let's-Encrypt.
@@ -665,9 +665,10 @@ After a successful restore it remains unchanged.
 - **Dependency on OPNsense/HAProxy:** Without a correctly configured OPNsense
   instance with HAProxy and a WireGuard tunnel, all endpoints are unreachable
   from the outside (see section 3).
-- **Certificate management:** By default, only Let's-Encrypt staging
-  certificates are issued. For production certificates, set `LE_CERT=true`. A
-  safety switch (`LE_REQUESTS_BLOCKED`) can block new certificate requests.
+- **Certificate management:** By default, no Let's-Encrypt certificates are
+  issued (internal CA `selfsigned-issuer`). For production certificates, set
+  `LE_CERT=true`. A safety switch (`LE_REQUESTS_BLOCKED`) can block new
+  certificate requests.
 - **E2E tests:** Playwright-based E2E tests are in preparation (controllable
   via `RUN_TESTS`) but not yet fully integrated (known open issue:
   `BASE_DOMAIN` error in the test `.env` generation).
