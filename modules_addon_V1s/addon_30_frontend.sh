@@ -248,39 +248,116 @@ apply_addon_secrets() {
   return 0
 }
 
-# ── Ingress (idempotent, je Stage) ─────────────────────────────────────────────
-# Turn 45: de1-Pod läuft, aber es fehlte ein Ingress. Legt für eine Stage ein
-# Ingress nach der funktionierenden idmkeycloak-Vorlage an (Klasse nginx,
-# cluster-issuer letsencrypt-prod, TLS-Secret <host>-tls).
-ensure_addon_frontend_ingress() {
-  local stage="$1"
-  [[ -n "${stage}" ]] || { log_error "ensure_addon_frontend_ingress: keine Stage angegeben"; return 1; }
-
-  local svc host secret
-  case "${stage}" in
-    main) svc="p2d2-main";    host="www.${ADDON_DOMAIN}" ;;
-    dev)  svc="p2d2-dev";     host="dev.${ADDON_DOMAIN}" ;;
-    de1)  svc="p2d2-f-de1";   host="f-de1.${ADDON_DOMAIN}" ;;
-    de2)  svc="p2d2-f-de2";   host="f-de2.${ADDON_DOMAIN}" ;;
-    fv)   svc="p2d2-f-fv";    host="f-fv.${ADDON_DOMAIN}" ;;
-    *)    log_error "ensure_addon_frontend_ingress: unbekannte Stage '${stage}' (main|dev|de1|de2|fv)"; return 1 ;;
-  esac
-  secret="${host}-tls"
-
-  if kubectl get ingress "${svc}" -n "${ADDON_NS}" &>/dev/null; then
-    log_ok "Ingress ${svc} existiert bereits (idempotent übersprungen)"
+# ── Zertifikats-Issuer (Schritt 2c) ────────────────────────────────────────────
+# addon_pick_cert_issuer <explicit> [<issuer>...] — reine Entscheidung (U1, testbar).
+# explicit != auto -> unverändert zurück. auto -> alle übergebenen Issuer müssen
+# identisch sein; leer oder uneinheitlich ist ein Fehler.
+addon_pick_cert_issuer() {
+  local explicit="$1"; shift
+  if [[ "${explicit}" != "auto" ]]; then
+    printf '%s' "${explicit}"
     return 0
   fi
+  if [[ "$#" -eq 0 ]]; then
+    log_error "addon_pick_cert_issuer: keine Core-Ingresses mit TLS-Block gefunden — P2D2_CERT_ISSUER explizit setzen"
+    return 1
+  fi
+  local first="$1" issuer
+  for issuer in "$@"; do
+    if [[ -z "${issuer}" ]]; then
+      log_error "addon_pick_cert_issuer: ein Core-Ingress trägt keine cert-manager.io/cluster-issuer-Annotation"
+      return 1
+    fi
+    if [[ "${issuer}" != "${first}" ]]; then
+      log_error "addon_pick_cert_issuer: uneinheitliche Core-Issuer ('${first}' vs '${issuer}') — P2D2_CERT_ISSUER explizit setzen"
+      return 1
+    fi
+  done
+  printf '%s' "${first}"
+  return 0
+}
 
-  local manifest
-  manifest=$(cat <<EOF
+# addon_resolve_cert_issuer — löst den Issuer auf (U1). Bei auto werden die
+# Core-Ingresses mit TLS-Block in ${ADDON_IAM_NS} gelesen (Default cc-prd-access-stack).
+addon_resolve_cert_issuer() {
+  local explicit="${P2D2_CERT_ISSUER:-auto}"
+  if [[ "${explicit}" != "auto" ]]; then
+    addon_pick_cert_issuer "${explicit}"
+    return $?
+  fi
+  local iam_ns="${ADDON_IAM_NS:-cc-prd-access-stack}"
+  local -a issuers=()
+  local issuer
+  while IFS= read -r issuer; do
+    issuers+=("${issuer}")
+  done < <(kubectl get ingress -n "${iam_ns}" -o json 2>/dev/null \
+    | jq -r '.items[]? | select(.spec.tls != null) | (.metadata.annotations["cert-manager.io/cluster-issuer"] // "")' 2>/dev/null)
+  if [[ ${#issuers[@]} -eq 0 ]]; then
+    addon_pick_cert_issuer "${explicit}"
+  else
+    addon_pick_cert_issuer "${explicit}" "${issuers[@]}"
+  fi
+}
+
+# addon_cert_is_acme <issuer> — 0 wenn ACME-Issuer (letsencrypt-*), sonst 1.
+addon_cert_is_acme() {
+  case "$1" in
+    letsencrypt-staging|letsencrypt-prod) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# addon_ensure_cert_issuer_ready <issuer> — prüft nur, legt nichts an (U2).
+addon_ensure_cert_issuer_ready() {
+  local issuer="$1" ready
+  if ! kubectl get clusterissuer "${issuer}" &>/dev/null; then
+    log_error "ClusterIssuer ${issuer} nicht vorhanden — P2D2_CERT_ISSUER prüfen"
+    return 1
+  fi
+  ready="$(kubectl get clusterissuer "${issuer}" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)"
+  if [[ "${ready}" != "True" ]]; then
+    log_error "ClusterIssuer ${issuer} ist nicht Ready (Status: ${ready:-unbekannt})"
+    return 1
+  fi
+  log_ok "ClusterIssuer ${issuer} vorhanden und Ready"
+  return 0
+}
+
+# addon_frontend_host <stage> / addon_frontend_svc <stage> — Stage-Mapping.
+addon_frontend_host() {
+  case "$1" in
+    main) printf 'www.%s'   "${ADDON_DOMAIN}" ;;
+    dev)  printf 'dev.%s'   "${ADDON_DOMAIN}" ;;
+    de1)  printf 'f-de1.%s' "${ADDON_DOMAIN}" ;;
+    de2)  printf 'f-de2.%s' "${ADDON_DOMAIN}" ;;
+    fv)   printf 'f-fv.%s'  "${ADDON_DOMAIN}" ;;
+  esac
+}
+addon_frontend_svc() {
+  case "$1" in
+    main) printf 'p2d2-main' ;;
+    dev)  printf 'p2d2-dev' ;;
+    de1)  printf 'p2d2-f-de1' ;;
+    de2)  printf 'p2d2-f-de2' ;;
+    fv)   printf 'p2d2-f-fv' ;;
+  esac
+}
+
+# addon_render_ingress <stage> <issuer> — reines Ingress-Rendering (U4).
+addon_render_ingress() {
+  local stage="$1" issuer="$2" svc host secret
+  svc="$(addon_frontend_svc "${stage}")"
+  host="$(addon_frontend_host "${stage}")"
+  [[ -n "${svc}" && -n "${host}" ]] || { log_error "addon_render_ingress: unbekannte Stage '${stage}' (main|dev|de1|de2|fv)"; return 1; }
+  secret="${host}-tls"
+  cat <<EOF
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: ${svc}
   namespace: ${ADDON_NS}
   annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-prod
+    cert-manager.io/cluster-issuer: ${issuer}
     nginx.ingress.kubernetes.io/backend-protocol: HTTP
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
 spec:
@@ -301,7 +378,42 @@ spec:
     - ${host}
     secretName: ${secret}
 EOF
-)
+}
+
+# ── Ingress (idempotent, je Stage) ─────────────────────────────────────────────
+ensure_addon_frontend_ingress() {
+  local stage="$1" issuer="$2"
+  [[ -n "${stage}" && -n "${issuer}" ]] || { log_error "ensure_addon_frontend_ingress: Stage und Issuer erforderlich"; return 1; }
+
+  local svc host secret
+  svc="$(addon_frontend_svc "${stage}")"
+  host="$(addon_frontend_host "${stage}")"
+  [[ -n "${svc}" && -n "${host}" ]] || { log_error "ensure_addon_frontend_ingress: unbekannte Stage '${stage}' (main|dev|de1|de2|fv)"; return 1; }
+  secret="${host}-tls"
+
+  if kubectl get ingress "${svc}" -n "${ADDON_NS}" &>/dev/null; then
+    # U5: vorhandener Ingress mit abweichendem Issuer -> nur warnen, nie patchen.
+    local current_issuer
+    current_issuer="$(kubectl get ingress "${svc}" -n "${ADDON_NS}" \
+      -o jsonpath='{.metadata.annotations.cert-manager\.io/cluster-issuer}' 2>/dev/null || true)"
+    if [[ -n "${current_issuer}" && "${current_issuer}" != "${issuer}" ]]; then
+      log_warn "Ingress ${svc} existiert mit Issuer '${current_issuer}' (aufgelöst: '${issuer}') — nicht automatisch gepatcht"
+    else
+      log_ok "Ingress ${svc} existiert bereits (idempotent übersprungen)"
+    fi
+    return 0
+  fi
+
+  # U3: Sperre bei ACME-Issuer und fehlendem TLS-Secret.
+  if [[ "${P2D2_CERT_BLOCK_NEW_REQUESTS:-false}" == "true" ]] && addon_cert_is_acme "${issuer}"; then
+    if ! kubectl -n "${ADDON_NS}" get secret "${secret}" &>/dev/null; then
+      log_error "P2D2_CERT_BLOCK_NEW_REQUESTS=true und Secret ${secret} fehlt — keine neue Zertifikatsanforderung für ${host}"
+      return 1
+    fi
+  fi
+
+  local manifest
+  manifest="$(addon_render_ingress "${stage}" "${issuer}")" || return 1
 
   if ! kubectl auth can-i create ingresses.networking.k8s.io -n "${ADDON_NS}" &>/dev/null; then
     log_error "RBAC: keine create-Berechtigung auf ingresses.networking.k8s.io in ${ADDON_NS} — bitte manuell anwenden:"
@@ -311,7 +423,7 @@ EOF
 
   printf '%s\n' "${manifest}" | kubectl apply -f - \
     || { log_error "kubectl apply fehlgeschlagen für Ingress ${svc}"; return 1; }
-  log_ok "Ingress ${svc} angelegt (${host} -> ${svc}:80; TLS-Secret ${secret} via cert-manager)"
+  log_ok "Ingress ${svc} angelegt (${host} -> ${svc}:80; TLS-Secret ${secret}, Issuer ${issuer})"
 }
 
 # install_addon_frontend_build — baut die Runtime-Images aller 5 Stages auf dem
@@ -325,6 +437,12 @@ install_addon_frontend_build() {
   local overlay_dir tag_dir
   overlay_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../overlay_addon_V1s/k8s" && pwd)"
   tag_dir="${VM_REMOTE_INSTALL_DIR:-/root/p2d2-addon}"
+  # U7a: veraltete Tag-Zustandsdateien löschen, damit install_addon_frontend
+  # keinen alten Tag liest, falls ein früherer Build abgebrochen ist.
+  local stale
+  for stale in "${tag_dir}"/.frontend-tag-*; do
+    [[ -e "${stale}" ]] && rm -f "${stale}"
+  done
   local build_script="${overlay_dir}/frontend/build-stage.sh"
   if [[ ! -x "${build_script}" ]]; then
     log_error "build-stage.sh nicht gefunden/ausführbar: ${build_script}"
@@ -448,9 +566,12 @@ install_addon_frontend() {
     fi
   done
 
-  # 4) Ingress je Stage (RBAC-Selbstprüfung + Peter-Handoff in ensure_addon_frontend_ingress).
+  # 4) Zertifikats-Issuer auflösen + ClusterIssuer prüfen (U1/U2), dann Ingress je Stage.
+  local cert_issuer
+  cert_issuer="$(addon_resolve_cert_issuer)" || return 1
+  addon_ensure_cert_issuer_ready "${cert_issuer}" || return 1
   for stage in main dev de1 de2 fv; do
-    ensure_addon_frontend_ingress "${stage}" \
+    ensure_addon_frontend_ingress "${stage}" "${cert_issuer}" \
       || log_warn "Ingress ${stage} nicht angelegt — bitte manuell (siehe Ausgabe oben)"
   done
 
