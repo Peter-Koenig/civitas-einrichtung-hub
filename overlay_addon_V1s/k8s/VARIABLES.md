@@ -4,6 +4,10 @@ Dieses Ledger dokumentiert **jede** für den Frontend-Baustein benötigte Variab
 (ConfigMap-/Secret-Key) über alle 5 Stages hinweg. Es enthält **niemals echte
 Werte**, sondern nur Name, Ablage, Kategorie, Quelle/Herkunft und Status.
 
+> Die einzige Quelle für Konfiguration und Secrets ist die Vorlage
+> `.env.p2d2-addon.example` im Repository-Root. Die echte Datei
+> `.env.p2d2-addon` liegt ausserhalb des Repos und ist nicht versioniert.
+
 ## Kategorien
 
 | Kategorie | Bedeutung |

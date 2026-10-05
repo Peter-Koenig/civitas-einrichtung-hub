@@ -55,6 +55,10 @@ Kontext (Env ADDON_CONTEXT):
 SSH-Schlüssel (Host-Kontext):
   ADDON_SSH_KEY_FILE  optionaler Pfad zu einem privaten Schlüssel (Admin-Key)
   INSTALL_KEY_DIR     Ablage des Installer-Schlüssels (sonst wird dort gesucht)
+
+Konfiguration:
+  .env.p2d2-addon  Standard: <Skriptverzeichnis>/../.env.p2d2-addon
+                   Vorlage: .env.p2d2-addon.example (Repo-Root)
 USAGE
   exit 0
 fi
@@ -101,6 +105,7 @@ log_error() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✗ $*" >&2; }
 
 # ── Module laden ───────────────────────────────────────────────────────────────
 source "${SCRIPT_DIR}/modules_addon_V1s/addon_05_ssh.sh"
+source "${SCRIPT_DIR}/modules_addon_V1s/addon_01_config.sh"
 source "${SCRIPT_DIR}/modules_addon_V1s/addon_00_postgresql.sh"
 source "${SCRIPT_DIR}/modules_addon_V1s/addon_10_geoserver.sh"
 source "${SCRIPT_DIR}/modules_addon_V1s/addon_20_mapproxy.sh"
@@ -110,32 +115,12 @@ source "${SCRIPT_DIR}/modules_addon_V1s/addon_35_portal.sh"
 
 # ── Fail-Fast-Vorprüfungen (Turn 63/65) ────────────────────────────────────────
 # _preflight_env — prüft, dass .env.p2d2-addon alle Pflichtvariablen liefert.
-# OIDC_CLIENT_ID/-SECRET sind bewusst NICHT Pflicht (werden von IAM erzeugt).
+# Delegiert an die zentrale Validierung (modules_addon_V1s/addon_01_config.sh).
+# Der VM-Ablauf ruft addon_validate_config direkt auf; diese Funktion bleibt als
+# schlanker Wrapper erhalten (Abwärtskompatibilität, Tests).
+# OIDC_CLIENT_ID/-SECRET bleiben bewusst NICHT Pflicht (werden von IAM erzeugt).
 _preflight_env() {
-  local missing=() v key
-  for v in \
-    P2D2_BASE_ALTCHA_HMAC_KEY \
-    P2D2_BASE_SMTP_PASS \
-    P2D2_BASE_OIDC_ISSUER \
-    P2D2_DEMO_PASSWORD \
-    P2D2_OSM_IDP_CLIENT_ID \
-    P2D2_OSM_IDP_CLIENT_SECRET \
-    P2D2_GITHUB_TOKEN \
-    P2D2_GITLAB_TOKEN; do
-    [[ -n "${!v:-}" ]] || missing+=("$v")
-  done
-  for key in MAIN DEVELOP DE1 DE2 FV; do
-    for v in "P2D2_${key}_DB_PASSWORD" "P2D2_${key}_WFST_PASSWORD" "P2D2_${key}_SESSION_SECRET"; do
-      [[ -n "${!v:-}" ]] || missing+=("$v")
-    done
-  done
-  if [[ ${#missing[@]} -gt 0 ]]; then
-    log_error ".env.p2d2-addon unvollständig — fehlende Pflichtvariablen:"
-    printf '  - %s\n' "${missing[@]}" >&2
-    return 1
-  fi
-  log_ok ".env.p2d2-addon vollständig (Pflichtvariablen gesetzt)"
-  return 0
+  addon_validate_config || return 1
 }
 
 # _preflight_masterportal — Masterportal-Service (statisch, Teil von CIVITAS/CORE)
@@ -175,9 +160,9 @@ preflight_addon() {
   fi
   log_ok "Namespace ${ADDON_NS} vorhanden"
 
-  # Für Uninstall ist .env/Masterportal/Portal nicht erforderlich (Creds kommen aus k8s).
+  # Für Uninstall sind Masterportal/Portal nicht erforderlich (Creds kommen aus k8s).
+  # Die .env-Validierung läuft vorab über addon_validate_config (nur Install).
   if [[ "${1:-}" != "--uninstall" ]]; then
-    _preflight_env || return 1
     _preflight_masterportal || return 1
     _preflight_portal || return 1
   fi
@@ -287,6 +272,11 @@ else
 fi
 
 # ── Fail-Fast-Vorprüfungen ─────────────────────────────────────────────────────
+# Zuerst der Konfigurationsvertrag (zentrale Validierung, nur Install), dann die
+# Kubernetes-Vorprüfungen (Namespace/Masterportal/Portal).
+if [[ "${1:-}" != "--uninstall" ]]; then
+  addon_validate_config || exit 1
+fi
 preflight_addon "${1:-}" || exit 1
 
 # ── Startmeldung (VM-Kontext) ─────────────────────────────────────────────────
