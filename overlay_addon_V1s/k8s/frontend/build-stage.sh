@@ -27,8 +27,10 @@
 # "Image existiert -> überspringen" bräuchte die Auflösung des Commit-SHA via
 # `git ls-remote` VOR dem Clone; der deterministische Tag hängt aber vom
 # aufgelösten Commit ab. Der Tag ist content-adressiert, ein erneuter Lauf
-# erzeugt denselben Tag und der Docker-Build nutzt den Layer-Cache. FORCE_REBUILD
-# bleibt als Folgearbeit notiert.
+# erzeugt denselben Tag. Ob ein solcher Lauf günstiger ist (Layer-Cache), ist
+# offen: install_addon_frontend_build deinstalliert ein selbst installiertes
+# Docker nach dem Build; unklar ist, ob dabei auch der Layer-Cache verschwindet.
+# FORCE_REBUILD bleibt als Folgearbeit notiert.
 #
 # Git-Token wird nur für den Host-Clone verwendet (nicht als Build-Arg);
 # .git/ wird per .dockerignore aus dem Build-Kontext gehalten.

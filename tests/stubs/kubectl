@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 # Stub für kubectl. Steuerung über KUBECTL_MODE:
-#   ok       → alle get-Aufrufe liefern 0
-#   no_ns    → "get namespace" liefert Fehler
-#   no_secret→ "get secret" liefert Fehler
+#   ok              → alle get-Aufrufe liefern 0 (kein Output)
+#   no_ns           → "get namespace" liefert Fehler
+#   no_secret       → "get secret" liefert Fehler
+#   no_clusterissuer→ "get clusterissuer" liefert Fehler
+#   issuer_ready    → "get clusterissuer ... -o jsonpath" liefert "True"
+# Optional: KUBECTL_CALL_LOG protokolliert jeden Aufruf (eine Zeile je Aufruf).
+if [[ -n "${KUBECTL_CALL_LOG:-}" ]]; then
+  echo "$*" >> "${KUBECTL_CALL_LOG}"
+fi
 case "${KUBECTL_MODE:-ok}" in
   no_ns)
     case "$*" in
@@ -12,6 +18,16 @@ case "${KUBECTL_MODE:-ok}" in
   no_secret)
     case "$*" in
       *"get secret"*) exit 1 ;;
+    esac
+    ;;
+  no_clusterissuer)
+    case "$*" in
+      *"get clusterissuer"*) exit 1 ;;
+    esac
+    ;;
+  issuer_ready)
+    case "$*" in
+      *"get clusterissuer"*"jsonpath"*) echo "True" ;;
     esac
     ;;
 esac
