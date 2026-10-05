@@ -115,6 +115,16 @@ Werte**, sondern nur Name, Ablage, Kategorie, Quelle/Herkunft und Status.
 > des AddOns) und werden daher von `uninstall_addon_frontend()` beim Rückbau
 > **mit gelöscht** (Turn 65) — ohne AddOn sind sie reines Legacy.
 
+## 7. Zertifikats-Issuer der AddOn-Ingresses (Schritt 2c)
+
+Diese beiden Variablen gehören zum Konfigurationsvertrag, nicht zu den
+ConfigMaps/Secrets. Sie sind optional und haben Defaults.
+
+| Variable | Default | Bedeutung |
+|---|---|---|
+| `P2D2_CERT_ISSUER` | `auto` | Issuer der AddOn-Ingresses: `auto` leitet aus den Core-Ingresses in `ADDON_IAM_NS` ab; alternativ `selfsigned-issuer`, `letsencrypt-staging`, `letsencrypt-prod`. |
+| `P2D2_CERT_BLOCK_NEW_REQUESTS` | `false` | `true` verhindert bei ACME-Issuern neue Zertifikatsanforderungen (Secret `<host>-tls` muss existieren). |
+
 ---
 
 ## Verifikation `DB_NAME = p2d2`

@@ -124,6 +124,18 @@ addon_validate_config() {
   addon_normalize_bool P2D2_DEMO_ACCOUNTS || return 1
   addon_normalize_bool P2D2_OSM_IDP_ENABLE || return 1
 
+  # 3b) Zertifikats-Issuer und Sperre (Schritt 2c, optional mit Default).
+  if [[ ! -v P2D2_CERT_ISSUER ]]; then P2D2_CERT_ISSUER="auto"; fi
+  case "${P2D2_CERT_ISSUER}" in
+    auto|selfsigned-issuer|letsencrypt-staging|letsencrypt-prod) ;;
+    *)
+      log_error "P2D2_CERT_ISSUER muss auto|selfsigned-issuer|letsencrypt-staging|letsencrypt-prod sein (ist: '${P2D2_CERT_ISSUER}')"
+      return 1
+      ;;
+  esac
+  if [[ ! -v P2D2_CERT_BLOCK_NEW_REQUESTS ]]; then P2D2_CERT_BLOCK_NEW_REQUESTS="false"; fi
+  addon_normalize_bool P2D2_CERT_BLOCK_NEW_REQUESTS || return 1
+
   # 4) Nicht-sensitive Basiswerte (Vorlage, Abschnitt 3).
   for v in \
     P2D2_BASE_APP_DEBUG \
