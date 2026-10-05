@@ -165,6 +165,8 @@ preflight_addon() {
   if [[ "${1:-}" != "--uninstall" ]]; then
     _preflight_masterportal || return 1
     _preflight_portal || return 1
+    # F1: Zertifikats-Issuer und Sperre VOR den Installationsmodulen/Builds prüfen.
+    addon_preflight_cert_issuer || return 1
   fi
   log_ok "Vorprüfung abgeschlossen"
   return 0

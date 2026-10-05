@@ -323,6 +323,54 @@ addon_ensure_cert_issuer_ready() {
   return 0
 }
 
+# addon_preflight_cert_issuer — Vorprüfung (nur Install): löst den Issuer auf (U1),
+# prüft ClusterIssuer Ready (U2) und die Sperre für alle fünf Stage-Hosts (F2,
+# alles-oder-nichts). Exportiert ADDON_CERT_ISSUER_RESOLVED, damit Preflight und
+# install_addon_frontend dieselbe Auflösung nutzen (F1).
+addon_preflight_cert_issuer() {
+  local issuer
+  issuer="$(addon_resolve_cert_issuer)" || return 1
+  addon_ensure_cert_issuer_ready "${issuer}" || return 1
+  export ADDON_CERT_ISSUER_RESOLVED="${issuer}"
+
+  if [[ "${P2D2_CERT_BLOCK_NEW_REQUESTS:-false}" == "true" ]] && addon_cert_is_acme "${issuer}"; then
+    local stage svc host secret missing=()
+    for stage in main dev de1 de2 fv; do
+      svc="$(addon_frontend_svc "${stage}")"
+      host="$(addon_frontend_host "${stage}")"
+      # Vorhandene Ingresses werden übersprungen (nur neue Hosts zählen).
+      if kubectl get ingress "${svc}" -n "${ADDON_NS}" &>/dev/null; then
+        continue
+      fi
+      secret="${host}-tls"
+      if ! kubectl -n "${ADDON_NS}" get secret "${secret}" &>/dev/null; then
+        missing+=("${host}")
+      fi
+    done
+    if [[ ${#missing[@]} -gt 0 ]]; then
+      log_error "P2D2_CERT_BLOCK_NEW_REQUESTS=true und ACME-Issuer ${issuer}: TLS-Secret fehlt für: ${missing[*]}"
+      return 1
+    fi
+  fi
+  return 0
+}
+
+# addon_install_cert_issuer — liefert den Issuer für install_addon_frontend (F1).
+# Nutzt ADDON_CERT_ISSUER_RESOLVED, wenn das Preflight ihn gesetzt hat; sonst wird
+# selbst aufgelöst und der ClusterIssuer geprüft (Einzelaufruf/Test).
+addon_install_cert_issuer() {
+  local issuer
+  if [[ -n "${ADDON_CERT_ISSUER_RESOLVED:-}" ]]; then
+    issuer="${ADDON_CERT_ISSUER_RESOLVED}"
+    log_ok "Zertifikats-Issuer aus Preflight übernommen: ${issuer}"
+  else
+    issuer="$(addon_resolve_cert_issuer)" || return 1
+    addon_ensure_cert_issuer_ready "${issuer}" || return 1
+  fi
+  printf '%s' "${issuer}"
+  return 0
+}
+
 # addon_frontend_host <stage> / addon_frontend_svc <stage> — Stage-Mapping.
 addon_frontend_host() {
   case "$1" in
@@ -404,11 +452,12 @@ ensure_addon_frontend_ingress() {
     return 0
   fi
 
-  # U3: Sperre bei ACME-Issuer und fehlendem TLS-Secret.
+  # U3: Sperre bei ACME-Issuer und fehlendem TLS-Secret. Rückgabewert 2 kennzeichnet
+  # die Sperre als fatal (F2); install_addon_frontend unterscheidet 2 von 1.
   if [[ "${P2D2_CERT_BLOCK_NEW_REQUESTS:-false}" == "true" ]] && addon_cert_is_acme "${issuer}"; then
     if ! kubectl -n "${ADDON_NS}" get secret "${secret}" &>/dev/null; then
       log_error "P2D2_CERT_BLOCK_NEW_REQUESTS=true und Secret ${secret} fehlt — keine neue Zertifikatsanforderung für ${host}"
-      return 1
+      return 2
     fi
   fi
 
@@ -426,6 +475,16 @@ ensure_addon_frontend_ingress() {
   log_ok "Ingress ${svc} angelegt (${host} -> ${svc}:80; TLS-Secret ${secret}, Issuer ${issuer})"
 }
 
+# addon_clear_frontend_tags <dir> — löscht veraltete .frontend-tag-* (U7a).
+# Bricht unter set -euo pipefail nicht ab, wenn kein Treffer existiert.
+addon_clear_frontend_tags() {
+  local dir="$1" stale
+  for stale in "${dir}"/.frontend-tag-*; do
+    [[ -e "${stale}" ]] && rm -f "${stale}"
+  done
+  return 0
+}
+
 # install_addon_frontend_build — baut die Runtime-Images aller 5 Stages auf dem
 # k3s-Node (Docker + k3s ctr import) über build-stage.sh. Eigener, im VM-Kontext
 # automatisch aufgerufener Teilschritt (Turn 63/65) — läuft VOR install_addon_frontend,
@@ -439,10 +498,7 @@ install_addon_frontend_build() {
   tag_dir="${VM_REMOTE_INSTALL_DIR:-/root/p2d2-addon}"
   # U7a: veraltete Tag-Zustandsdateien löschen, damit install_addon_frontend
   # keinen alten Tag liest, falls ein früherer Build abgebrochen ist.
-  local stale
-  for stale in "${tag_dir}"/.frontend-tag-*; do
-    [[ -e "${stale}" ]] && rm -f "${stale}"
-  done
+  addon_clear_frontend_tags "${tag_dir}"
   local build_script="${overlay_dir}/frontend/build-stage.sh"
   if [[ ! -x "${build_script}" ]]; then
     log_error "build-stage.sh nicht gefunden/ausführbar: ${build_script}"
@@ -566,13 +622,19 @@ install_addon_frontend() {
     fi
   done
 
-  # 4) Zertifikats-Issuer auflösen + ClusterIssuer prüfen (U1/U2), dann Ingress je Stage.
+  # 4) Zertifikats-Issuer: Preflight hat ADDON_CERT_ISSUER_RESOLVED gesetzt (F1);
+  #    ohne die Variable (Einzelaufruf/Test) wird selbst aufgelöst und geprüft.
   local cert_issuer
-  cert_issuer="$(addon_resolve_cert_issuer)" || return 1
-  addon_ensure_cert_issuer_ready "${cert_issuer}" || return 1
+  cert_issuer="$(addon_install_cert_issuer)" || return 1
   for stage in main dev de1 de2 fv; do
-    ensure_addon_frontend_ingress "${stage}" "${cert_issuer}" \
-      || log_warn "Ingress ${stage} nicht angelegt — bitte manuell (siehe Ausgabe oben)"
+    ensure_addon_frontend_ingress "${stage}" "${cert_issuer}" || {
+      local ing_rc=$?
+      if [[ "${ing_rc}" -eq 2 ]]; then
+        log_error "Ingress ${stage}: Sperre verletzt — Abbruch"
+        return 2
+      fi
+      log_warn "Ingress ${stage} nicht angelegt — bitte manuell (siehe Ausgabe oben)"
+    }
   done
 
   # 5) Image-Build ist bereits als vorgelagerter Teilschritt gelaufen
