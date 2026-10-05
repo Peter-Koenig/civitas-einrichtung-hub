@@ -19,12 +19,17 @@
 # ADDON_DOMAIN müssen vorher vom Hauptskript (p2d2-civitas-addon-v1s.sh, Zeile 39/41)
 # exportiert sein. Für manuelle Tests: `export ADDON_NS=... ADDON_DOMAIN=...` vorher setzen.
 
-# Fail-Fast: ohne ADDON_NS/ADDON_DOMAIN sofort abbrechen (verhindert stilles Schreiben
-# in die falsche Namespace bzw. Secret-Überschreibung — Incident Turn 57).
-if [[ -z "${ADDON_NS:-}" || -z "${ADDON_DOMAIN:-}" ]]; then
-  echo "FEHLER: ADDON_NS/ADDON_DOMAIN nicht gesetzt — addon_30_frontend.sh nicht isoliert sourcen (nur über p2d2-civitas-addon-v1s.sh)." >&2
-  return 1 2>/dev/null || exit 1
-fi
+# Fail-Fast beim Funktionsaufruf (nicht beim Sourcen): ADDON_NS/ADDON_DOMAIN müssen
+# gesetzt sein. ADDON_DOMAIN wird erst im VM-Ablauf aus DOMAIN_NAME abgeleitet (B1),
+# daher ist eine Source-Time-Prüfung nicht möglich. Verhindert stilles Schreiben in
+# die falsche Namespace bzw. Secret-Überschreibung (Incident Turn 57).
+addon_frontend_guard() {
+  if [[ -z "${ADDON_NS:-}" || -z "${ADDON_DOMAIN:-}" ]]; then
+    log_error "ADDON_NS/ADDON_DOMAIN nicht gesetzt — addon_30_frontend.sh nur über p2d2-civitas-addon-v1s.sh aufrufen"
+    return 1
+  fi
+  return 0
+}
 
 # ── Env-Vars-Pipeline (.env.p2d2-addon → Secrets) ─────────────────────────────
 # Turn 59: .env.p2d2-addon ist die einzige Quelle der Wahrheit für mandantenabhängige
@@ -254,6 +259,7 @@ install_addon_frontend_build() {
 
 install_addon_frontend() {
   log "=== AddOn 30: Frontend (5 Stages, image-basiert) ==="
+  addon_frontend_guard || return 1
 
   local ns="${ADDON_NS}"
   local overlay_dir
@@ -307,6 +313,7 @@ install_addon_frontend() {
 # p2d2-webhook-secrets (Turn 65: NICHT erhalten — ohne AddOn reines Legacy).
 uninstall_addon_frontend() {
   log "=== Uninstall AddOn 30: Frontend (5 Stages, Ingress, Shared-Infra) ==="
+  addon_frontend_guard || return 1
 
   local ns="${ADDON_NS}"
   local stage svc host cm secret

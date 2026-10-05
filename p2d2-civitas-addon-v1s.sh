@@ -73,7 +73,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ── Config (rudimentär; später aus inventory/01_config.sh) ─────────────────────
 export ADDON_NS="${ADDON_NS:-cc-prd-geodata-stack}"
 export ADDON_DB_NS="${ADDON_DB_NS:-cc-prd-database-stack}"
-export ADDON_DOMAIN="${ADDON_DOMAIN:-udp.data-dna.eu}"
+export ADDON_DOMAIN="${ADDON_DOMAIN:-}"
 # KUBECONFIG: Standard-Datei jeder CIVITAS/CORE-VM (volle Cluster-Rechte). Der
 # eingeschränkte SA-Kubeconfig der geteilten sdt-Testumgebung
 # (~/.kube/p2d2-addon-installer.kubeconfig) wird NICHT mehr als Default erzwungen,
@@ -269,6 +269,12 @@ if [[ -f "${ADDON_ENV_FILE}" ]]; then
 else
   log_error ".env.p2d2-addon nicht gefunden (${ADDON_ENV_FILE}) — im Host-Kontext wird sie ins Elternverzeichnis der VM kopiert"
   exit 1
+fi
+
+# ADDON_DOMAIN aus DOMAIN_NAME ableiten, wenn nicht explizit gesetzt (B1).
+# Läuft auch für --uninstall, da uninstall_addon_frontend die Hosts daraus bildet.
+if [[ -z "${ADDON_DOMAIN:-}" && -n "${DOMAIN_NAME:-}" ]]; then
+  export ADDON_DOMAIN="udp.${DOMAIN_NAME}"
 fi
 
 # ── Fail-Fast-Vorprüfungen ─────────────────────────────────────────────────────

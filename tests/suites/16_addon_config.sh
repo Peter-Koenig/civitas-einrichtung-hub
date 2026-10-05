@@ -49,11 +49,18 @@ valid_env() {
   export P2D2_DEMO_ACCOUNTS="false"
   export P2D2_OSM_IDP_ENABLE="false"
 
-  local key
+  local key site_prefix
   for key in MAIN DEVELOP DE1 DE2 FV; do
+    case "${key}" in
+      MAIN)    site_prefix="www"   ;;
+      DEVELOP) site_prefix="dev"   ;;
+      DE1)     site_prefix="f-de1" ;;
+      DE2)     site_prefix="f-de2" ;;
+      FV)      site_prefix="f-fv"  ;;
+    esac
     export "P2D2_${key}_DB_USER=P2D2-${key}"
     export "P2D2_${key}_WFST_WORKSPACE=ws"
-    export "P2D2_${key}_PUBLIC_SITE_URL=https://site.udp.example.org"
+    export "P2D2_${key}_PUBLIC_SITE_URL=https://${site_prefix}.udp.example.org"
     export "P2D2_${key}_WFST_ENDPOINT=https://geoportal.udp.example.org/geoserver/ws/ows"
     export "P2D2_${key}_WFST_USERNAME=wfst-user"
     export "P2D2_${key}_DB_PASSWORD=db-pass"

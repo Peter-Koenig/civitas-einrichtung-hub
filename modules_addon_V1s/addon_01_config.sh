@@ -79,6 +79,35 @@ addon_validate_config() {
     return 1
   fi
 
+  # 2b) F8: PUBLIC_SITE_URL je Stage muss exakt https://<Präfix>.${ADDON_DOMAIN} sein.
+  # Der Host von PUBLIC_WFST_ENDPOINT / PUBLIC_MAPSERVER_URL wird nur als Warnung
+  # geprüft (nicht belegt, dass alle Umgebungen geoportal.${ADDON_DOMAIN} nutzen).
+  if [[ -n "${ADDON_DOMAIN:-}" ]]; then
+    local stage_key site_prefix site_var site_val expected host_var host_val
+    for stage_key in MAIN DEVELOP DE1 DE2 FV; do
+      case "${stage_key}" in
+        MAIN)    site_prefix="www"   ;;
+        DEVELOP) site_prefix="dev"   ;;
+        DE1)     site_prefix="f-de1" ;;
+        DE2)     site_prefix="f-de2" ;;
+        FV)      site_prefix="f-fv"  ;;
+      esac
+      site_var="P2D2_${stage_key}_PUBLIC_SITE_URL"
+      site_val="${!site_var:-}"
+      expected="https://${site_prefix}.${ADDON_DOMAIN}"
+      if [[ -n "${site_val}" && "${site_val}" != "${expected}" ]]; then
+        log_error "${site_var} muss exakt '${expected}' entsprechen (ist: '${site_val}')."
+        return 1
+      fi
+    done
+    for host_var in P2D2_BASE_PUBLIC_WFST_ENDPOINT P2D2_BASE_PUBLIC_MAPSERVER_URL; do
+      host_val="${!host_var:-}"
+      if [[ -n "${host_val}" && "${host_val}" != *"geoportal.${ADDON_DOMAIN}"* ]]; then
+        log_warn "${host_var} nutzt nicht den Host 'geoportal.${ADDON_DOMAIN}' (Warnung, nicht belegt, dass alle Umgebungen diesen Host nutzen)."
+      fi
+    done
+  fi
+
   # 3) Schalter (bool): Default false, wenn ungesetzt.
   if [[ ! -v P2D2_DEMO_ACCOUNTS ]]; then P2D2_DEMO_ACCOUNTS="false"; fi
   if [[ ! -v P2D2_OSM_IDP_ENABLE ]]; then P2D2_OSM_IDP_ENABLE="false"; fi
