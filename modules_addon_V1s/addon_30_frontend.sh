@@ -582,13 +582,64 @@ install_addon_frontend() {
   return 0
 }
 
+# ── Uninstall-TLS-Handhabung (Schritt 2c-3) ─────────────────────────────────────
+# addon_tls_provenance <issuer_annotation> <openssl_issuer>
+# Klassifiziert die Herkunft eines <host>-tls-Secrets: acme | selfsigned | unknown.
+addon_tls_provenance() {
+  local annotation="$1" openssl_issuer="$2"
+  case "${annotation}" in
+    letsencrypt-staging|letsencrypt-prod) printf 'acme'; return 0 ;;
+    selfsigned-issuer|civitas-bootstrap-selfsigned) printf 'selfsigned'; return 0 ;;
+  esac
+  # Keine/mehrdeutige Annotation -> Aussteller des Zertifikats (openssl).
+  case "${openssl_issuer}" in
+    *"Let's Encrypt"*) printf 'acme'; return 0 ;;
+  esac
+  printf 'unknown'
+  return 0
+}
+
+# addon_uninstall_keep_tls <mode> <provenance> — 0 = Secret behalten, 1 = löschen.
+addon_uninstall_keep_tls() {
+  local mode="$1" provenance="$2"
+  case "${mode}" in
+    true)  return 0 ;;
+    false) return 1 ;;
+    auto)  [[ "${provenance}" == "acme" ]] ;;
+  esac
+}
+
+# addon_cert_names_for_secret <ns> <secret> — Certificate-Namen je spec.secretName.
+addon_cert_names_for_secret() {
+  local ns="$1" secret="$2"
+  kubectl -n "${ns}" get certificate -o json 2>/dev/null \
+    | jq -r --arg s "${secret}" '.items[]? | select(.spec.secretName == $s) | .metadata.name' 2>/dev/null
+}
+
+# addon_secret_tls_provenance <ns> <secret> — liest die Herkunft eines TLS-Secrets.
+# Bevorzugt die cert-manager-Issuer-Annotation, sonst den Aussteller via openssl.
+addon_secret_tls_provenance() {
+  local ns="$1" secret="$2" annotation openssl_issuer
+  annotation="$(kubectl -n "${ns}" get secret "${secret}" \
+    -o jsonpath='{.metadata.annotations.cert-manager\.io/cluster-issuer-name}' 2>/dev/null || true)"
+  [[ -z "${annotation}" ]] && annotation="$(kubectl -n "${ns}" get secret "${secret}" \
+    -o jsonpath='{.metadata.annotations.cert-manager\.io/issuer-name}' 2>/dev/null || true)"
+  if [[ "${annotation}" != letsencrypt-* && "${annotation}" != selfsigned-issuer && "${annotation}" != civitas-bootstrap-selfsigned ]]; then
+    openssl_issuer="$(kubectl -n "${ns}" get secret "${secret}" \
+      -o jsonpath='{.data.tls\.crt}' 2>/dev/null | base64 -d 2>/dev/null \
+      | openssl x509 -noout -issuer 2>/dev/null || true)"
+  fi
+  addon_tls_provenance "${annotation}" "${openssl_issuer:-}"
+}
+
 # uninstall_addon_frontend — regulärer Uninstall (Turn 65): entfernt alle vom AddOn
 # angelegten Frontend-Ressourcen rückstandsfrei, spiegelbildlich zu install_addon_frontend.
 # Löst den früheren DANGER-Sonderfall ab (der Install-Platzhalter ist seit Turn 45-62
 # produktiv und kann die Ressourcen wiederherstellen).
 #
-# Gelöscht wird je Stage: Deployment, Service, ConfigMap, Secret, Ingress, TLS-Secret
-# (<host>-tls via cert-manager) sowie Alt-PVCs aus der PVC-basierten Vorversion.
+# Gelöscht wird je Stage: Deployment, Service, ConfigMap, Secret, Ingress, Certificate
+# (ausdrücklich, V2) sowie Alt-PVCs aus der PVC-basierten Vorversion. Das TLS-Secret
+# <host>-tls bleibt bei ACME-Issuern erhalten (E3, V1, P2D2_UNINSTALL_KEEP_TLS).
 # Basis: p2d2-base-config + p2d2-base-secret. Webhook-Controller (Deployment/Service/
 # SA/Role/RoleBinding) + Builder-Jobs. Shared-Infra-Secrets p2d2-builder-git-auth +
 # p2d2-webhook-secrets (Turn 65: NICHT erhalten — ohne AddOn reines Legacy).
@@ -597,7 +648,11 @@ uninstall_addon_frontend() {
   addon_frontend_guard || return 1
 
   local ns="${ADDON_NS}"
-  local stage svc host cm secret
+  # V6: Enum-Prüfung läuft hier, weil addon_validate_config beim Uninstall nicht läuft.
+  local keep_mode
+  keep_mode="$(addon_validate_uninstall_keep_tls)" || return 1
+
+  local stage svc host cm secret tls_secret provenance cert_name cert_pem issuer enddate
   for stage in main dev de1 de2 fv; do
     case "${stage}" in
       main) svc="p2d2-main";    cm="p2d2-main-config";    secret="p2d2-main-secret";    host="www.${ADDON_DOMAIN}" ;;
@@ -606,16 +661,32 @@ uninstall_addon_frontend() {
       de2)  svc="p2d2-f-de2";   cm="p2d2-f-de2-config";   secret="p2d2-f-de2-secret";   host="f-de2.${ADDON_DOMAIN}" ;;
       fv)   svc="p2d2-f-fv";    cm="p2d2-f-fv-config";    secret="p2d2-f-fv-secret";    host="f-fv.${ADDON_DOMAIN}" ;;
     esac
+    tls_secret="${host}-tls"
 
-    log "  Stage ${stage}: Deployment/Service/ConfigMap/Secret/Ingress/TLS/PVC entfernen"
+    log "  Stage ${stage}: Deployment/Service/ConfigMap/Secret/Ingress/Certificate/PVC entfernen"
     kubectl -n "${ns}" delete deployment "${svc}" --ignore-not-found || true
     kubectl -n "${ns}" delete service    "${svc}" --ignore-not-found || true
     kubectl -n "${ns}" delete configmap  "${cm}" --ignore-not-found || true
     kubectl -n "${ns}" delete secret     "${secret}" --ignore-not-found || true
     kubectl -n "${ns}" delete ingress    "${svc}" --ignore-not-found || true
-    kubectl -n "${ns}" delete secret     "${host}-tls" --ignore-not-found || true
+    # V2: Certificate ausdrücklich löschen (nicht auf Garbage Collection verlassen).
+    while IFS= read -r cert_name; do
+      [[ -n "${cert_name}" ]] && kubectl -n "${ns}" delete certificate "${cert_name}" --ignore-not-found || true
+    done < <(addon_cert_names_for_secret "${ns}" "${tls_secret}")
     # Alt-PVC aus der PVC-basierten Vorversion (image-basiert heute ohne PVC).
     kubectl -n "${ns}" delete pvc        "${svc}-code" --ignore-not-found || true
+
+    # V1/E3: <host>-tls nur behalten, wenn der Modus es verlangt.
+    provenance="$(addon_secret_tls_provenance "${ns}" "${tls_secret}")"
+    if addon_uninstall_keep_tls "${keep_mode}" "${provenance}"; then
+      cert_pem="$(kubectl -n "${ns}" get secret "${tls_secret}" -o jsonpath='{.data.tls\.crt}' 2>/dev/null | base64 -d 2>/dev/null || true)"
+      issuer="$(printf '%s' "${cert_pem}" | openssl x509 -noout -issuer 2>/dev/null || true)"
+      enddate="$(printf '%s' "${cert_pem}" | openssl x509 -noout -enddate 2>/dev/null || true)"
+      log_ok "TLS-Secret ${tls_secret} behalten (Aussteller: ${issuer:-unbekannt}; ${enddate:-unbekannt})"
+      log "  Löschen bei Bedarf: P2D2_UNINSTALL_KEEP_TLS=false oder 'kubectl -n ${ns} delete secret ${tls_secret}'"
+    else
+      kubectl -n "${ns}" delete secret "${tls_secret}" --ignore-not-found || true
+    fi
   done
 
   # Basis-ConfigMap/-Secret

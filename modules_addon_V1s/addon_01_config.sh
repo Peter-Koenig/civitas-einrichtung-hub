@@ -62,6 +62,21 @@ addon_derive_domain() {
   fi
 }
 
+# addon_validate_uninstall_keep_tls
+# Enum-Prüfung für P2D2_UNINSTALL_KEEP_TLS (auto|true|false, Default auto).
+# Läuft im Uninstall-Pfad gesondert, weil addon_validate_config dort nicht läuft.
+# Gibt den normalisierten Wert aus oder bricht mit Fehler ab.
+addon_validate_uninstall_keep_tls() {
+  local mode="${P2D2_UNINSTALL_KEEP_TLS:-auto}"
+  case "${mode}" in
+    auto|true|false) printf '%s' "${mode}"; return 0 ;;
+    *)
+      log_error "P2D2_UNINSTALL_KEEP_TLS muss auto|true|false sein (ist: '${mode}')"
+      return 1
+      ;;
+  esac
+}
+
 # addon_validate_config
 # Zentrale Validierung der .env.p2d2-addon (Konfigurationsvertrag).
 addon_validate_config() {
@@ -135,6 +150,10 @@ addon_validate_config() {
   esac
   if [[ ! -v P2D2_CERT_BLOCK_NEW_REQUESTS ]]; then P2D2_CERT_BLOCK_NEW_REQUESTS="false"; fi
   addon_normalize_bool P2D2_CERT_BLOCK_NEW_REQUESTS || return 1
+
+  # 3c) Uninstall-TLS-Handhabung (Schritt 2c-3, optional mit Default).
+  if [[ ! -v P2D2_UNINSTALL_KEEP_TLS ]]; then P2D2_UNINSTALL_KEEP_TLS="auto"; fi
+  addon_validate_uninstall_keep_tls >/dev/null || return 1
 
   # 4) Nicht-sensitive Basiswerte (Vorlage, Abschnitt 3).
   for v in \
