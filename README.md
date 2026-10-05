@@ -183,7 +183,7 @@ Alternativ können alle Variablen auch direkt als Umgebungsvariablen exportiert 
 |--------------------------|-----------------------------|------------------------------------------------------------------------------|
 | `CIVITAS_DEBUG`          | nicht gesetzt               | `true` → Ausführliche Debug-Ausgabe während der Installation                |
 | `LE_CERT`                | `false`                     | Steuert die Zertifikats-Strategie. Siehe Detail-Erklärung weiter unten.      |
-| `NO_NEW_LE_CERT`         | `false`                     | Safety-Schalter: `true` → blockiert **alle** neuen Zertifikatsanforderungen  |
+| `LE_REQUESTS_BLOCKED`         | `false`                     | Safety-Schalter: `true` → blockiert **alle** neuen Zertifikatsanforderungen  |
 | `CERT_BACKUP_FILE`       | `le-certs-backup.yaml`      | Pfad zum Backup bestehender Let's-Encrypt-Zertifikate (YAML)                |
 | `CERT_BACKUP_MIN_DAYS`   | `30`                        | Mindest-Restlaufzeit (Tage), damit ein LE-Backup als brauchbar gilt        |
 | `APISIX_DASHBOARD`       | `false`                     | `true` → APISIX-Dashboard nach Installation aktivieren                      |
@@ -200,7 +200,7 @@ Alternativ können alle Variablen auch direkt als Umgebungsvariablen exportiert 
 
 > **Hinweis V1s:** Die `RUSTFS_*`-Variablen gelten nur für die V1-Referenzvariante (S3-/RustFS-basierte Masterportal-Konfiguration). Die V1s-Buildvariante liefert die Masterportal-Konfiguration statisch über das gebaute Portal-Backend-Image und benötigt diese Variablen nicht.
 
-**Detail-Erklärung: Zertifikats-Management (`LE_CERT` / `CERT_BACKUP_FILE` / `NO_NEW_LE_CERT`)**
+**Detail-Erklärung: Zertifikats-Management (`LE_CERT` / `CERT_BACKUP_FILE` / `LE_REQUESTS_BLOCKED`)**
 
 Das Skript verwendet eine Entscheidungsfunktion (`resolve_target_state`), die den
 Zielzustand für TLS-Zertifikate anhand folgender Logik ermittelt:
@@ -214,7 +214,7 @@ Zielzustand für TLS-Zertifikate anhand folgender Logik ermittelt:
   ignoriert; der Lauf verhält sich dann wie ohne Backup.
 - **`LE_CERT=true` und kein Backup vorhanden**: Es werden neue Let's-Encrypt-
   Production-Zertifikate angefordert.
-- **`NO_NEW_LE_CERT=true`**: Safety-Schalter. Selbst wenn alle Bedingungen für
+- **`LE_REQUESTS_BLOCKED=true`**: Safety-Schalter. Selbst wenn alle Bedingungen für
   eine Production-Anfrage erfüllt sind, wird diese blockiert. Nützlich, um
   versehentliche Raten-Limits bei Let's-Encrypt zu vermeiden.
 
@@ -262,7 +262,7 @@ hat erneuert). Nach einem erfolgreichen Restore bleibt es unverändert.
 - **Zertifikats-Management:** Standardmäßig werden nur
   Let's-Encrypt-Staging-Zertifikate ausgestellt. Für Production-Zertifikate
   muss `LE_CERT=true` gesetzt werden. Ein Safety-Schalter
-  (`NO_NEW_LE_CERT`) kann neue Zertifikatsanforderungen blockieren.
+  (`LE_REQUESTS_BLOCKED`) kann neue Zertifikatsanforderungen blockieren.
 - **LE-Zertifikats-Backup:** Nach erfolgreicher Neuausstellung von
   Produktivzertifikaten schreibt der Installer ein Backup nach
   `CERT_BACKUP_FILE` (VM) und holt es nach `${HOME}/le-certs-backup.yaml`
@@ -589,7 +589,7 @@ Alternatively, all variables can be exported directly as environment variables.
 |--------------------------|-----------------------------|----------------------------------------------------------------------------|
 | `CIVITAS_DEBUG`          | not set                     | `true` → verbose debug output during installation                          |
 | `LE_CERT`                | `false`                     | Controls the certificate strategy. See detailed explanation below.         |
-| `NO_NEW_LE_CERT`         | `false`                     | Safety switch: `true` → blocks **all** new certificate requests           |
+| `LE_REQUESTS_BLOCKED`         | `false`                     | Safety switch: `true` → blocks **all** new certificate requests           |
 | `CERT_BACKUP_FILE`       | `le-certs-backup.yaml`      | Path to a backup of existing Let's-Encrypt certificates (YAML)            |
 | `CERT_BACKUP_MIN_DAYS`   | `30`                        | Minimum remaining validity (days) for a LE backup to be usable            |
 | `APISIX_DASHBOARD`       | `false`                     | `true` → enable APISIX dashboard after installation                        |
@@ -606,7 +606,7 @@ Alternatively, all variables can be exported directly as environment variables.
 
 > **V1s note:** The `RUSTFS_*` variables apply only to the V1 reference variant (S3/RustFS-based Masterportal configuration). The V1s build variant serves the Masterportal configuration statically from the built portal-backend image and does not require these variables.
 
-**Detailed explanation: Certificate management (`LE_CERT` / `CERT_BACKUP_FILE` / `NO_NEW_LE_CERT`)**
+**Detailed explanation: Certificate management (`LE_CERT` / `CERT_BACKUP_FILE` / `LE_REQUESTS_BLOCKED`)**
 
 The script uses a decision function (`resolve_target_state`) that determines the
 target state for TLS certificates based on the following logic:
@@ -620,7 +620,7 @@ target state for TLS certificates based on the following logic:
   backup.
 - **`LE_CERT=true` and no backup exists**: New Let's-Encrypt production
   certificates are requested.
-- **`NO_NEW_LE_CERT=true`**: Safety switch. Even if all conditions for a
+- **`LE_REQUESTS_BLOCKED=true`**: Safety switch. Even if all conditions for a
   production request are met, it is blocked. Useful for preventing accidental
   rate-limit hits at Let's-Encrypt.
 
@@ -667,7 +667,7 @@ After a successful restore it remains unchanged.
   from the outside (see section 3).
 - **Certificate management:** By default, only Let's-Encrypt staging
   certificates are issued. For production certificates, set `LE_CERT=true`. A
-  safety switch (`NO_NEW_LE_CERT`) can block new certificate requests.
+  safety switch (`LE_REQUESTS_BLOCKED`) can block new certificate requests.
 - **E2E tests:** Playwright-based E2E tests are in preparation (controllable
   via `RUN_TESTS`) but not yet fully integrated (known open issue:
   `BASE_DOMAIN` error in the test `.env` generation).
