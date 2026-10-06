@@ -228,8 +228,12 @@ case "$args" in
     exit 0 ;;
   *"get certificate"*"-o json"*)
     printf '%s' "${CERT_JSON:-}"; exit 0 ;;
-  *"get serviceaccount,role,rolebinding -o name"*)
-    printf '%s\n' ${SA_RB_RESOURCES:-}; exit 0 ;;
+  *"get serviceaccount p2d2-webhook-controller"*)
+    [[ "${WEBHOOK_PRESENT:-no}" == "yes" ]] && exit 0 || { echo "Error from server (NotFound)" >&2; exit 1; } ;;
+  *"get role p2d2-webhook-controller-role"*)
+    [[ "${WEBHOOK_PRESENT:-no}" == "yes" ]] && exit 0 || { echo "Error from server (NotFound)" >&2; exit 1; } ;;
+  *"get rolebinding p2d2-webhook-controller-binding"*)
+    [[ "${WEBHOOK_PRESENT:-no}" == "yes" ]] && exit 0 || { echo "Error from server (NotFound)" >&2; exit 1; } ;;
   *"get cm apps.js"*)
     printf '%s' "${PORTAL_JS:-}"; exit 0 ;;
   *"get postgresql central-db"*)
@@ -357,7 +361,7 @@ check "n6 Certificate vorhanden: rc=1" "1" "$?"
 check "n6 Certificate gemeldet" "yes" "$(grep -q 'Frontend-Certificate-Objekte vorhanden' "$VU_LOG" && echo yes || echo no)"
 
 # N6) Webhook-RBAC -> Rest
-run_vu DOMAIN=udp.example.com SA_RB_RESOURCES="role/p2d2-webhook-controller-role"
+run_vu DOMAIN=udp.example.com WEBHOOK_PRESENT=yes
 check "n6 Webhook-RBAC: rc=1" "1" "$?"
 check "n6 Webhook-RBAC gemeldet" "yes" "$(grep -q 'Webhook-Controller-RBAC vorhanden' "$VU_LOG" && echo yes || echo no)"
 

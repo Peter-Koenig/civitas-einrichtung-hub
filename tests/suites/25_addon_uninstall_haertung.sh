@@ -29,13 +29,15 @@ printf 'APISIX_ADMIN_ROLE_KEY=test-key\n' > "$APISIX_CREDS_FILE"
 export ADDON_APISIX_CREDENTIALS_FILE="$APISIX_CREDS_FILE"
 
 APISIX_DELETE_CODE="200"
+APISIX_LIST_CODE="200"
 curl() {
-  local has_w=0 url=""
+  local has_w=0 url="" is_delete=0
   for a in "$@"; do case "$a" in https://*) url="$a" ;; -w) has_w=1 ;; esac; done
+  [[ "$*" == *"-X DELETE"* ]] && is_delete=1
   case "$url" in
     *"/apisix/admin/"*)
       if [[ "$has_w" == "1" ]]; then
-        printf '%s' "$APISIX_DELETE_CODE"
+        if [[ "$is_delete" == "1" ]]; then printf '%s' "$APISIX_DELETE_CODE"; else printf '%s' "$APISIX_LIST_CODE"; fi
       else
         printf '{"list":[{"value":{"name":"mapserver-route","id":"1"}}]}'
       fi
@@ -44,13 +46,18 @@ curl() {
   esac
 }
 
-APISIX_DELETE_CODE="200"
+APISIX_DELETE_CODE="200"; APISIX_LIST_CODE="200"
 uninstall_addon_mapproxy >/dev/null 2>&1
 check "N4 mapproxy ok: rc=0" "0" "$?"
 
-APISIX_DELETE_CODE="500"
+APISIX_DELETE_CODE="500"; APISIX_LIST_CODE="200"
 uninstall_addon_mapproxy >/dev/null 2>&1
 check "N4 mapproxy DELETE fehl: rc=1" "1" "$?"
+
+# A4: Listenabfrage HTTP != 200 -> rc=1 (nicht 'nicht vorhanden')
+APISIX_DELETE_CODE="200"; APISIX_LIST_CODE="500"
+uninstall_addon_mapproxy >/dev/null 2>&1
+check "A4 mapproxy Liste fehl: rc=1" "1" "$?"
 
 # Admin-Key fehlt -> rc=1
 : > "$APISIX_CREDS_FILE"
@@ -119,5 +126,34 @@ run_uninstall_branch() {
 check "N2e kein Fehler: exit=0" "0" "$(run_uninstall_branch none)"
 check "N2e frontend fehlt: exit=1" "1" "$(run_uninstall_branch frontend)"
 check "N2e postgresql fehlt: exit=1" "1" "$(run_uninstall_branch postgresql)"
+
+# ── A2: addon_remove_frontend_images (Stub-Zustand) ───────────────────────────
+# shellcheck disable=SC1090,SC1091
+source "$REPO/modules_addon_V1s/addon_30_frontend.sh"
+
+IMG_STATE="$T/images"
+k3s() {
+  case "$*" in
+    *"images ls"*) cat "$IMG_STATE" 2>/dev/null || true; return 0 ;;
+    *"images rm"*)
+      local ref
+      ref="$(printf '%s' "$*" | sed -n 's/.*images rm \([^ ]*\).*/\1/p')"
+      [[ "${IMG_RM_NOOP:-no}" == "yes" ]] && return 0
+      grep -vxF "$ref" "$IMG_STATE" > "$IMG_STATE.tmp" 2>/dev/null || true
+      mv "$IMG_STATE.tmp" "$IMG_STATE"
+      return 0 ;;
+  esac
+}
+
+printf '%s\n' p2d2-frontend-main:cfg-1 p2d2-frontend-dev:cfg-2 p2d2-frontend-de1:cfg-3 p2d2-frontend-de2:cfg-4 p2d2-frontend-fv:cfg-5 > "$IMG_STATE"
+IMG_RM_NOOP=no
+addon_remove_frontend_images >/dev/null 2>&1
+check "A2 Images entfernt: rc=0" "0" "$?"
+check "A2 Images weg" "0" "$(wc -l < "$IMG_STATE")"
+
+printf '%s\n' p2d2-frontend-main:cfg-1 > "$IMG_STATE"
+IMG_RM_NOOP=yes
+addon_remove_frontend_images >/dev/null 2>&1
+check "A2 Image bleibt: rc=1" "1" "$?"
 
 rm -rf "$T"

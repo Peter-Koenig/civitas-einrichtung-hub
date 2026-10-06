@@ -44,6 +44,11 @@ check "3 true valid" "true" "$( ( export P2D2_UNINSTALL_KEEP_TLS=true; addon_val
 check "3 false valid" "false" "$( ( export P2D2_UNINSTALL_KEEP_TLS=false; addon_validate_uninstall_keep_tls ) )"
 check "3 ungültig -> Fehler" "1" "$( ( export P2D2_UNINSTALL_KEEP_TLS=maybe; addon_validate_uninstall_keep_tls >/dev/null 2>&1; echo $? ) )"
 
+# ── Enum-Prüfung remove_images (N7/A2) ────────────────────────────────────────
+check "3b remove_images default false" "false" "$( ( unset P2D2_UNINSTALL_REMOVE_IMAGES; addon_validate_uninstall_remove_images ) )"
+check "3b remove_images true valid" "true" "$( ( export P2D2_UNINSTALL_REMOVE_IMAGES=true; addon_validate_uninstall_remove_images ) )"
+check "3b remove_images ungültig" "1" "$( ( export P2D2_UNINSTALL_REMOVE_IMAGES=maybe; addon_validate_uninstall_remove_images >/dev/null 2>&1; echo $? ) )"
+
 # ── Statisch: Ingress + Certificate werden gelöscht (V2) ─────────────────────
 MODULE="$REPO/modules_addon_V1s/addon_30_frontend.sh"
 check "4 Ingress-Löschung vorhanden" "yes" "$(grep -qF 'delete ingress' "$MODULE" && echo yes || echo no)"
@@ -56,7 +61,7 @@ check "5 nur Aussteller/Ablauf im Log" "yes" "$(grep -qF 'Aussteller: ${issuer:-
 
 # ── verify-uninstall.sh: KEEP_TLS-Handhabung vorhanden ───────────────────────
 VUS="$REPO/supplement/verify-uninstall.sh"
-check "6 verify: KEEP_TLS Default" "yes" "$(grep -qF 'KEEP_TLS="${KEEP_TLS:-auto}"' "$VUS" && echo yes || echo no)"
+check "6 verify: KEEP_TLS Default" "yes" "$(grep -qF 'P2D2_UNINSTALL_KEEP_TLS:-auto}' "$VUS" && echo yes || echo no)"
 check "6 verify: strikt bei false" "yes" "$(grep -qF 'KEEP_TLS=false — Rest' "$VUS" && echo yes || echo no)"
 check "6 verify: bewusst behalten sonst" "yes" "$(grep -qF 'bewusst behalten, KEEP_TLS=' "$VUS" && echo yes || echo no)"
 
