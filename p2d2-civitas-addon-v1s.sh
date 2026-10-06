@@ -322,8 +322,12 @@ source "${SCRIPT_DIR}/modules_addon_V1s/addon_35_portal.sh"
 preflight_addon "${1:-}" || exit 1
 
 # ── Startmeldung (VM-Kontext) ─────────────────────────────────────────────────
+mode_label="Installation"
+if [[ "${1:-}" == "--uninstall" ]]; then
+  mode_label="Uninstall"
+fi
 log "============================================"
-log " p2d2-AddOn (CIVITAS/CORE V1s) — Installation"
+log " p2d2-AddOn (CIVITAS/CORE V1s) — ${mode_label}"
 log " Namespace: ${ADDON_NS}"
 log " DB-Namespace: ${ADDON_DB_NS}"
 log " Domain:       ${ADDON_DOMAIN}"
