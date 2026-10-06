@@ -127,6 +127,11 @@ ConfigMaps/Secrets. Sie sind optional und haben Defaults.
 | `P2D2_UNINSTALL_KEEP_TLS` | `auto` | Uninstall: `auto` behält `<host>-tls` bei ACME-Issuer, `true` immer, `false` löscht immer. |
 | `P2D2_UNINSTALL_REMOVE_IMAGES` | `false` | Uninstall: `true` entfernt die 5 gebauten Frontend-Images aus containerd (Namespace `k8s.io`), `false` behält sie. |
 
+> **Hinweis zu `P2D2_UNINSTALL_REMOVE_IMAGES`:** Die Variable wirkt nur, wenn sie in
+> der `.env.p2d2-addon` steht oder der Aufruf direkt in der VM erfolgt. Ein Präfix
+> am Host-Aufruf (`P2D2_UNINSTALL_REMOVE_IMAGES=true ./p2d2-civitas-addon-v1s.sh
+> --uninstall`) wird per SSH nicht an den VM-Lauf weitergegeben.
+
 ---
 
 ## Verifikation `DB_NAME = p2d2`
