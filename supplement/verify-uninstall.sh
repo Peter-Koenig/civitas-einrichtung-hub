@@ -274,8 +274,27 @@ else
   printf '      %s\n' $mp
 fi
 
+# addon_apisix_admin_key [creds_file] — liest APISIX_ADMIN_ROLE_KEY aus der
+# Credentials-Datei (unquotiert, einfach/doppelt quotiert, export). Leer, nicht
+# lesbar oder mehrdeutig -> Exit 1 (kein Log, kein Key). Identisch zu
+# addon_20_mapproxy.sh; keine zweite abweichende Extraktion.
+addon_apisix_admin_key() {
+  local creds="${1:-${APISIX_CREDS:-/root/civitas-install/credentials.env}}"
+  [[ -r "$creds" ]] || return 1
+  local count val
+  count="$(grep -cE '^[[:space:]]*(export[[:space:]]+)?APISIX_ADMIN_ROLE_KEY[[:space:]]*=' "$creds" 2>/dev/null || true)"
+  [[ "$count" == "1" ]] || return 1
+  val="$(sed -nE 's/^[[:space:]]*(export[[:space:]]+)?APISIX_ADMIN_ROLE_KEY[[:space:]]*=[[:space:]]*//p' "$creds" | head -n1)"
+  case "$val" in
+    \"*\") val="${val#\"}"; val="${val%\"}" ;;
+    \'*\') val="${val#\'}"; val="${val%\'}" ;;
+  esac
+  [[ -n "$val" ]] || return 1
+  printf '%s' "$val"
+}
+
 # APISIX mapserver-route/-upstream (gleicher Zugangsweg wie Uninstall).
-ak=$(sed -n 's/^APISIX_ADMIN_ROLE_KEY=//p' "$APISIX_CREDS" 2>/dev/null | head -1 || true)
+ak="$(addon_apisix_admin_key "$APISIX_CREDS")"
 if [[ -z "$ak" ]]; then
   note_reste "APISIX_ADMIN_ROLE_KEY nicht lesbar — mapserver-route/-upstream nicht pruefbar"
 else
