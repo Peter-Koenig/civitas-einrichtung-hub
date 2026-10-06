@@ -103,15 +103,14 @@ log_ok()    { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ $*"; }
 log_warn()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ⚠ $*" >&2; }
 log_error() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✗ $*" >&2; }
 
-# ── Module laden ───────────────────────────────────────────────────────────────
+# ── Module laden (gemeinsam, früh) ─────────────────────────────────────────────
+# Nur nicht-fachliche Module: SSH-Helfer (Host-Hopf) und der zentrale
+# Konfigurationsvertrag (ausschließlich Funktionsdefinitionen). Die fachlichen
+# Module (postgresql … portal) brauchen ADDON_DOMAIN und werden erst im
+# VM-Kontext nach dem Laden der .env.p2d2-addon und addon_derive_domain
+# eingebunden (Source-Time-Guards, Turn 14).
 source "${SCRIPT_DIR}/modules_addon_V1s/addon_05_ssh.sh"
 source "${SCRIPT_DIR}/modules_addon_V1s/addon_01_config.sh"
-source "${SCRIPT_DIR}/modules_addon_V1s/addon_00_postgresql.sh"
-source "${SCRIPT_DIR}/modules_addon_V1s/addon_10_geoserver.sh"
-source "${SCRIPT_DIR}/modules_addon_V1s/addon_20_mapproxy.sh"
-source "${SCRIPT_DIR}/modules_addon_V1s/addon_25_iam.sh"
-source "${SCRIPT_DIR}/modules_addon_V1s/addon_30_frontend.sh"
-source "${SCRIPT_DIR}/modules_addon_V1s/addon_35_portal.sh"
 
 # ── Fail-Fast-Vorprüfungen (Turn 63/65) ────────────────────────────────────────
 # _preflight_env — prüft, dass .env.p2d2-addon alle Pflichtvariablen liefert.
@@ -277,12 +276,33 @@ fi
 # Läuft auch für --uninstall, da uninstall_addon_frontend die Hosts daraus bildet.
 addon_derive_domain
 
-# ── Fail-Fast-Vorprüfungen ─────────────────────────────────────────────────────
-# Zuerst der Konfigurationsvertrag (zentrale Validierung, nur Install), dann die
-# Kubernetes-Vorprüfungen (Namespace/Masterportal/Portal).
+# ── Konfigurationsvertrag prüfen, bevor die fachlichen Module geladen werden ──
+# Install: die zentrale Validierung liefert die klare Fehlermeldung (u. a. für
+# ein fehlendes DOMAIN_NAME). Uninstall: keine volle Validierung, aber die Domain
+# muss für den Rückbau (TLS/IAM/Portal) vorhanden sein — klar geprüft statt
+# Source-Time-Fehler eines Fachmoduls (Turn 14).
 if [[ "${1:-}" != "--uninstall" ]]; then
   addon_validate_config || exit 1
+else
+  if [[ -z "${ADDON_DOMAIN:-}" ]]; then
+    log_error "ADDON_DOMAIN/DOMAIN_NAME nicht gesetzt — der Rückbau benötigt die Domain (TLS/IAM/Portal)."
+    exit 1
+  fi
 fi
+
+# ── Fachliche Module laden (erst jetzt, nach .env + addon_derive_domain) ──────
+# addon_10_geoserver.sh, addon_25_iam.sh und addon_35_portal.sh prüfen
+# ADDON_DOMAIN beim Sourcen und leiten abhängige Werte ab (IAM-Hosts,
+# PORTAL_DOMAIN). Deshalb erst hier einbinden, sonst bricht der vollautonome
+# VM-Lauf beim Sourcen ab.
+source "${SCRIPT_DIR}/modules_addon_V1s/addon_00_postgresql.sh"
+source "${SCRIPT_DIR}/modules_addon_V1s/addon_10_geoserver.sh"
+source "${SCRIPT_DIR}/modules_addon_V1s/addon_20_mapproxy.sh"
+source "${SCRIPT_DIR}/modules_addon_V1s/addon_25_iam.sh"
+source "${SCRIPT_DIR}/modules_addon_V1s/addon_30_frontend.sh"
+source "${SCRIPT_DIR}/modules_addon_V1s/addon_35_portal.sh"
+
+# ── Fail-Fast-Vorprüfungen ─────────────────────────────────────────────────────
 preflight_addon "${1:-}" || exit 1
 
 # ── Startmeldung (VM-Kontext) ─────────────────────────────────────────────────
