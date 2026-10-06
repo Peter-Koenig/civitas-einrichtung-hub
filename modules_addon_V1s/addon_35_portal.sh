@@ -83,14 +83,15 @@ _portal_strip_block() {
 
 # _portal_entry <id> <name> <host> <en> <de> — ein Kachel-Objekt.
 # Icon: bei gesetztem PORTAL_ICON das globale Override, sonst das stage-spezifische
-# Standard-Icon aus dem eigenen Pod. Das Literal ${DOMAIN} bleibt im generierten
-# apps.js erhalten (vom Service-Portal zur Laufzeit substituiert).
+# Standard-Icon aus dem eigenen Pod mit konkreter AddOn-Domain. Nur die url-Felder
+# nutzen das Service-Portal-Literal ${DOMAIN}; das Portal substituiert ${DOMAIN}
+# NICHT in icon-Werten (Turn 8).
 _portal_entry() {
   local icon
   if [[ -n "${PORTAL_ICON:-}" ]]; then
     icon="${PORTAL_ICON}"
   else
-    icon="https://$3.\${DOMAIN}/images/p2d2-logo.svg"
+    icon="https://$3.${ADDON_DOMAIN}/images/p2d2-logo.svg"
   fi
 cat <<EOF
   {

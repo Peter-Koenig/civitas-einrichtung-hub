@@ -126,7 +126,7 @@ ConfigMaps/Secrets. Sie sind optional und haben Defaults.
 | `P2D2_CERT_BLOCK_NEW_REQUESTS` | `false` | `true` verhindert bei ACME-Issuern neue Zertifikatsanforderungen (Secret `<host>-tls` muss existieren). |
 | `P2D2_UNINSTALL_KEEP_TLS` | `auto` | Uninstall: `auto` behält `<host>-tls` bei ACME-Issuer, `true` immer, `false` löscht immer. |
 | `P2D2_UNINSTALL_REMOVE_IMAGES` | `false` | Uninstall: `true` entfernt die 5 gebauten Frontend-Images aus containerd (Namespace `k8s.io`), `false` behält sie. |
-| `PORTAL_ICON` | leer | Optionale Betreiber-Übersteuerung des Portal-Kachel-Icons. Leer/ungesetzt -> jede Kachel nutzt ihr stage-spezifisches Standard-Icon `https://<stage-prefix>.${DOMAIN}/images/p2d2-logo.svg` aus dem eigenen Pod.
+| `PORTAL_ICON` | leer | Optionale Betreiber-Übersteuerung des Portal-Kachel-Icons. Leer/ungesetzt -> jede Kachel nutzt ihr stage-spezifisches Standard-Icon `https://<stage-prefix>.<ADDON_DOMAIN>/images/p2d2-logo.svg` aus dem eigenen Pod (konkrete Domain, kein `${DOMAIN}`-Literal; nur die `url`-Felder nutzen `${DOMAIN}`). |
 | `P2D2_TLS_BACKUP_HOST_FILE` | `${HOME}/p2d2-le-certs-backup.yaml` | Host-seitiger Lagerort des AddOn-TLS-Backups (außerhalb des Repos, enthält private Schlüssel). |
 | `P2D2_TLS_BACKUP_MIN_DAYS` | `30` | Mindest-Restlaufzeit in Tagen (1..600), ab der ein Backup-Eintrag wiederhergestellt wird. |
 
