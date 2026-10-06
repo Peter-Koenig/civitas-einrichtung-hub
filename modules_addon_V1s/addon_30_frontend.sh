@@ -714,13 +714,26 @@ addon_frontend_image_names() {
 # Werkzeug/Namensraum belegt: k3s ctr -n k8s.io (build-stage.sh L176,
 # modules_V1s/06c_image_build.sh). Exakte Namen, kein Wildcard.
 addon_remove_frontend_images() {
-  local stage name ref
+  local stage name ref list rc remaining
   for stage in main dev de1 de2 fv; do
     name="p2d2-frontend-${stage}:"
     while IFS= read -r ref; do
       [[ -n "${ref}" ]] && k3s ctr -n k8s.io images rm "${ref}" >/dev/null 2>&1 || true
     done < <(k3s ctr -n k8s.io images ls 2>/dev/null | awk -v n="${name}" 'index($1, n) > 0 {print $1}')
   done
+  # Verifikation: kein Image der fünf Namen darf übrig sein.
+  list="$(k3s ctr -n k8s.io images ls 2>/dev/null | awk '{print $1}')"
+  rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    log_warn "containerd-Image-Liste nicht lesbar — Frontend-Image-Entfernung nicht verifizierbar"
+    return 1
+  fi
+  remaining="$(printf '%s\n' "$list" | grep -E 'p2d2-frontend-(main|dev|de1|de2|fv):' || true)"
+  if [[ -n "$remaining" ]]; then
+    log_warn "Frontend-Images weiterhin vorhanden: $(printf '%s' "$remaining" | tr '\n' ' ')"
+    return 1
+  fi
+  return 0
 }
 
 # Gelöscht wird je Stage: Deployment, Service, ConfigMap, Secret, Ingress, Certificate
@@ -734,8 +747,7 @@ uninstall_addon_frontend() {
   addon_frontend_guard || return 1
 
   local ns="${ADDON_NS}"
-  # V6: Enum-Prüfung läuft hier, weil addon_validate_config beim Uninstall nicht läuft.
-  local keep_mode remove_images
+  local keep_mode remove_images rc=0
   keep_mode="$(addon_validate_uninstall_keep_tls)" || return 1
   remove_images="$(addon_validate_uninstall_remove_images)" || return 1
 
@@ -801,12 +813,20 @@ uninstall_addon_frontend() {
 
   # N7: gebaute Frontend-Images (containerd, Namespace k8s.io) nur mit Schalter entfernen.
   if [[ "${remove_images}" == "true" ]]; then
-    addon_remove_frontend_images
-    log_ok "Frontend-Images entfernt (containerd k8s.io)"
+    if addon_remove_frontend_images; then
+      log_ok "Frontend-Images entfernt (containerd k8s.io)"
+    else
+      log_warn "Frontend-Image-Entfernung nicht vollständig — manuell prüfen"
+      rc=1
+    fi
   else
     log_ok "Frontend-Images bewusst behalten (P2D2_UNINSTALL_REMOVE_IMAGES=false)"
     log "  Löschen bei Bedarf: P2D2_UNINSTALL_REMOVE_IMAGES=true"
   fi
 
+  if [[ "${rc}" -ne 0 ]]; then
+    log_warn "Uninstall AddOn 30 Frontend mit Resten/Fehlern beendet"
+    return 1
+  fi
   log_ok "Uninstall AddOn 30 Frontend abgeschlossen"
 }
