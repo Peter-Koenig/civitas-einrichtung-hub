@@ -51,6 +51,7 @@ case "$args" in
     [[ "$(cat "$STATE_DIR/patch_fail" 2>/dev/null)" == "yes" ]] && exit 1
     : > "$STATE_DIR/cr"; exit 0 ;;
   *"exec"*"psql"*"SELECT 1 FROM pg_database WHERE datname='p2d2'"*)
+    [[ "$(cat "$STATE_DIR/db_error" 2>/dev/null)" == "yes" ]] && { echo "connection refused" >&2; exit 1; }
     [[ "$(cat "$STATE_DIR/db" 2>/dev/null)" == "yes" ]] && echo "1"
     exit 0 ;;
   *"exec"*"psql"*"SHOW server_version_num"*)
@@ -86,6 +87,7 @@ init_state() {
   printf 'no' > "$STATE_DIR/patch_fail"
   printf 'no' > "$STATE_DIR/drop_fail"
   printf 'no' > "$STATE_DIR/drop_noop"
+  printf 'no' > "$STATE_DIR/db_error"
   : > "$STATE_DIR/op_roles"
   : > "$STATE_DIR/p2d2_roles"
   : > "$STATE_DIR/secrets"
@@ -144,7 +146,8 @@ check "b kein Fehlerlaerm" "0" "$(grep -c '^E:' "$LOG_BUF")"
 init_state db=yes cr='{"defaultUsers":true}' drop_fail=yes
 run_remove
 check "c1 DROP fail: rc=1" "1" "$?"
-check "c1 kein abgeschlossen" "no" "$(grep -q 'entfernt"' "$LOG_BUF" && echo yes || echo no)"
+check "c1 kein abgeschlossen" "no" "$(grep -q 'PostgreSQL-Datenbank p2d2 + Operator-Rollen/-Secrets entfernt' "$LOG_BUF" && echo yes || echo no)"
+check "c1 Fehlerursache im Log" "yes" "$(grep -q 'DROP DATABASE p2d2 fehlgeschlagen' "$LOG_BUF" && echo yes || echo no)"
 
 # c2) DB bleibt nach DROP -> return 1
 init_state db=yes cr='{"defaultUsers":true}' drop_noop=yes
@@ -169,6 +172,25 @@ check "e Rolle p2d2_owner_user exakt" "yes" "$(grep -q -- 'DROP ROLE IF EXISTS "
 check "e Rolle p2d2_owner exakt" "yes" "$(grep -q -- 'DROP ROLE IF EXISTS "p2d2_owner"' "$KUBECTL_CALL_LOG" && echo yes || echo no)"
 check "e Secret exakt" "yes" "$(grep -q -- 'delete secret p2d2-reader-user.central-db.credentials.postgresql.acid.zalan.do' "$KUBECTL_CALL_LOG" && echo yes || echo no)"
 check "e kein fremder Name (keycloak)" "0" "$(grep -c -- 'keycloak_owner\|keycloak_reader\|keycloak_writer' "$KUBECTL_CALL_LOG")"
+
+# N2(a): uninstall mit vorhandener DB: Reihenfolge DROP SCHEMA -> DROP OWNED BY -> DROP ROLE
+init_state db=yes cr='{"defaultUsers":true}'
+run_uninstall
+check "n2a uninstall rc=0" "0" "$?"
+check "n2a DROP SCHEMA vor DROP OWNED BY" "yes" "$(order_ok 'DROP SCHEMA IF EXISTS' 'DROP OWNED BY' && echo yes || echo no)"
+check "n2a DROP OWNED BY vor DROP ROLE" "yes" "$(order_ok 'DROP OWNED BY' 'DROP ROLE IF EXISTS' && echo yes || echo no)"
+check "n2a 5 DROP SCHEMA" "5" "$(grep -c -- 'DROP SCHEMA IF EXISTS' "$KUBECTL_CALL_LOG")"
+check "n2a 14 DROP OWNED BY" "14" "$(grep -c -- 'DROP OWNED BY' "$KUBECTL_CALL_LOG")"
+check "n2a 14 P2D2 DROP ROLE (-d postgres)" "yes" "$(grep -q -- '-d postgres -c DROP ROLE IF EXISTS' "$KUBECTL_CALL_LOG" && echo yes || echo no)"
+
+# N2(b): _db_exists liefert error -> return 1, kein 'bereits nicht vorhanden'
+init_state db_error=yes
+run_uninstall
+check "n2b uninstall error: rc=1" "1" "$?"
+check "n2b kein 'bereits nicht vorhanden'" "no" "$(grep -q 'bereits nicht vorhanden' "$LOG_BUF" && echo yes || echo no)"
+init_state db_error=yes
+run_remove
+check "n2b remove error: rc=1" "1" "$?"
 
 # ── verify-uninstall.sh Tests ─────────────────────────────────────────────────
 VU_STUBS="$T/vu_stubs"; mkdir -p "$VU_STUBS"
@@ -201,7 +223,15 @@ case "$args" in
   *"get pods -o jsonpath"*)
     printf '%s' "${GS_POD_NAME:-}"; exit 0 ;;
   *"exec"*"ls -A"*)
+    [[ "${RASTER_EXEC_FAIL:-no}" == "yes" ]] && { echo "exec error" >&2; exit 1; }
+    printf '%s\n' ${RASTER_FILES:-}
     exit 0 ;;
+  *"get certificate"*"-o json"*)
+    printf '%s' "${CERT_JSON:-}"; exit 0 ;;
+  *"get serviceaccount,role,rolebinding -o name"*)
+    printf '%s\n' ${SA_RB_RESOURCES:-}; exit 0 ;;
+  *"get cm apps.js"*)
+    printf '%s' "${PORTAL_JS:-}"; exit 0 ;;
   *"get postgresql central-db"*)
     printf '%s' "${DB_CR:-}"; exit 0 ;;
   *"get secret postgres.central-db.credentials.postgresql.acid.zalan.do"*"username"*)
@@ -214,6 +244,7 @@ case "$args" in
   *"exec"*"psql"*"pg_namespace WHERE nspname LIKE"*)
     printf '%s\n' ${DB_SCHEMAS:-}; exit 0 ;;
   *"exec"*"psql"*"pg_roles WHERE rolname IN"*)
+    if [[ "${STRICT_D_POSTGRES:-no}" == "yes" && "$args" != *"-d postgres"* ]]; then exit 2; fi
     if [[ "$args" == *"p2d2_owner"* ]]; then
       printf '%s\n' ${DB_OP_ROLES:-}
     else
@@ -245,7 +276,9 @@ case "$url" in
   *"/protocol/openid-connect/token"*) body='{"access_token":"STUB_TOKEN"}' ;;
   *"/admin/realms/"*"/clients"*) body='[]' ;;
   *"/identity-provider/instances/osm"*) code=404 ;;
-  *"/users?email="*) body='[]' ;;
+  *"/users?email="*) code="${USERS_HTTP:-200}"; body='[]' ;;
+  *"/apisix/admin/routes"*) body="${APISIX_ROUTES:-{\"list\":[]}}" ;;
+  *"/apisix/admin/upstreams"*) body="${APISIX_UPSTREAMS:-{\"list\":[]}}" ;;
   *"/geoserver/rest/workspaces.json"*)
     code="${GS_HTTP:-200}"
     body="${GS_BODY:-{\"workspaces\":{\"workspace\":[]}}}"
@@ -255,10 +288,24 @@ if [ "$has_w" = "1" ]; then printf '%s' "$code"; else printf '%s' "$body"; fi
 VU_CURL_EOF
 chmod +x "$VU_STUBS/curl"
 
+cat > "$VU_STUBS/k3s" << 'VU_K3S_EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"images ls"*) printf '%s\n' ${IMG_REFS:-}; exit 0 ;;
+esac
+exit 0
+VU_K3S_EOF
+chmod +x "$VU_STUBS/k3s"
+
+# APISIX-Admin-Key (gleiche Quelle wie der Uninstall).
+APISIX_CREDS_FILE="$T/apisix-creds"
+printf 'APISIX_ADMIN_ROLE_KEY=test-key\n' > "$APISIX_CREDS_FILE"
+
 run_vu() {
   : > "$VU_LOG"
   (
     export PATH="$VU_STUBS:$PATH"
+    export APISIX_CREDS="$APISIX_CREDS_FILE"
     local kv
     for kv in "$@"; do export "${kv%%=*}=${kv#*=}"; done
     "$VU_SCRIPT" > "$VU_LOG" 2>&1
@@ -293,5 +340,61 @@ check "f3 Schema n/a" "yes" "$(grep -q 'n/a (Datenbank nicht vorhanden)' "$VU_LO
 run_vu DOMAIN=udp.example.com GS_HTTP=500
 check "f5 GeoServer != 200: rc=1" "1" "$?"
 check "f5 nicht pruefbar gemeldet" "yes" "$(grep -q 'nicht pruefbar' "$VU_LOG" && echo yes || echo no)"
+
+# N5a) Demo-User-Abfrage HTTP != 200 -> nicht pruefbar (Rest)
+run_vu DOMAIN=udp.example.com USERS_HTTP=500
+check "n5a Demo-User HTTP != 200: rc=1" "1" "$?"
+check "n5a Demo-User nicht pruefbar" "yes" "$(grep -q 'Demo-User-Abfrage nicht pruefbar' "$VU_LOG" && echo yes || echo no)"
+
+# N5b) Raster-Check exec-Fehler -> nicht pruefbar (Rest)
+run_vu DOMAIN=udp.example.com GS_POD_NAME="geoserver-geoserver-0" RASTER_EXEC_FAIL=yes
+check "n5b Raster exec-Fehler: rc=1" "1" "$?"
+check "n5b Raster nicht pruefbar" "yes" "$(grep -q 'Raster-Dateien im GeoServer-Pod nicht pruefbar' "$VU_LOG" && echo yes || echo no)"
+
+# N6) Certificate-Objekt -> Rest
+run_vu DOMAIN=udp.example.com CERT_JSON='{"items":[{"metadata":{"name":"www-tls-cert"},"spec":{"secretName":"www.udp.example.com-tls"}}]}'
+check "n6 Certificate vorhanden: rc=1" "1" "$?"
+check "n6 Certificate gemeldet" "yes" "$(grep -q 'Frontend-Certificate-Objekte vorhanden' "$VU_LOG" && echo yes || echo no)"
+
+# N6) Webhook-RBAC -> Rest
+run_vu DOMAIN=udp.example.com SA_RB_RESOURCES="role/p2d2-webhook-controller-role"
+check "n6 Webhook-RBAC: rc=1" "1" "$?"
+check "n6 Webhook-RBAC gemeldet" "yes" "$(grep -q 'Webhook-Controller-RBAC vorhanden' "$VU_LOG" && echo yes || echo no)"
+
+# N6) Portal-Kacheln -> Rest
+run_vu DOMAIN=udp.example.com PORTAL_JS='const apps=[{id:"p2d2-main"}]; // p2d2-addon:begin'
+check "n6 Portal-Kacheln: rc=1" "1" "$?"
+check "n6 Portal-Kacheln gemeldet" "yes" "$(grep -q 'Portal-Kacheln weiterhin vorhanden' "$VU_LOG" && echo yes || echo no)"
+
+# N6) APISIX-Route -> Rest
+run_vu DOMAIN=udp.example.com APISIX_ROUTES='{"list":[{"value":{"name":"mapserver-route"}}]}'
+check "n6 APISIX-Route: rc=1" "1" "$?"
+check "n6 APISIX-Route gemeldet" "yes" "$(grep -q 'APISIX mapserver-route vorhanden' "$VU_LOG" && echo yes || echo no)"
+
+# N7) Images bei REMOVE_IMAGES=false -> bewusst behalten (kein Rest)
+run_vu DOMAIN=udp.example.com IMG_REFS="p2d2-frontend-main:cfg-abc" REMOVE_IMAGES=false
+check "n7 Images false: rc=0" "0" "$?"
+check "n7 Images bewusst behalten" "yes" "$(grep -q 'p2d2-Frontend-Images vorhanden (bewusst behalten' "$VU_LOG" && echo yes || echo no)"
+
+# N7) Images bei REMOVE_IMAGES=true -> Rest
+run_vu DOMAIN=udp.example.com IMG_REFS="p2d2-frontend-main:cfg-abc" REMOVE_IMAGES=true
+check "n7 Images true: rc=1" "1" "$?"
+check "n7 Images als Rest" "yes" "$(grep -q 'p2d2-Frontend-Images vorhanden (REMOVE_IMAGES=true' "$VU_LOG" && echo yes || echo no)"
+
+# N2c) Rollenabfrage nur über -d postgres (Fallback auf -d p2d2 färbt rot)
+run_vu DOMAIN=udp.example.com DB_PRESENT=no DB_P2D2_ROLES="P2D2-Admin" STRICT_D_POSTGRES=yes
+check "n2c Rollen über -d postgres: Rolle als Rest" "yes" "$(grep -qF 'P2D2-*-Rollen vorhanden' "$VU_LOG" && echo yes || echo no)"
+
+# N2d) T7: run_in_vm_addon enthält chmod für Hauptskript + 5 Supplement-Skripte
+MAIN_SCRIPT="$REPO/p2d2-civitas-addon-v1s.sh"
+check "n2d chmod Hauptskript" "yes" "$(grep -qF 'chmod +x ${VM_REMOTE_INSTALL_DIR}/p2d2-civitas-addon-v1s.sh' "$MAIN_SCRIPT" && echo yes || echo no)"
+for s in verify-uninstall.sh verify-p2d2-schema-dumps.sh verify-p2d2-schema-runtime.sh p2d2-extract-db-dumps.py p2d2-extract-db-schema.py; do
+  check "n2d chmod supplement/$s" "yes" "$(grep -qF "supplement/$s" "$MAIN_SCRIPT" && echo yes || echo no)"
+done
+
+# N3) Stub stderr-Text landet im Log (bereits über c1 abgedeckt, hier explizit)
+init_state db=yes cr='{"defaultUsers":true}' drop_fail=yes
+run_remove
+check "n3 stderr-Text im Log" "yes" "$(grep -q 'ERROR: drop' "$LOG_BUF" && echo yes || echo no)"
 
 rm -rf "$T"
