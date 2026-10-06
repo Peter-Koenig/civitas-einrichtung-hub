@@ -24,7 +24,7 @@ NS="${NS:-cc-prd-geodata-stack}"
 DBNS="${DBNS:-cc-prd-database-stack}"
 # Uninstall-TLS-Handhabung (Schritt 2c-3): auto/true = <host>-tls-Secrets sind
 # erlaubt und werden als bewusst behalten gemeldet; false = strikt (Reste).
-KEEP_TLS="${KEEP_TLS:-auto}"
+KEEP_TLS="${KEEP_TLS:-}"
 # IAM/Keycloak (analog addon_25_iam.sh)
 IAM_REALM="${IAM_REALM:-cc-prd}"
 IAM_NS="${IAM_NS:-cc-prd-access-stack}"
@@ -35,7 +35,7 @@ PORTAL_CM="${PORTAL_CM:-apps.js}"
 # APISIX-Admin-Key (gleiche Quelle wie der Uninstall, addon_20_mapproxy.sh).
 APISIX_CREDS="${APISIX_CREDS:-/root/civitas-install/credentials.env}"
 # Uninstall-Image-Entfernung (N7): false = Images bewusst behalten, true = Rest.
-REMOVE_IMAGES="${REMOVE_IMAGES:-${P2D2_UNINSTALL_REMOVE_IMAGES:-false}}"
+REMOVE_IMAGES="${REMOVE_IMAGES:-}"
 
 # ── DOMAIN-Auflösung: kein Default mehr. Reihenfolge: DOMAIN -> ADDON_DOMAIN ->
 #    DOMAIN_NAME (Umgebung) -> .env.p2d2-addon (ADDON_DOMAIN, dann DOMAIN_NAME).
@@ -61,6 +61,28 @@ if ! _resolve_domain; then
   echo "Aufruf: DOMAIN=udp.projekte-koenig.eu $0" >&2
   exit 2
 fi
+
+# _env_file_value <name> — liest eine Variable aus .env.p2d2-addon (beide Pfade).
+_env_file_value() {
+  local name="$1" env_file val
+  for env_file in "${SCRIPT_DIR}/../.env.p2d2-addon" "${SCRIPT_DIR}/../../.env.p2d2-addon"; do
+    [[ -f "$env_file" ]] || continue
+    val="$(grep -E "^[[:space:]]*(export[[:space:]]+)?${name}=" "$env_file" | tail -1 \
+      | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]*$//; s/^"//; s/"$//')"
+    [[ -n "$val" ]] && { printf '%s' "$val"; return 0; }
+  done
+  return 1
+}
+
+# Schalter: Umgebung vor .env.p2d2-addon (wie DOMAIN), Default wie im Uninstall.
+if [[ -z "${P2D2_UNINSTALL_KEEP_TLS:-}" ]]; then
+  P2D2_UNINSTALL_KEEP_TLS="$(_env_file_value P2D2_UNINSTALL_KEEP_TLS)"
+fi
+if [[ -z "${P2D2_UNINSTALL_REMOVE_IMAGES:-}" ]]; then
+  P2D2_UNINSTALL_REMOVE_IMAGES="$(_env_file_value P2D2_UNINSTALL_REMOVE_IMAGES)"
+fi
+KEEP_TLS="${KEEP_TLS:-${P2D2_UNINSTALL_KEEP_TLS:-auto}}"
+REMOVE_IMAGES="${REMOVE_IMAGES:-${P2D2_UNINSTALL_REMOVE_IMAGES:-false}}"
 
 # ── Master-Pod dynamisch (Label-basiert), Fallback central-db-0 ────────────────
 pg_master_pod() {
@@ -132,21 +154,29 @@ else
   fi
 fi
 
-# Webhook-Controller-RBAC (ServiceAccount/Role/RoleBinding)
-sa_rb="$(kubectl -n "$NS" get serviceaccount,role,rolebinding -o name 2>/dev/null)"
-sa_rb_rc=$?
-if [[ "$sa_rb_rc" -ne 0 ]]; then
-  note_reste "Webhook-RBAC nicht pruefbar (Abfrage fehlgeschlagen)"
-else
-  webhook_rest=""
-  for n in "serviceaccount/p2d2-webhook-controller" "role/p2d2-webhook-controller-role" "rolebinding/p2d2-webhook-controller-binding"; do
-    printf '%s\n' "$sa_rb" | grep -qx "$n" && webhook_rest="${webhook_rest} ${n}"
-  done
-  if [[ -z "$webhook_rest" ]]; then
-    log_ok "keine Webhook-Controller-RBAC-Reste"
-  else
-    note_reste "Webhook-Controller-RBAC vorhanden:${webhook_rest}"
+# Webhook-Controller-RBAC (ServiceAccount/Role/RoleBinding) — je Objekt mit
+# Exit-Code abfragen, damit der Gruppensuffix (role.rbac.authorization.k8s.io/...)
+# korrekt erkannt wird.
+webhook_rest=""
+rb_unknown=0
+for spec in "serviceaccount p2d2-webhook-controller" "role p2d2-webhook-controller-role" "rolebinding p2d2-webhook-controller-binding"; do
+  kind="${spec%% *}"; name="${spec#* }"
+  err="$(kubectl -n "$NS" get "$kind" "$name" 2>&1 >/dev/null)"
+  rc=$?
+  if [[ "$rc" -eq 0 ]]; then
+    webhook_rest="${webhook_rest} ${kind}/${name}"
+  elif [[ "$err" != *"NotFound"* ]]; then
+    rb_unknown=1
   fi
+done
+if [[ -n "$webhook_rest" ]]; then
+  note_reste "Webhook-Controller-RBAC vorhanden:${webhook_rest}"
+fi
+if [[ "$rb_unknown" -eq 1 ]]; then
+  note_reste "Webhook-RBAC nicht pruefbar (Abfrage fehlgeschlagen)"
+fi
+if [[ -z "$webhook_rest" && "$rb_unknown" -eq 0 ]]; then
+  log_ok "keine Webhook-Controller-RBAC-Reste"
 fi
 
 # ── 1b. Portal-Kacheln ────────────────────────────────────────────────────────
