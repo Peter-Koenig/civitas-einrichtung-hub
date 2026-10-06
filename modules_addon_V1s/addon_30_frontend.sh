@@ -386,6 +386,131 @@ addon_frontend_svc() {
   esac
 }
 
+# ── TLS-Backup (Teil B) ────────────────────────────────────────────────────────
+# addon_tls_secret_json <secret> — Secret als JSON, Server-Metadaten entfernt.
+addon_tls_secret_json() {
+  local secret="$1"
+  kubectl -n "${ADDON_NS}" get secret "${secret}" -o json 2>/dev/null \
+    | jq 'del(.metadata.resourceVersion, .metadata.uid, .metadata.creationTimestamp, .metadata.managedFields, .metadata.ownerReferences, .metadata.selfLink)' 2>/dev/null
+}
+
+# addon_tls_backup_relevant <json> <host> <min_days> — 0 wenn relevant, sonst 1.
+# Loggt nur Metadaten (Host, Aussteller, notAfter), nie Zertifikats-/Schlüsselinhalte.
+addon_tls_backup_relevant() {
+  local json="$1" host="$2" min_days="$3"
+  local type ns crt key issuer notafter notbefore reason=""
+  type="$(printf '%s' "$json" | jq -r '.type // empty')"
+  ns="$(printf '%s' "$json" | jq -r '.metadata.namespace // empty')"
+  crt="$(printf '%s' "$json" | jq -r '.data["tls.crt"] // empty')"
+  key="$(printf '%s' "$json" | jq -r '.data["tls.key"] // empty')"
+  [[ "$type" == "kubernetes.io/tls" ]] || reason="type"
+  [[ -n "$crt" && -n "$key" ]] || reason="${reason:+${reason},}tls.crt/tls.key"
+  [[ "$ns" == "${ADDON_NS}" ]] || reason="${reason:+${reason},}namespace"
+  if [[ -z "$reason" ]]; then
+    local crt_file key_file
+    crt_file="$(mktemp)"; key_file="$(mktemp)"
+    printf '%s' "$crt" | base64 -d > "$crt_file" 2>/dev/null || true
+    printf '%s' "$key" | base64 -d > "$key_file" 2>/dev/null || true
+    issuer="$(openssl x509 -in "$crt_file" -noout -issuer 2>/dev/null || true)"
+    if [[ "$issuer" != *"Let's Encrypt"* ]]; then reason="${reason:+${reason},}issuer"; fi
+    if [[ "$issuer" == *"STAGING"* ]]; then reason="${reason:+${reason},}staging"; fi
+    if ! openssl x509 -in "$crt_file" -noout -checkend $((min_days * 86400)) >/dev/null 2>&1; then
+      reason="${reason:+${reason},}checkend"
+    fi
+    notbefore="$(openssl x509 -in "$crt_file" -noout -startdate 2>/dev/null | cut -d= -f2- || true)"
+    notafter="$(openssl x509 -in "$crt_file" -noout -enddate 2>/dev/null | cut -d= -f2- || true)"
+    if [[ -n "$notbefore" ]] && [[ "$(date -d "$notbefore" +%s 2>/dev/null || echo 0)" -gt "$(date +%s)" ]]; then
+      reason="${reason:+${reason},}notBefore-Zukunft"
+    fi
+    # DNS-SAN: exakt <host>, kein weiterer Name außerhalb ${ADDON_DOMAIN}.
+    local dns dns_host=0 dns_foreign=0
+    while IFS= read -r dns; do
+      [[ -z "$dns" ]] && continue
+      if [[ "$dns" == "$host" ]]; then dns_host=1; continue; fi
+      if [[ "$dns" != *".${ADDON_DOMAIN}" ]]; then dns_foreign=1; fi
+    done < <(openssl x509 -in "$crt_file" -noout -ext subjectAltName 2>/dev/null \
+      | tr ',' '\n' | sed -n 's/^[[:space:]]*DNS://p')
+    [[ "$dns_host" -eq 1 ]] || reason="${reason:+${reason},}SAN-host"
+    [[ "$dns_foreign" -eq 0 ]] || reason="${reason:+${reason},}SAN-fremd"
+    # Public Key des Zertifikats passt zum privaten Schluessel.
+    local pub_cert pub_key
+    pub_cert="$(openssl x509 -in "$crt_file" -noout -pubkey 2>/dev/null | openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | awk '{print $1}' || true)"
+    pub_key="$(openssl pkey -in "$key_file" -pubout -outform DER 2>/dev/null | sha256sum | awk '{print $1}' || true)"
+    if [[ -n "$pub_cert" && -n "$pub_key" && "$pub_cert" != "$pub_key" ]]; then
+      reason="${reason:+${reason},}key-match"
+    fi
+    rm -f "$crt_file" "$key_file"
+  fi
+  if [[ -n "$reason" ]]; then
+    log "Backup-Eintrag ${host} nicht relevant (${reason}; Aussteller=${issuer:-?}; notAfter=${notafter:-?})"
+    return 1
+  fi
+  return 0
+}
+
+# addon_restore_tls_backup — stellt die 5 TLS-Secrets aus dem Backup wieder her
+# (B3). Vorhandene Secrets werden nie überschrieben; Fehler brechen den Install nicht ab.
+addon_restore_tls_backup() {
+  local backup_file="${VM_REMOTE_INSTALL_DIR:-/root/p2d2-addon}/../p2d2-le-certs-backup.yaml"
+  [[ -f "${backup_file}" ]] || { log "Kein TLS-Backup vorhanden — Restore übersprungen"; return 0; }
+  local min_days="${P2D2_TLS_BACKUP_MIN_DAYS:-30}"
+  local stage host secret entry
+  for stage in main dev de1 de2 fv; do
+    host="$(addon_frontend_host "${stage}")"
+    secret="${host}-tls"
+    if kubectl -n "${ADDON_NS}" get secret "${secret}" >/dev/null 2>&1; then
+      log "TLS-Secret ${secret} vorhanden — unverändert"
+      continue
+    fi
+    entry="$(jq -r --arg n "${secret}" '.[]? | select(.metadata.name == $n)' "${backup_file}" 2>/dev/null || true)"
+    if [[ -z "$entry" ]]; then
+      log "Kein Backup-Eintrag für ${secret} — übersprungen"
+      continue
+    fi
+    if addon_tls_backup_relevant "${entry}" "${host}" "${min_days}"; then
+      if printf '%s\n' "${entry}" | kubectl apply -f - >/dev/null 2>&1; then
+        log_ok "TLS-Secret ${secret} aus Backup wiederhergestellt"
+      else
+        log_warn "TLS-Secret ${secret} konnte nicht wiederhergestellt werden — Rückfall auf Neuausstellung"
+      fi
+    fi
+  done
+  return 0
+}
+
+# addon_export_tls_backup — schreibt die 5 TLS-Secrets atomar ins Backup (B4).
+# Nur im Install-Lauf und nur bei ACME-Issuer; alles-oder-nichts.
+addon_export_tls_backup() {
+  local issuer="${ADDON_CERT_ISSUER_RESOLVED:-}"
+  [[ -n "$issuer" ]] || issuer="$(addon_install_cert_issuer 2>/dev/null || true)"
+  addon_cert_is_acme "${issuer}" || { log "Issuer ${issuer} ist kein ACME-Issuer — kein TLS-Export"; return 0; }
+  local backup_file="${VM_REMOTE_INSTALL_DIR:-/root/p2d2-addon}/../p2d2-le-certs-backup.yaml"
+  local collected stage host secret json
+  collected=""
+  for stage in main dev de1 de2 fv; do
+    host="$(addon_frontend_host "${stage}")"
+    secret="${host}-tls"
+    json="$(addon_tls_secret_json "${secret}")"
+    if [[ -z "$json" ]] || ! addon_tls_backup_relevant "${json}" "${host}" 0; then
+      log_warn "TLS-Secret ${secret} unbrauchbar oder nicht lesbar — Export übersprungen (bestehende Datei bleibt)"
+      return 0
+    fi
+    collected="${collected}${collected:+$'\n'}${json}"
+  done
+  # alles-oder-nichts: 5 gültige Einträge, je type/tls.crt/tls.key.
+  if [[ "$(printf '%s\n' "${collected}" | jq -s 'length' 2>/dev/null)" != "5" ]]; then
+    log_warn "TLS-Export übersprungen (erwartet 5 Einträge)"
+    return 0
+  fi
+  local tmp
+  tmp="$(mktemp "${backup_file}.tmp.XXXXXX")"
+  ( umask 077; printf '%s\n' "${collected}" | jq -s '.' > "$tmp" )
+  chmod 600 "$tmp"
+  mv "$tmp" "${backup_file}"
+  chmod 600 "${backup_file}"
+  log_ok "TLS-Backup exportiert (${backup_file})"
+}
+
 # addon_render_ingress <stage> <issuer> — reines Ingress-Rendering (U4).
 addon_render_ingress() {
   local stage="$1" issuer="$2" svc host secret
