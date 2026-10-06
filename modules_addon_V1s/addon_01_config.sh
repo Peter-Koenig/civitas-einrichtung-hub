@@ -77,6 +77,20 @@ addon_validate_uninstall_keep_tls() {
   esac
 }
 
+# addon_validate_uninstall_remove_images
+# Enum-Prüfung für P2D2_UNINSTALL_REMOVE_IMAGES (true|false, Default false).
+# Läuft im Uninstall-Pfad gesondert (wie P2D2_UNINSTALL_KEEP_TLS).
+addon_validate_uninstall_remove_images() {
+  local mode="${P2D2_UNINSTALL_REMOVE_IMAGES:-false}"
+  case "${mode}" in
+    true|false) printf '%s' "${mode}"; return 0 ;;
+    *)
+      log_error "P2D2_UNINSTALL_REMOVE_IMAGES muss true|false sein (ist: '${mode}')"
+      return 1
+      ;;
+  esac
+}
+
 # addon_validate_config
 # Zentrale Validierung der .env.p2d2-addon (Konfigurationsvertrag).
 addon_validate_config() {
@@ -154,6 +168,10 @@ addon_validate_config() {
   # 3c) Uninstall-TLS-Handhabung (Schritt 2c-3, optional mit Default).
   if [[ ! -v P2D2_UNINSTALL_KEEP_TLS ]]; then P2D2_UNINSTALL_KEEP_TLS="auto"; fi
   addon_validate_uninstall_keep_tls >/dev/null || return 1
+
+  # 3d) Uninstall-Image-Entfernung (N7, optional mit Default false).
+  if [[ ! -v P2D2_UNINSTALL_REMOVE_IMAGES ]]; then P2D2_UNINSTALL_REMOVE_IMAGES="false"; fi
+  addon_validate_uninstall_remove_images >/dev/null || return 1
 
   # 4) Nicht-sensitive Basiswerte (Vorlage, Abschnitt 3).
   for v in \

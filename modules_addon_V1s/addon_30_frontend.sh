@@ -705,6 +705,24 @@ addon_secret_tls_provenance() {
 # Löst den früheren DANGER-Sonderfall ab (der Install-Platzhalter ist seit Turn 45-62
 # produktiv und kann die Ressourcen wiederherstellen).
 #
+# addon_frontend_image_names — die 5 exakt gebauten Image-Namen (build-stage.sh).
+addon_frontend_image_names() {
+  printf '%s\n' p2d2-frontend-main p2d2-frontend-dev p2d2-frontend-de1 p2d2-frontend-de2 p2d2-frontend-fv
+}
+
+# addon_remove_frontend_images — entfernt die 5 Frontend-Images aus containerd.
+# Werkzeug/Namensraum belegt: k3s ctr -n k8s.io (build-stage.sh L176,
+# modules_V1s/06c_image_build.sh). Exakte Namen, kein Wildcard.
+addon_remove_frontend_images() {
+  local stage name ref
+  for stage in main dev de1 de2 fv; do
+    name="p2d2-frontend-${stage}:"
+    while IFS= read -r ref; do
+      [[ -n "${ref}" ]] && k3s ctr -n k8s.io images rm "${ref}" >/dev/null 2>&1 || true
+    done < <(k3s ctr -n k8s.io images ls 2>/dev/null | awk -v n="${name}" 'index($1, n) > 0 {print $1}')
+  done
+}
+
 # Gelöscht wird je Stage: Deployment, Service, ConfigMap, Secret, Ingress, Certificate
 # (ausdrücklich, V2) sowie Alt-PVCs aus der PVC-basierten Vorversion. Das TLS-Secret
 # <host>-tls bleibt bei ACME-Issuern erhalten (E3, V1, P2D2_UNINSTALL_KEEP_TLS).
@@ -717,8 +735,9 @@ uninstall_addon_frontend() {
 
   local ns="${ADDON_NS}"
   # V6: Enum-Prüfung läuft hier, weil addon_validate_config beim Uninstall nicht läuft.
-  local keep_mode
+  local keep_mode remove_images
   keep_mode="$(addon_validate_uninstall_keep_tls)" || return 1
+  remove_images="$(addon_validate_uninstall_remove_images)" || return 1
 
   local stage svc host cm secret tls_secret provenance cert_name cert_pem issuer enddate
   for stage in main dev de1 de2 fv; do
@@ -779,6 +798,15 @@ uninstall_addon_frontend() {
   # Shared-Infra-Secrets (Turn 65: löschen, nicht erhalten)
   kubectl -n "${ns}" delete secret p2d2-builder-git-auth --ignore-not-found || true
   kubectl -n "${ns}" delete secret p2d2-webhook-secrets --ignore-not-found || true
+
+  # N7: gebaute Frontend-Images (containerd, Namespace k8s.io) nur mit Schalter entfernen.
+  if [[ "${remove_images}" == "true" ]]; then
+    addon_remove_frontend_images
+    log_ok "Frontend-Images entfernt (containerd k8s.io)"
+  else
+    log_ok "Frontend-Images bewusst behalten (P2D2_UNINSTALL_REMOVE_IMAGES=false)"
+    log "  Löschen bei Bedarf: P2D2_UNINSTALL_REMOVE_IMAGES=true"
+  fi
 
   log_ok "Uninstall AddOn 30 Frontend abgeschlossen"
 }

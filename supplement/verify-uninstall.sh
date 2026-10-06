@@ -29,6 +29,13 @@ KEEP_TLS="${KEEP_TLS:-auto}"
 IAM_REALM="${IAM_REALM:-cc-prd}"
 IAM_NS="${IAM_NS:-cc-prd-access-stack}"
 IAM_ADMIN_SECRET="${IAM_ADMIN_SECRET:-cc-prd-keycloak-admin}"
+# Portal (addon_35_portal.sh): Namespace + ConfigMap-Name.
+PORTAL_NS="${PORTAL_NS:-cc-prd-access-stack}"
+PORTAL_CM="${PORTAL_CM:-apps.js}"
+# APISIX-Admin-Key (gleiche Quelle wie der Uninstall, addon_20_mapproxy.sh).
+APISIX_CREDS="${APISIX_CREDS:-/root/civitas-install/credentials.env}"
+# Uninstall-Image-Entfernung (N7): false = Images bewusst behalten, true = Rest.
+REMOVE_IMAGES="${REMOVE_IMAGES:-${P2D2_UNINSTALL_REMOVE_IMAGES:-false}}"
 
 # ── DOMAIN-Auflösung: kein Default mehr. Reihenfolge: DOMAIN -> ADDON_DOMAIN ->
 #    DOMAIN_NAME (Umgebung) -> .env.p2d2-addon (ADDON_DOMAIN, dann DOMAIN_NAME).
@@ -106,6 +113,59 @@ else
   printf '      %s\n' $fe_tls
 fi
 
+# Certificate-Objekte der 5 Stage-Hosts (cert-manager). Das TLS-Secret bleibt
+# (E3), das Certificate-Objekt muss weg sein.
+cert_json="$(kubectl -n "$NS" get certificate -o json 2>/dev/null)"
+cert_rc=$?
+if [[ "$cert_rc" -ne 0 ]]; then
+  note_reste "Certificate-Abfrage nicht möglich — Zertifikats-Reste manuell prüfen"
+else
+  cert_rest=""
+  for host in www dev f-de1 f-de2 f-fv; do
+    n="$(printf '%s' "$cert_json" | jq -r --arg s "${host}.${DOMAIN}-tls" '.items[]? | select(.spec.secretName == $s) | .metadata.name' 2>/dev/null | head -1 || true)"
+    [[ -n "$n" ]] && cert_rest="${cert_rest} ${n}"
+  done
+  if [[ -z "$cert_rest" ]]; then
+    log_ok "keine Frontend-Certificate-Objekte"
+  else
+    note_reste "Frontend-Certificate-Objekte vorhanden:${cert_rest}"
+  fi
+fi
+
+# Webhook-Controller-RBAC (ServiceAccount/Role/RoleBinding)
+sa_rb="$(kubectl -n "$NS" get serviceaccount,role,rolebinding -o name 2>/dev/null)"
+sa_rb_rc=$?
+if [[ "$sa_rb_rc" -ne 0 ]]; then
+  note_reste "Webhook-RBAC nicht pruefbar (Abfrage fehlgeschlagen)"
+else
+  webhook_rest=""
+  for n in "serviceaccount/p2d2-webhook-controller" "role/p2d2-webhook-controller-role" "rolebinding/p2d2-webhook-controller-binding"; do
+    printf '%s\n' "$sa_rb" | grep -qx "$n" && webhook_rest="${webhook_rest} ${n}"
+  done
+  if [[ -z "$webhook_rest" ]]; then
+    log_ok "keine Webhook-Controller-RBAC-Reste"
+  else
+    note_reste "Webhook-Controller-RBAC vorhanden:${webhook_rest}"
+  fi
+fi
+
+# ── 1b. Portal-Kacheln ────────────────────────────────────────────────────────
+log ""
+log "== 1b. Portal-Kacheln (apps.js) =="
+portal_js="$(kubectl -n "$PORTAL_NS" get cm "$PORTAL_CM" -o jsonpath='{.data.apps\.js}' 2>/dev/null)"
+portal_rc=$?
+if [[ "$portal_rc" -ne 0 ]]; then
+  note_reste "Portal-ConfigMap ${PORTAL_NS}/${PORTAL_CM} nicht lesbar — Kacheln manuell prüfen"
+else
+  marker="$(printf '%s' "$portal_js" | grep -c -- '// p2d2-addon:begin' || true)"
+  ids="$(printf '%s' "$portal_js" | grep -cE 'id: "p2d2-' || true)"
+  if [[ "$marker" -gt 0 || "$ids" -gt 0 ]]; then
+    note_reste "Portal-Kacheln weiterhin vorhanden (Marker: ${marker}, p2d2-IDs: ${ids})"
+  else
+    log_ok "keine Portal-Kacheln (apps.js)"
+  fi
+fi
+
 # ── 2. IAM/Keycloak ────────────────────────────────────────────────────────────
 log ""
 log "== 2. IAM/Keycloak =="
@@ -148,15 +208,29 @@ else
     -H "Authorization: Bearer ${token}" 2>/dev/null || true)
   if [[ "$osm_code" == "404" ]]; then log_ok "OSM-IdP-Broker osm nicht vorhanden"; else note_reste "OSM-IdP-Broker osm vorhanden (HTTP ${osm_code})"; fi
 
-  # 6 Demo-User
+  # 6 Demo-User (HTTP-Status je Abfrage prüfen; Fehler = nicht pruefbar)
   users=""
+  demo_err=0
   for e in hans.muster jule.kovalenko chisom.eze arman.ekov meera.pillai valentina.cruz; do
+    demo_http=$(curl -sk --max-time 15 -o /dev/null -w '%{http_code}' \
+      "https://idm.${DOMAIN}/admin/realms/${IAM_REALM}/users?email=${e}%40nospam.scanea.de&exact=true" \
+      -H "Authorization: Bearer ${token}" 2>/dev/null || true)
+    if [[ "$demo_http" != "200" ]]; then
+      demo_err=1
+      continue
+    fi
     u=$(curl -sk --max-time 15 \
       "https://idm.${DOMAIN}/admin/realms/${IAM_REALM}/users?email=${e}%40nospam.scanea.de&exact=true" \
       -H "Authorization: Bearer ${token}" 2>/dev/null | jq -r '.[0].id // empty' 2>/dev/null || true)
     [[ -n "$u" ]] && users="${users} ${e}@nospam.scanea.de"
   done
-  if [[ -z "$users" ]]; then log_ok "keine Demo-User"; else note_reste "Demo-User vorhanden:${users}"; fi
+  if [[ "$demo_err" -ne 0 ]]; then
+    note_reste "Demo-User-Abfrage nicht pruefbar (HTTP ${demo_http:-0}) — Demo-User manuell prüfen"
+  elif [[ -z "$users" ]]; then
+    log_ok "keine Demo-User"
+  else
+    note_reste "Demo-User vorhanden:${users}"
+  fi
 fi
 
 # ── 3. MapProxy ────────────────────────────────────────────────────────────────
@@ -168,6 +242,25 @@ if [[ -z "$mp" ]]; then
 else
   note_reste "MapProxy-Ressourcen vorhanden:"
   printf '      %s\n' $mp
+fi
+
+# APISIX mapserver-route/-upstream (gleicher Zugangsweg wie Uninstall).
+ak=$(sed -n 's/^APISIX_ADMIN_ROLE_KEY=//p' "$APISIX_CREDS" 2>/dev/null | head -1 || true)
+if [[ -z "$ak" ]]; then
+  note_reste "APISIX_ADMIN_ROLE_KEY nicht lesbar — mapserver-route/-upstream nicht pruefbar"
+else
+  apisix_base="https://api-admin.${DOMAIN}/apisix/admin"
+  for pair in routes:mapserver-route upstreams:mapserver-upstream; do
+    coll="${pair%%:*}"; name="${pair#*:}"
+    apisix_http=$(curl -sk --max-time 15 -o /dev/null -w '%{http_code}' -H "X-API-KEY: ${ak}" "${apisix_base}/${coll}" 2>/dev/null || true)
+    if [[ "$apisix_http" != "200" ]]; then
+      note_reste "APISIX ${name} nicht pruefbar (HTTP ${apisix_http:-0})"
+      continue
+    fi
+    found=$(curl -sk --max-time 15 -H "X-API-KEY: ${ak}" "${apisix_base}/${coll}" 2>/dev/null \
+      | jq -r --arg n "$name" '.list[]? | select(.value.name==$n) | .value.name' 2>/dev/null | head -1 || true)
+    if [[ -n "$found" ]]; then note_reste "APISIX ${name} vorhanden"; else log_ok "APISIX ${name} nicht vorhanden"; fi
+  done
 fi
 
 # ── 4. GeoServer ───────────────────────────────────────────────────────────────
@@ -207,8 +300,11 @@ fi
 gs_pod=$(kubectl -n "$NS" get pods -o jsonpath='{.items[*].metadata.name}' 2>/dev/null \
   | tr ' ' '\n' | grep '^geoserver-geoserver-' | head -1 || true)
 if [[ -n "$gs_pod" ]]; then
-  ls_out=$(kubectl -n "$NS" exec "$gs_pod" -- sh -c 'ls -A /opt/geoserver/data_dir/data/geotiffs 2>/dev/null' 2>/dev/null || true)
-  if [[ -z "$ls_out" ]]; then
+  ls_out="$(kubectl -n "$NS" exec "$gs_pod" -- sh -c 'ls -A /opt/geoserver/data_dir/data/geotiffs 2>/dev/null' 2>/dev/null)"
+  ls_rc=$?
+  if [[ "$ls_rc" -ne 0 ]]; then
+    note_reste "Raster-Dateien im GeoServer-Pod nicht pruefbar (exec-Fehler)"
+  elif [[ -z "$ls_out" ]]; then
     log_ok "keine Raster-Dateien unter data/geotiffs/ im GeoServer-Pod"
   else
     note_reste "Raster-Dateien im GeoServer-Pod vorhanden:"
@@ -310,6 +406,33 @@ if [[ -z "$op_secrets" ]]; then
   log_ok "keine p2d2-Operator-Secrets"
 else
   note_reste "p2d2-Operator-Secrets vorhanden:${op_secrets}"
+fi
+
+# ── 6. Frontend-Images (containerd) ───────────────────────────────────────────
+log ""
+log "== 6. Frontend-Images (containerd) =="
+if ! command -v k3s >/dev/null 2>&1; then
+  note_reste "k3s nicht verfügbar — Frontend-Images nicht pruefbar"
+else
+  img_list="$(k3s ctr -n k8s.io images ls 2>/dev/null | awk '{print $1}')"
+  img_rc=$?
+  if [[ "$img_rc" -ne 0 ]]; then
+    note_reste "containerd-Image-Liste nicht lesbar — Frontend-Images nicht pruefbar"
+  else
+    img_found=""
+    for stage in main dev de1 de2 fv; do
+      found="$(printf '%s\n' "$img_list" | grep -F "p2d2-frontend-${stage}:" | head -1 || true)"
+      [[ -n "$found" ]] && img_found="${img_found} ${found}"
+    done
+    if [[ -z "$img_found" ]]; then
+      log_ok "keine p2d2-Frontend-Images"
+    elif [[ "$REMOVE_IMAGES" == "true" ]]; then
+      note_reste "p2d2-Frontend-Images vorhanden (REMOVE_IMAGES=true — Rest):${img_found}"
+    else
+      log_ok "p2d2-Frontend-Images vorhanden (bewusst behalten, REMOVE_IMAGES=${REMOVE_IMAGES}):"
+      printf '      %s\n' $img_found
+    fi
+  fi
 fi
 
 # ── Zusammenfassung ────────────────────────────────────────────────────────────
