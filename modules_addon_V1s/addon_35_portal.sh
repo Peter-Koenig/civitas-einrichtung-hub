@@ -52,8 +52,10 @@ PORTAL_DOMAIN="${PORTAL_DOMAIN:-${ADDON_DOMAIN}}"
 # Korrektur 5: Ingress-IP aus VM_IP_STATIC (vom Hauptskript exportiert) ableiten;
 # Literal nur als allerletzter Fallback für isolierte Nutzung.
 PORTAL_INGRESS_IP="${PORTAL_INGRESS_IP:-${VM_IP_STATIC:-192.168.12.139}}"
-# Korrektur 6: PORTAL_ICON mit Fallback auf P2D2_ICON (Abwärtskompatibilität).
-PORTAL_ICON="${PORTAL_ICON:-${P2D2_ICON:-https://www.udp.data-dna.eu/images/p2d2-logo.svg}}"
+# PORTAL_ICON ist eine optionale Betreiber-Übersteuerung. Leer/ungesetzt -> jede
+# Kachel nutzt ihr stage-spezifisches Standard-Icon aus dem eigenen Pod
+# (https://<stage-prefix>.${DOMAIN}/images/p2d2-logo.svg).
+PORTAL_ICON="${PORTAL_ICON:-}"
 PORTAL_BACKUP_DIR="${PORTAL_BACKUP_DIR:-/root/civitas-install/backup/service-portal}"
 PORTAL_BEGIN_MARK="// p2d2-addon:begin"
 PORTAL_END_MARK="// p2d2-addon:end"
@@ -80,12 +82,21 @@ _portal_strip_block() {
 }
 
 # _portal_entry <id> <name> <host> <en> <de> — ein Kachel-Objekt.
+# Icon: bei gesetztem PORTAL_ICON das globale Override, sonst das stage-spezifische
+# Standard-Icon aus dem eigenen Pod. Das Literal ${DOMAIN} bleibt im generierten
+# apps.js erhalten (vom Service-Portal zur Laufzeit substituiert).
 _portal_entry() {
+  local icon
+  if [[ -n "${PORTAL_ICON:-}" ]]; then
+    icon="${PORTAL_ICON}"
+  else
+    icon="https://$3.\${DOMAIN}/images/p2d2-logo.svg"
+  fi
 cat <<EOF
   {
     id: "$1",
     name: "$2",
-    icon: "$PORTAL_ICON",
+    icon: "${icon}",
     description: {
       en: "$4",
       de: "$5"
