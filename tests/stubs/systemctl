@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Stub für systemctl. Führt nichts aus, protokolliert nur.
+#   SYSTEMCTL_CALL_LOG=<datei>  protokolliert jeden Aufruf (eine Zeile je Aufruf)
+#   SYSTEMCTL_IS_ENABLED=<0|1>  steuert den Rückgabewert von "is-enabled" (Default: aktiviert)
+if [[ -n "${SYSTEMCTL_CALL_LOG:-}" ]]; then
+  echo "$*" >> "${SYSTEMCTL_CALL_LOG}"
+fi
+case "$*" in
+  *"is-enabled"*)
+    if [[ "${SYSTEMCTL_IS_ENABLED:-1}" == "0" ]]; then
+      exit 1
+    fi
+    ;;
+esac
+exit 0

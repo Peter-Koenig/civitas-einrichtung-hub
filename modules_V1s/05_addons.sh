@@ -342,171 +342,234 @@ EOF
 # Installiert die Skripte cico-shutdown und cico-uncordon nach /usr/local/bin
 # und aktiviert den systemd-Dienst cico-uncordon.service für automatisches
 # Uncordon nach k3s-Neustart.
+#
+# Update-Verhalten: Jede Datei wird zuerst in eine Temp-Datei im Zielverzeichnis
+# geschrieben und per cmp -s mit der vorhandenen Datei verglichen. Bei
+# identischem Inhalt wird nichts geändert („bereits aktuell“); bei Abweichung
+# wird ein Backup angelegt und die Datei ersetzt. So erhalten bestehende VMs
+# beim erneuten Lauf des Installers die aktualisierten Skripte.
+
+install_or_update_file() {
+  # $1 Zielpfad, $2 Dateimodus (oktal); Inhalt wird über stdin übergeben.
+  local path="$1" mode="$2" tmp backup ts
+  tmp="$(mktemp "${path}.tmp.XXXXXX")"
+  cat > "${tmp}"
+
+  if [[ -f "${path}" ]] && cmp -s "${tmp}" "${path}"; then
+    rm -f "${tmp}"
+    log_ok "${path} bereits aktuell"
+    return 0
+  fi
+
+  if [[ -f "${path}" ]]; then
+    ts="$(date '+%Y%m%d-%H%M%S')"
+    backup="${path}.bak-${ts}"
+    cp -a "${path}" "${backup}"
+    log "Sicherung angelegt: ${backup}"
+  fi
+
+  chmod "${mode}" "${tmp}"
+  mv "${tmp}" "${path}"
+  log_ok "${path} aktualisiert"
+}
+
 install_cico_utils() {
   log "Installiere CIVITAS/CORE-Shutdown-Utilities …"
 
   # ── cico-shutdown ──────────────────────────────────────────────────────
-  if [[ ! -f /usr/local/bin/cico-shutdown ]]; then
-    cat > /usr/local/bin/cico-shutdown << 'CICO_SCRIPT'
+  install_or_update_file /usr/local/bin/cico-shutdown 0755 << 'CICO_SCRIPT'
 #!/usr/bin/env bash
+# cico-shutdown — CIVITAS/CORE-VM (Single-Node-k3s) geordnet herunterfahren
 #
-# cico-shutdown — CIVITAS/CORE VM sauber herunterfahren
+# Ablauf:
+#   1. Node cordonen und drainen; jeder Pod nutzt seine eigene Grace Period
+#   2. Warten, bis auf dem Node keine Nicht-DaemonSet-Pods mehr laufen
+#   3. k3s stoppen, danach k3s-killall.sh (beendet die Container-Shims)
+#   4. sync, systemctl poweroff
 #
-# Fuehrt einen ordentlichen Shutdown der CIVITAS/CORE-VM durch:
-#   1. kubectl drain (Node cordon + Pod-Eviction)
-#   2. Warten auf Pod-Terminierung (polling loop mit Timeout)
-#   3. Force-Cleanup verbleibender Pods (VOR dem k3s-Stop!)
-#   4. k3s-Dienst stoppen
-#   5. sync + shutdown -h now
+# Umgebung:
+#   K3S_NODE=<name>  Node-Name (Default: der einzige Node im Cluster)
+#   MARGIN=30        Aufschlag auf die laengste Pod-Grace in Sekunden
+#   MAX_WAIT=900     Obergrenze fuer die Wartezeit in Sekunden
+#   FORCE=1          bei Timeout trotzdem k3s stoppen und herunterfahren
+#   DRY_RUN=1        nur lesen, Plan anzeigen
+#   NO_POWEROFF=1    alles ausser dem abschliessenden poweroff
 #
-# Aufruf:
-#   cico-shutdown                     # normaler Shutdown
-#   TIMEOUT=300 cico-shutdown         # laengerer Timeout (Default: 300s)
-#   K3S_NODE=civitas-core-v1s cico-shutdown  # Node-Name explizit erzwingen
-#
-# WICHTIG: K3S_NODE wird per Default aus "hostname" ermittelt, NICHT mehr
-# hart codiert. Nach jeder Umbenennung der VM (z.B. civitas-core ->
-# civitas-core-v1s) muss der Node-Name zur Laufzeit stimmen, sonst
-# drained das Skript ein veraltetes/falsches Node-Objekt und die
-# tatsaechlich laufenden Pods werden nie evictiert (siehe Vorfall
-# 2026-08-31: doppeltes Node-Objekt nach Hostname-Wechsel, dadurch
-# Zombie-Pods nach hartem k3s-Stop).
-#
-# Siehe: installationsphasen-und-abnahme.md, Abschnitt "CIVITAS/CORE-Shutdown"
+# Exit-Codes: 0 ok, 1 Fehler/Vorbedingung, 2 Pods nicht rechtzeitig beendet
 
-set -euo pipefail
+set -Eeuo pipefail
 
-K3S_NODE="${K3S_NODE:-$(hostname)}"
-TIMEOUT="${TIMEOUT:-300}"
-POLL_INTERVAL="${POLL_INTERVAL:-5}"
+K3S_NODE="${K3S_NODE:-}"
+MARGIN="${MARGIN:-30}"
+MAX_WAIT="${MAX_WAIT:-900}"
+FORCE="${FORCE:-0}"
+DRY_RUN="${DRY_RUN:-0}"
+NO_POWEROFF="${NO_POWEROFF:-0}"
+LOG_FILE="${LOG_FILE:-/var/log/cico-shutdown.log}"
+LOCK_FILE="${LOCK_FILE:-/run/cico-shutdown.lock}"
+K3S_KILLALL="${K3S_KILLALL:-/usr/local/bin/k3s-killall.sh}"
+POLL=5
+SETTLE=30
+NODE=""
+UNCORDON_ON_EXIT=0
 
-echo "[cico-shutdown] === CIVITAS/CORE VM — Sauberer Shutdown ==="
-echo "[cico-shutdown] Node:     ${K3S_NODE}"
-echo "[cico-shutdown] Timeout:  ${TIMEOUT}s"
-echo ""
+usage() { awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$0"; }
 
-# Sicherheitscheck: existiert der ermittelte Node im Cluster ueberhaupt?
-if ! kubectl get node "${K3S_NODE}" >/dev/null 2>&1; then
-  echo "[cico-shutdown] FEHLER: Node '${K3S_NODE}' nicht im Cluster gefunden."
-  echo "[cico-shutdown] Verfuegbare Nodes:"
-  kubectl get nodes -o wide || true
-  echo "[cico-shutdown] Bitte K3S_NODE explizit setzen, z.B.:"
-  echo "[cico-shutdown]   K3S_NODE=<richtiger-name> cico-shutdown"
-  exit 1
+log() { printf '%s [cico-shutdown] %s\n' "$(date '+%F %T')" "$*" | tee -a "$LOG_FILE"; }
+die() { log "FEHLER: $*"; exit 1; }
+
+cleanup() {
+  local rc=$?
+  if [[ "${UNCORDON_ON_EXIT}" -eq 1 ]]; then
+    log "WARN: Abbruch (Exit ${rc}) — gebe Node ${NODE} wieder frei"
+    kubectl uncordon "${NODE}" >/dev/null 2>&1 \
+      || log "WARN: uncordon fehlgeschlagen — manuell: kubectl uncordon ${NODE}"
+  fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+  "") ;;
+  *) usage; exit 1 ;;
+esac
+
+[[ "${EUID}" -eq 0 ]] || die "Muss als root laufen."
+command -v kubectl >/dev/null 2>&1 || die "kubectl nicht gefunden."
+exec 9>"${LOCK_FILE}"
+flock -n 9 || die "Es laeuft bereits eine Instanz von cico-shutdown."
+
+pod_rows() {
+  kubectl get pods -A --field-selector "spec.nodeName=${NODE}" \
+    -o custom-columns='KIND:.metadata.ownerReferences[0].kind,PHASE:.status.phase,GRACE:.spec.terminationGracePeriodSeconds' \
+    --no-headers
+}
+max_grace() {
+  pod_rows | awk '$1!="DaemonSet" && $2!="Succeeded" && $2!="Failed" && $3+0>m {m=$3+0} END {print m+0}'
+}
+active_pods() {
+  pod_rows | awk '$1!="DaemonSet" && $2!="Succeeded" && $2!="Failed" {n++} END {print n+0}'
+}
+
+resolve_node() {
+  local nodes count
+  if [[ -n "${K3S_NODE}" ]]; then
+    NODE="${K3S_NODE}"
+  else
+    nodes="$(kubectl get nodes -o name 2>/dev/null | sed 's#^node/##')" || true
+    count="$(printf '%s\n' "${nodes}" | grep -c . || true)"
+    if [[ "${count}" -ne 1 ]]; then
+      log "Node-Name nicht eindeutig (${count} Nodes). Verfuegbar:"
+      kubectl get nodes 2>&1 | tee -a "${LOG_FILE}" || true
+      die "Bitte K3S_NODE=<name> setzen."
+    fi
+    NODE="${nodes}"
+  fi
+  kubectl get node "${NODE}" >/dev/null 2>&1 || die "Node '${NODE}' nicht im Cluster gefunden."
+}
+
+log "=== CIVITAS/CORE VM — geordneter Shutdown ==="
+resolve_node
+
+grace="$(max_grace)" || die "Pod-Abfrage fehlgeschlagen (API nicht erreichbar?)"
+active="$(active_pods)" || die "Pod-Abfrage fehlgeschlagen (API nicht erreichbar?)"
+wait_s=$((grace + MARGIN))
+if [[ "${wait_s}" -lt 60 ]]; then wait_s=60; fi
+if [[ "${wait_s}" -gt "${MAX_WAIT}" ]]; then wait_s="${MAX_WAIT}"; fi
+
+log "Node:                 ${NODE}"
+log "Aktive Pods (ohne DS): ${active}"
+log "Laengste Pod-Grace:   ${grace}s"
+log "Drain-Timeout:        ${wait_s}s (Grace + ${MARGIN}s, max. ${MAX_WAIT}s)"
+
+if [[ "${DRY_RUN}" == 1 ]]; then
+  log "DRY_RUN=1 — geplant: drain, warten, systemctl stop k3s, ${K3S_KILLALL}, sync, poweroff. Nichts ausgefuehrt."
+  exit 0
 fi
 
-# Hinweis auf veraltete/zusaetzliche Node-Objekte (z.B. nach Hostname-Wechsel)
-other_nodes=$(kubectl get nodes -o name | grep -v "node/${K3S_NODE}$" || true)
-if [[ -n "${other_nodes}" ]]; then
-  echo "[cico-shutdown] WARN: Weitere Node-Objekte im Cluster vorhanden:"
-  echo "${other_nodes}"
-  echo "[cico-shutdown] WARN: Ggf. veraltete Node-Objekte nach einem frueheren"
-  echo "[cico-shutdown]       Hostname-Wechsel manuell pruefen (kubectl delete node <name>)."
+UNCORDON_ON_EXIT=1
+log "Drain ${NODE} ..."
+if ! kubectl drain "${NODE}" \
+      --ignore-daemonsets --delete-emptydir-data --disable-eviction \
+      --timeout="${wait_s}s" 2>&1 | tee -a "${LOG_FILE}"; then
+  log "WARN: drain nicht vollstaendig durchgelaufen"
 fi
 
-# Schritt 1: Node drainen
-echo "[cico-shutdown] Drain node ${K3S_NODE} ..."
-kubectl drain "${K3S_NODE}" \
-  --ignore-daemonsets \
-  --delete-emptydir-data \
-  --grace-period=60 \
-  --disable-eviction \
-  --timeout="${TIMEOUT}s" 2>&1 || \
-  echo "[cico-shutdown] WARN: drain beendet (moeglicherweise nicht vollstaendig)"
-
-# Schritt 2: Warten bis alle Pods terminiert sind
-echo "[cico-shutdown] Warte auf Pod-Terminierung (max. ${TIMEOUT}s) ..."
 elapsed=0
-while true; do
-  local_pods=$(kubectl get pods -A \
-    --field-selector="spec.nodeName=${K3S_NODE}" \
-    -o name 2>/dev/null | wc -l)
-
-  if [[ "${local_pods}" -eq 0 ]]; then
-    echo "[cico-shutdown] Alle Pods terminiert (nach ${elapsed}s)."
+while :; do
+  left="$(active_pods)" || die "Pod-Abfrage fehlgeschlagen (API nicht erreichbar?)"
+  if [[ "${left}" -eq 0 ]]; then
+    log "Alle Pods (ohne DaemonSets) beendet."
     break
   fi
-
-  if [[ ${elapsed} -ge ${TIMEOUT} ]]; then
-    echo "[cico-shutdown] WARN: Timeout ${TIMEOUT}s erreicht — ${local_pods} Pod(s) noch aktiv"
-    kubectl get pods -A --field-selector="spec.nodeName=${K3S_NODE}" -o wide 2>/dev/null || true
+  if [[ "${elapsed}" -ge "${SETTLE}" ]]; then
+    log "WARN: ${left} Pod(s) laufen noch:"
+    kubectl get pods -A --field-selector "spec.nodeName=${NODE}" -o wide 2>&1 | tee -a "${LOG_FILE}" || true
+    if [[ "${FORCE}" != 1 ]]; then
+      log "Abbruch ohne Herunterfahren (Exit 2). Mit FORCE=1 trotzdem fortfahren."
+      exit 2
+    fi
+    log "FORCE=1 — fahre trotz laufender Pods fort."
     break
   fi
-
-  sleep "${POLL_INTERVAL}"
-  elapsed=$((elapsed + POLL_INTERVAL))
+  sleep "${POLL}"
+  elapsed=$((elapsed + POLL))
 done
 
-# Schritt 3: Force-Cleanup verbleibender Pods (VOR dem k3s-Stop!)
-#
-# Wenn nach dem Timeout noch Pods aktiv sind, muessen sie hart geloescht
-# werden, SOLANGE Kubelet/API-Server noch laufen. Sonst bleiben sie mit
-# gesetztem deletionTimestamp in etcd stehen und blockieren nach dem
-# naechsten Boot die Neuerstellung (v.a. StatefulSets mit PVC).
-remaining=$(kubectl get pods -A \
-  --field-selector="spec.nodeName=${K3S_NODE}" \
-  -o name 2>/dev/null || true)
+UNCORDON_ON_EXIT=0
+log "Stoppe k3s ..."
+systemctl stop k3s || log "WARN: systemctl stop k3s fehlgeschlagen"
 
-if [[ -n "${remaining}" ]]; then
-  echo "[cico-shutdown] Force-Cleanup verbleibender Pods ..."
-  while IFS= read -r pod; do
-    [[ -z "${pod}" ]] && continue
-    pod_ns_name=$(kubectl get pods -A --field-selector="spec.nodeName=${K3S_NODE}" \
-      -o jsonpath="{range .items[?(@.metadata.name==\"${pod#pod/}\")]}{.metadata.namespace}{end}" 2>/dev/null || true)
-    echo "[cico-shutdown]   force-delete ${pod} (ns: ${pod_ns_name:-unbekannt})"
-    if [[ -n "${pod_ns_name}" ]]; then
-      kubectl delete pod "${pod#pod/}" -n "${pod_ns_name}" --grace-period=0 --force 2>&1 || \
-        echo "[cico-shutdown]   WARN: force-delete fehlgeschlagen fuer ${pod}"
-    fi
-  done <<< "${remaining}"
-
-  echo "[cico-shutdown] Warte kurz auf Bestaetigung der Force-Loeschung ..."
-  sleep 10
-  kubectl get pods -A --field-selector="spec.nodeName=${K3S_NODE}" -o wide 2>/dev/null || true
+if [[ -x "${K3S_KILLALL}" ]]; then
+  log "Beende Container-Shims (${K3S_KILLALL}) ..."
+  "${K3S_KILLALL}" >>"${LOG_FILE}" 2>&1 || log "WARN: ${K3S_KILLALL} meldete einen Fehler"
+else
+  log "WARN: ${K3S_KILLALL} nicht gefunden — Container-Shims bleiben bis zum Poweroff bestehen"
 fi
 
-# Schritt 4: k3s stoppen
-echo "[cico-shutdown] Stoppe k3s ..."
-systemctl stop k3s || echo "[cico-shutdown] WARN: k3s konnte nicht gestoppt werden"
+if pgrep -f containerd-shim >/dev/null 2>&1; then
+  log "WARN: containerd-shim-Prozesse laufen noch:"
+  pgrep -af containerd-shim 2>&1 | tee -a "${LOG_FILE}" || true
+fi
 
-# Schritt 5: Herunterfahren
-echo "[cico-shutdown] sync && shutdown -h now ..."
 sync
-shutdown -h now
+if [[ "${NO_POWEROFF}" == 1 ]]; then
+  log "NO_POWEROFF=1 — kein poweroff. Danach: systemctl start k3s; systemctl start cico-uncordon; kubectl get node"
+  exit 0
+fi
+log "systemctl poweroff"
+systemctl poweroff
 CICO_SCRIPT
-    chmod +x /usr/local/bin/cico-shutdown
-    log_ok "cico-shutdown installiert"
-  else
-    log_ok "cico-shutdown bereits installiert"
-  fi
 
   # ── cico-uncordon ─────────────────────────────────────────────────────
-  if [[ ! -f /usr/local/bin/cico-uncordon ]]; then
-    cat > /usr/local/bin/cico-uncordon << 'UNCORDON_SCRIPT'
+  install_or_update_file /usr/local/bin/cico-uncordon 0755 << 'UNCORDON_SCRIPT'
 #!/usr/bin/env bash
-#
 # cico-uncordon — CIVITAS/CORE Node Uncordon (post-boot recovery)
 #
 # Wartet auf die k3s-API und hebt die Cordon-Markierung des Knotens auf.
 # Wird automatisch durch cico-uncordon.service nach k3s-Start ausgefuehrt.
 #
+# Node-Name: K3S_NODE aus der Umgebung, sonst der einzige Node im Cluster.
+# Bei keinem oder mehreren Nodes bricht das Skript mit klarer Meldung ab.
+#
 # Aufruf:
-#   cico-uncordon                    # Knotenname aus "hostname" ermittelt (Default)
-#   K3S_NODE=my-node cico-uncordon   # Abweichender Knotenname
+#   cico-uncordon                    # einziger Node wird aus dem Cluster ermittelt
+#   K3S_NODE=my-node cico-uncordon   # abweichender Node-Name
 #
 # Exit-Codes:
 #   0 — Node erfolgreich uncordoned oder war bereits schedulable
-#   1 — k3s-API nach 180s nicht verfuegbar
+#   1 — k3s-API nach 180s nicht verfuegbar oder Node-Name nicht eindeutig
 
 set -euo pipefail
 
-K3S_NODE="${K3S_NODE:-$(hostname)}"
+K3S_NODE="${K3S_NODE:-}"
 TIMEOUT="${TIMEOUT:-180}"
 
-echo "[cico-uncordon] Warte auf k3s-API (Node ${K3S_NODE}) ..."
+echo "[cico-uncordon] Warte auf k3s-API (max. ${TIMEOUT}s) ..."
 
 elapsed=0
-until kubectl get nodes "${K3S_NODE}" &>/dev/null; do
+until kubectl get nodes >/dev/null 2>&1; do
     sleep 5
     elapsed=$((elapsed + 5))
     if [[ ${elapsed} -ge ${TIMEOUT} ]]; then
@@ -516,25 +579,41 @@ until kubectl get nodes "${K3S_NODE}" &>/dev/null; do
 done
 echo "[cico-uncordon] k3s-API verfuegbar (${elapsed}s)"
 
-cordoned=$(kubectl get node "${K3S_NODE}" -o jsonpath='{.spec.unschedulable}' 2>/dev/null || echo "false")
+# Node-Name ermitteln
+if [[ -n "${K3S_NODE}" ]]; then
+    NODE="${K3S_NODE}"
+else
+    nodes="$(kubectl get nodes -o name 2>/dev/null | sed 's#^node/##')" || true
+    count="$(printf '%s\n' "${nodes}" | grep -c . || true)"
+    if [[ "${count}" -ne 1 ]]; then
+        echo "[cico-uncordon] FEHLER: Node-Name nicht eindeutig (${count} Nodes)."
+        echo "[cico-uncordon] Verfuegbare Nodes:"
+        kubectl get nodes || true
+        echo "[cico-uncordon] Bitte K3S_NODE=<name> setzen."
+        exit 1
+    fi
+    NODE="${nodes}"
+fi
+
+if ! kubectl get node "${NODE}" >/dev/null 2>&1; then
+    echo "[cico-uncordon] FEHLER: Node '${NODE}' nicht im Cluster gefunden."
+    kubectl get nodes || true
+    exit 1
+fi
+
+cordoned=$(kubectl get node "${NODE}" -o jsonpath='{.spec.unschedulable}' 2>/dev/null || echo "false")
 
 if [[ "${cordoned}" == "true" ]]; then
-    echo "[cico-uncordon] Node ${K3S_NODE} ist cordon'd — hebe Sperre auf ..."
-    kubectl uncordon "${K3S_NODE}"
-    echo "[cico-uncordon] Node ${K3S_NODE} ist jetzt schedulable."
+    echo "[cico-uncordon] Node ${NODE} ist cordon'd — hebe Sperre auf ..."
+    kubectl uncordon "${NODE}"
+    echo "[cico-uncordon] Node ${NODE} ist jetzt schedulable."
 else
-    echo "[cico-uncordon] Node ${K3S_NODE} ist bereits schedulable — nichts zu tun."
+    echo "[cico-uncordon] Node ${NODE} ist bereits schedulable — nichts zu tun."
 fi
 UNCORDON_SCRIPT
-    chmod +x /usr/local/bin/cico-uncordon
-    log_ok "cico-uncordon installiert"
-  else
-    log_ok "cico-uncordon bereits installiert"
-  fi
 
-  # ── systemd-Dienst aktivieren ──────────────────────────────────────────
-  if [[ ! -f /etc/systemd/system/cico-uncordon.service ]]; then
-    cat > /etc/systemd/system/cico-uncordon.service << 'SERVICE_EOF'
+  # ── systemd-Dienst ─────────────────────────────────────────────────────
+  install_or_update_file /etc/systemd/system/cico-uncordon.service 0644 << 'SERVICE_EOF'
 [Unit]
 Description=CIVITAS/CORE – Automatisches Uncordon nach k3s-Start
 After=k3s.service
@@ -551,20 +630,17 @@ StandardError=journal
 [Install]
 WantedBy=multi-user.target
 SERVICE_EOF
-    systemctl daemon-reload
-    systemctl enable cico-uncordon.service
-    log_ok "cico-uncordon.service installiert und aktiviert"
+  systemctl daemon-reload
+  if systemctl is-enabled cico-uncordon.service &>/dev/null; then
+    log_ok "cico-uncordon.service ist aktiviert"
   else
-    if systemctl is-enabled cico-uncordon.service &>/dev/null; then
-      log_ok "cico-uncordon.service bereits aktiviert"
-    else
-      systemctl enable cico-uncordon.service
-      log_ok "cico-uncordon.service nachtraeglich aktiviert"
-    fi
+    systemctl enable cico-uncordon.service
+    log_ok "cico-uncordon.service aktiviert"
   fi
 
   log_ok "CIVITAS/CORE-Shutdown-Utilities installiert"
 }
+
 
 
 
