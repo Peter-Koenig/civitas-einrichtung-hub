@@ -51,6 +51,26 @@ _pg_master_pod() {
   printf '%s' "$pod"
 }
 
+# _db_exists — prüft über die Maintenance-DB postgres, ob eine Datenbank existiert.
+# Gibt "yes"/"no"/"error" auf stdout aus und liefert immer Exit 0 (set -e-sicher).
+# "error" bedeutet Verbindungsfehler (kubectl/psql), "no" bedeutet sauber abgefragt
+# und nicht vorhanden. Die Unterscheidung ist für den Uninstall relevant: ein
+# Verbindungsfehler darf nicht als "schon entfernt" (falsch-grün) gewertet werden.
+_db_exists() {
+  local pod="$1" superuser="$2" db="$3" out
+  if ! out="$(kubectl -n "${ADDON_DB_NS}" exec "$pod" -- psql -U "$superuser" -d postgres -tAc \
+      "SELECT 1 FROM pg_database WHERE datname='${db}';" 2>/dev/null)"; then
+    printf 'error'
+    return 0
+  fi
+  if [[ "$(printf '%s' "$out" | tr -d '[:space:]')" == "1" ]]; then
+    printf 'yes'
+  else
+    printf 'no'
+  fi
+  return 0
+}
+
 # ensure_p2d2_database — stellt spec.preparedDatabases.p2d2 idempotent sicher,
 # wartet auf die Operator-Reconciliation und verifiziert die DB-Existenz.
 ensure_p2d2_database() {
@@ -115,46 +135,123 @@ ensure_p2d2_database() {
   return 1
 }
 
-# remove_p2d2_database — entfernt spec.preparedDatabases.p2d2 gezielt (JSON Patch
-# remove, idempotent) und wartet auf die Operator-Reconciliation.
+# remove_p2d2_database — entfernt spec.preparedDatabases.p2d2 (JSON Patch remove,
+# idempotent), droppt die Datenbank p2d2 synchron und räumt die vom Zalando-
+# Operator zusätzlich angelegten p2d2_*-Rollen/-Secrets ab. Der frühere
+# 300-s-Wartebereich entfällt: DROP DATABASE ist synchron, die Verifikation liest
+# den Zustand unmittelbar danach. Kein Wildcard-/LIKE-Muster, nur exakte Namen.
 remove_p2d2_database() {
   local db_ns="${ADDON_DB_NS}"
   local cr="central-db"
+  local secret="postgres.central-db.credentials.postgresql.acid.zalan.do"
+  local superuser db_pod
 
   log "=== PostgreSQL-Datenbank p2d2 (Operator) entfernen ==="
 
-  if ! kubectl -n "$db_ns" get postgresql "$cr" >/dev/null 2>&1; then
-    log_warn "PostgreSQL-CR '${cr}' nicht lesbar — überspringe preparedDatabases-Entfernung"
-    return 0
-  fi
-
-  local current
-  current="$(kubectl -n "$db_ns" get postgresql "$cr" -o jsonpath='{.spec.preparedDatabases.p2d2}' 2>/dev/null || true)"
-  if [[ -z "$current" ]]; then
-    log_ok "preparedDatabases.p2d2 bereits nicht vorhanden — idempotent, kein Patch"
-    return 0
-  fi
-
-  log "  Entferne preparedDatabases.p2d2 (JSON Patch remove)"
-  kubectl -n "$db_ns" patch postgresql "$cr" --type json \
-    -p '[{"op":"remove","path":"/spec/preparedDatabases/p2d2"}]' \
-    || { log_error "JSON-Patch remove auf /spec/preparedDatabases/p2d2 fehlgeschlagen"; return 1; }
-
-  local superuser db_pod waited step max_wait
-  superuser="$(kubectl -n "$db_ns" get secret postgres.central-db.credentials.postgresql.acid.zalan.do \
+  superuser="$(kubectl -n "$db_ns" get secret "$secret" \
     -o jsonpath='{.data.username}' 2>/dev/null | base64 -d 2>/dev/null || echo 'postgres')"
   db_pod="$(_pg_master_pod)"
-  waited=0; step=5; max_wait="${ADDON_DB_WAIT_SECONDS:-300}"
-  while [[ "$waited" -lt "$max_wait" ]]; do
-    if ! kubectl -n "$db_ns" exec "$db_pod" -- psql -U "$superuser" -d postgres -tAc \
-      "SELECT 1 FROM pg_database WHERE datname='p2d2';" 2>/dev/null | grep -q 1; then
-      log_ok "Datenbank p2d2 entfernt (Operator-Reconciliation abgeschlossen)"
-      return 0
+
+  # 1) preparedDatabases.p2d2 aus dem CR entfernen — MUSS vor dem Drop kommen,
+  #    damit der Operator die Datenbank nicht wieder anlegt.
+  local current
+  if kubectl -n "$db_ns" get postgresql "$cr" >/dev/null 2>&1; then
+    current="$(kubectl -n "$db_ns" get postgresql "$cr" \
+      -o jsonpath='{.spec.preparedDatabases.p2d2}' 2>/dev/null || true)"
+    if [[ -n "$current" ]]; then
+      log "  Entferne preparedDatabases.p2d2 (JSON Patch remove)"
+      if ! kubectl -n "$db_ns" patch postgresql "$cr" --type json \
+        -p '[{"op":"remove","path":"/spec/preparedDatabases/p2d2"}]'; then
+        log_error "JSON-Patch remove auf /spec/preparedDatabases/p2d2 fehlgeschlagen"
+        return 1
+      fi
+      current="$(kubectl -n "$db_ns" get postgresql "$cr" \
+        -o jsonpath='{.spec.preparedDatabases.p2d2}' 2>/dev/null || true)"
+      if [[ -n "$current" ]]; then
+        log_error "preparedDatabases.p2d2 nach Patch weiterhin vorhanden"
+        return 1
+      fi
+      log_ok "preparedDatabases.p2d2 entfernt"
+    else
+      log_ok "preparedDatabases.p2d2 bereits nicht vorhanden"
     fi
-    sleep "$step"
-    waited=$((waited + step))
+  else
+    log_warn "PostgreSQL-CR '${cr}' nicht lesbar — preparedDatabases-Entfernung übersprungen"
+  fi
+
+  # 2) Datenbank p2d2 droppen, falls vorhanden (synchron). PostgreSQL >= 13
+  #    kann DROP DATABASE WITH (FORCE); ältere Versionen benötigen vorher
+  #    pg_terminate_backend.
+  local db_state ver
+  db_state="$(_db_exists "$db_pod" "$superuser" "p2d2")"
+  if [[ "$db_state" == "yes" ]]; then
+    ver="$(kubectl -n "$db_ns" exec "$db_pod" -- psql -U "$superuser" -d postgres -tAc \
+      'SHOW server_version_num;' 2>/dev/null | tr -d '[:space:]')" || true
+    log "  Datenbank p2d2 droppen"
+    if [[ "$ver" =~ ^[0-9]+$ ]] && [[ "$ver" -ge 130000 ]]; then
+      kubectl -n "$db_ns" exec "$db_pod" -- psql -U "$superuser" -d postgres \
+        -c 'DROP DATABASE p2d2 WITH (FORCE);' >/dev/null 2>&1 \
+        || { log_error "DROP DATABASE p2d2 fehlgeschlagen"; return 1; }
+    else
+      kubectl -n "$db_ns" exec "$db_pod" -- psql -U "$superuser" -d postgres \
+        -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='p2d2';" >/dev/null 2>&1 || true
+      kubectl -n "$db_ns" exec "$db_pod" -- psql -U "$superuser" -d postgres \
+        -c 'DROP DATABASE p2d2;' >/dev/null 2>&1 \
+        || { log_error "DROP DATABASE p2d2 fehlgeschlagen"; return 1; }
+    fi
+    db_state="$(_db_exists "$db_pod" "$superuser" "p2d2")"
+    if [[ "$db_state" == "yes" ]]; then
+      log_error "Datenbank p2d2 nach DROP weiterhin vorhanden"
+      return 1
+    fi
+    if [[ "$db_state" == "error" ]]; then
+      log_error "Verifikation nicht möglich (Verbindungsfehler) — Datenbank p2d2 manuell prüfen"
+      return 1
+    fi
+    log_ok "Datenbank p2d2 entfernt"
+  elif [[ "$db_state" == "error" ]]; then
+    log_error "PostgreSQL-Verbindung nicht möglich — Datenbank p2d2 nicht verifizierbar"
+    return 1
+  else
+    log_ok "Datenbank p2d2 bereits nicht vorhanden"
+  fi
+
+  # 3) Operator-Rollen (exakte Liste, LOGIN-Rollen zuerst, dann NOLOGIN-Gruppen).
+  local role
+  for role in p2d2_owner_user p2d2_reader_user p2d2_writer_user p2d2_writer p2d2_reader p2d2_owner; do
+    kubectl -n "$db_ns" exec "$db_pod" -- psql -U "$superuser" -d postgres \
+      -c "DROP ROLE IF EXISTS \"${role}\";" >/dev/null 2>&1 \
+      || { log_error "DROP ROLE ${role} fehlgeschlagen"; return 1; }
   done
-  log_warn "Datenbank p2d2 nach ${max_wait}s weiterhin vorhanden — Operator-Semantik (DB-Löschung) prüfen"
+
+  # 4) Operator-Secrets (exakte Namen).
+  local s
+  for s in \
+    p2d2-owner-user.central-db.credentials.postgresql.acid.zalan.do \
+    p2d2-reader-user.central-db.credentials.postgresql.acid.zalan.do \
+    p2d2-writer-user.central-db.credentials.postgresql.acid.zalan.do; do
+    kubectl -n "$db_ns" delete secret "$s" --ignore-not-found >/dev/null 2>&1 || true
+  done
+
+  # 5) Verifikation: keine der sechs Rollen, keines der drei Secrets.
+  local leftover
+  leftover="$(kubectl -n "$db_ns" exec "$db_pod" -- psql -U "$superuser" -d postgres -tAc \
+    "SELECT rolname FROM pg_roles WHERE rolname IN ('p2d2_owner_user','p2d2_reader_user','p2d2_writer_user','p2d2_writer','p2d2_reader','p2d2_owner') ORDER BY rolname;" 2>/dev/null || true)"
+  if [[ -n "$(printf '%s' "$leftover" | tr -d '[:space:]')" ]]; then
+    log_error "Operator-Rollen weiterhin vorhanden: $(printf '%s' "$leftover" | tr '\n' ' ')"
+    return 1
+  fi
+  for s in \
+    p2d2-owner-user.central-db.credentials.postgresql.acid.zalan.do \
+    p2d2-reader-user.central-db.credentials.postgresql.acid.zalan.do \
+    p2d2-writer-user.central-db.credentials.postgresql.acid.zalan.do; do
+    if kubectl -n "$db_ns" get secret "$s" >/dev/null 2>&1; then
+      log_error "Secret ${s} weiterhin vorhanden"
+      return 1
+    fi
+  done
+
+  log_ok "PostgreSQL-Datenbank p2d2 + Operator-Rollen/-Secrets entfernt"
   return 0
 }
 
@@ -400,54 +497,95 @@ SQL
 }
 
 # uninstall_addon_postgresql — vollständiger Rückbau aller von install_addon_postgresql
-# angelegten Objekte (5 Schemata + 14 Rollen). Reihenfolge zweiphasig: erst alle
-# Schemata (CASCADE entfernt Objekte, schema-gebundene Grants und ALTER DEFAULT
-# PRIVILEGES mit), dann alle Rollen (erst Login-/Mitglied-Rollen, dann Gruppen-Rollen).
-# DROP OWNED BY ist ein defensives Sicherheitsnetz gegen unvorhergesehene Reste.
-# Schützt den Superuser und die Zalando-Rollen (p2d2_*): es werden nur P2D2-*-Rollen entfernt.
+# angelegten Objekte (5 Schemata + 14 Rollen + DB + Operator-Rollen/-Secrets).
+# Robuste Reihenfolge: erst alle Schemata (CASCADE entfernt Objekte, schema-gebundene
+# Grants und ALTER DEFAULT PRIVILEGES mit), dann alle P2D2-*-Rollen. DROP OWNED BY ist
+# ein defensives Sicherheitsnetz gegen unvorhergesehene Reste. Fehlt die Datenbank,
+# werden Schemata/DROP OWNED BY übersprungen, die Rollen aber trotzdem (über postgres)
+# entfernt. "abgeschlossen" nur nach bestandener Verifikation, sonst return 1.
 uninstall_addon_postgresql() {
   log "=== Uninstall AddOn 00: PostgreSQL (Schemata/Rollen entfernen) ==="
 
   local db_ns="${ADDON_DB_NS}"
   local db_name="p2d2"
   local secret="postgres.central-db.credentials.postgresql.acid.zalan.do"
-  local superuser
-  superuser="$(kubectl -n "$db_ns" get secret "$secret" -o jsonpath='{.data.username}' | base64 -d)"
+  local superuser db_pod
+  superuser="$(kubectl -n "$db_ns" get secret "$secret" -o jsonpath='{.data.username}' 2>/dev/null | base64 -d 2>/dev/null || echo 'postgres')"
+  db_pod="$(_pg_master_pod)"
 
-  # ON_ERROR_STOP=0: Uninstall muss auch bei Teil-Resten aus früheren Läufen robust laufen.
-  local -a psql_u
-  psql_u=(kubectl -n "$db_ns" exec central-db-0 -- psql -v ON_ERROR_STOP=0 -U "$superuser" -d "$db_name")
+  local db_state rc=0
+  db_state="$(_db_exists "$db_pod" "$superuser" "$db_name")"
 
-  # 1) Alle fünf Schemata zuerst (Cross-Schema-Grants aus Turn 9 erfordern, dass
-  #    erst alle Schemata fallen, bevor Rollen droppbar sind).
-  local stage schema
-  for stage in FV DE2 DE1 DEVELOP MAIN; do
-    case "$stage" in
-      MAIN)    schema="p2d2_main" ;;
-      DEVELOP) schema="p2d2_develop" ;;
-      DE1)     schema="p2d2_de1" ;;
-      DE2)     schema="p2d2_de2" ;;
-      FV)      schema="p2d2_fv" ;;
-    esac
-    log "  Schema ${schema} entfernen"
-    "${psql_u[@]}" -c "DROP SCHEMA IF EXISTS \"${schema}\" CASCADE;" || log_warn "    Schema ${schema} evtl. schon entfernt"
-  done
+  # 1) Schemata + DROP OWNED BY nur, wenn die Datenbank existiert (defensiv, -d p2d2).
+  #    Cross-Schema-Grants (Turn 9) erfordern, dass erst alle Schemata fallen.
+  if [[ "$db_state" == "yes" ]]; then
+    local -a psql_pod
+    psql_pod=(kubectl -n "$db_ns" exec "$db_pod" -- psql -v ON_ERROR_STOP=0 -U "$superuser" -d "$db_name")
+    local stage schema
+    for stage in FV DE2 DE1 DEVELOP MAIN; do
+      case "$stage" in
+        MAIN)    schema="p2d2_main" ;;
+        DEVELOP) schema="p2d2_develop" ;;
+        DE1)     schema="p2d2_de1" ;;
+        DE2)     schema="p2d2_de2" ;;
+        FV)      schema="p2d2_fv" ;;
+      esac
+      log "  Schema ${schema} entfernen"
+      if ! "${psql_pod[@]}" -c "DROP SCHEMA IF EXISTS \"${schema}\" CASCADE;" >/dev/null 2>&1; then
+        log_warn "    Schema ${schema} konnte nicht entfernt werden"
+        rc=1
+      fi
+    done
 
-  # 2) Rollen in abhängigkeitsfreier Reihenfolge: erst Login-Rollen (Mitglieder),
-  #    dann Gruppen-Rollen, zuletzt die gemeinsamen Rollen.
+    # Defensives Sicherheitsnetz gegen unvorhergesehene Objekt-Reste (nur -d p2d2).
+    local role
+    for role in \
+        P2D2-MAIN P2D2-DEVELOP P2D2-DE1 P2D2-DE2 P2D2-FV \
+        P2D2-User-MAIN P2D2-User-DEVELOP P2D2-User-DE1 P2D2-User-DE2 P2D2-User-FV \
+        P2D2-Admin P2D2-RO \
+        P2D2-Admin-Role P2D2-RO-Role; do
+      "${psql_pod[@]}" -c "DROP OWNED BY \"${role}\";" >/dev/null 2>&1 || true
+    done
+  elif [[ "$db_state" == "error" ]]; then
+    log_error "PostgreSQL-Verbindung nicht möglich — Uninstall bricht ab"
+    return 1
+  else
+    log_ok "Datenbank ${db_name} bereits nicht vorhanden — Schemata übersprungen"
+  fi
+
+  # 2) Die 14 P2D2-*-Rollen immer über -d postgres entfernen (cluster-global),
+  #    unabhängig davon, ob die Datenbank existiert. DROP ROLE IF EXISTS liefert bei
+  #    "nicht vorhanden" 0; ein Fehler ist ein Verbindungs-/Abhängigkeitsproblem.
+  #    Reihenfolge: erst Login-/Mitglied-Rollen, dann Gruppen-Rollen, zuletzt gemeinsame.
   local role
   for role in \
       P2D2-MAIN P2D2-DEVELOP P2D2-DE1 P2D2-DE2 P2D2-FV \
       P2D2-User-MAIN P2D2-User-DEVELOP P2D2-User-DE1 P2D2-User-DE2 P2D2-User-FV \
       P2D2-Admin P2D2-RO \
       P2D2-Admin-Role P2D2-RO-Role; do
-    log "  Rolle ${role} entfernen"
-    "${psql_u[@]}" -c "DROP OWNED BY \"${role}\";" || log_warn "    DROP OWNED BY ${role} ohne Effekt"
-    "${psql_u[@]}" -c "DROP ROLE IF EXISTS \"${role}\";" || log_warn "    Rolle ${role} evtl. schon entfernt"
+    if ! kubectl -n "$db_ns" exec "$db_pod" -- psql -v ON_ERROR_STOP=1 -U "$superuser" -d postgres \
+      -c "DROP ROLE IF EXISTS \"${role}\";" >/dev/null 2>&1; then
+      log_warn "    Rolle ${role} konnte nicht entfernt werden"
+      rc=1
+    fi
   done
 
-  # Operator-verwaltete Datenbank p2d2 deklarativ entfernen (preparedDatabases.p2d2).
-  remove_p2d2_database || return 1
+  # 3) Operator-verwaltete Datenbank p2d2 deklarativ entfernen (preparedDatabases.p2d2
+  #    + DROP DATABASE + Operator-Rollen/-Secrets).
+  remove_p2d2_database || rc=1
 
-  log_ok "Uninstall AddOn 00 PostgreSQL abgeschlossen (5 Schemata + 14 Rollen + DB)"
+  # 4) Verifikation: keine der 14 P2D2-*-Rollen mehr vorhanden (über -d postgres).
+  local leftover
+  leftover="$(kubectl -n "$db_ns" exec "$db_pod" -- psql -U "$superuser" -d postgres -tAc \
+    "SELECT rolname FROM pg_roles WHERE rolname IN ('P2D2-Admin','P2D2-RO','P2D2-Admin-Role','P2D2-RO-Role','P2D2-User-MAIN','P2D2-User-DEVELOP','P2D2-User-DE1','P2D2-User-DE2','P2D2-User-FV','P2D2-MAIN','P2D2-DEVELOP','P2D2-DE1','P2D2-DE2','P2D2-FV') ORDER BY rolname;" 2>/dev/null || true)"
+  if [[ -n "$(printf '%s' "$leftover" | tr -d '[:space:]')" ]]; then
+    log_warn "P2D2-*-Rollen weiterhin vorhanden: $(printf '%s' "$leftover" | tr '\n' ' ')"
+    rc=1
+  fi
+
+  if [[ "$rc" -ne 0 ]]; then
+    log_error "Uninstall AddOn 00 PostgreSQL mit Resten/Fehlern beendet"
+    return 1
+  fi
+  log_ok "Uninstall AddOn 00 PostgreSQL abgeschlossen (5 Schemata + 14 Rollen + DB + Operator-Rollen/-Secrets)"
 }
