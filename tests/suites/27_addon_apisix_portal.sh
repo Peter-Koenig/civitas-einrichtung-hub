@@ -61,8 +61,9 @@ unset PORTAL_ICON
 _portal_build_block "$WORK"
 check "B default: 5 stage-Icons" "5" "$(grep -cF 'images/p2d2-logo.svg' "$BLOCK")"
 check "B default: kein data-dna" "0" "$(grep -cF 'data-dna.eu' "$BLOCK")"
-check "B default: www-Icon aus eigenem Pod" "1" "$(grep -cF 'https://www.${DOMAIN}/images/p2d2-logo.svg' "$BLOCK")"
-check "B default: f-fv-Icon aus eigenem Pod" "1" "$(grep -cF 'https://f-fv.${DOMAIN}/images/p2d2-logo.svg' "$BLOCK")"
+check "B default: kein \${DOMAIN} im Icon" "0" "$(grep -cF '\${DOMAIN}/images/p2d2-logo.svg' "$BLOCK")"
+check "B default: www-Icon konkret" "1" "$(grep -cF 'https://www.udp.example.org/images/p2d2-logo.svg' "$BLOCK")"
+check "B default: f-fv-Icon konkret" "1" "$(grep -cF 'https://f-fv.udp.example.org/images/p2d2-logo.svg' "$BLOCK")"
 
 export PORTAL_ICON="https://custom.example/icon.svg"
 _portal_build_block "$WORK"
