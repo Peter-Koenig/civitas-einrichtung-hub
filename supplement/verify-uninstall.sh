@@ -6,25 +6,22 @@
 # --uninstall`. Prüft in den 5 Modulen (frontend → iam → mapproxy → geoserver →
 # postgresql), ob noch Fragmente einer Installation übrig sind.
 #
-# WICHTIG: KEINE Löschlogik — nur Diagnose. Es werden exakt die Prüfbefehle aus der
-# laufenden Verifikation (Turn 71/72 bzw. overlay_addon_V1s/k8s/UNINSTALL-CHECKLIST.md)
-# ausgeführt, keine neuen Prüfungen.
+# WICHTIG: KEINE Löschlogik — nur Diagnose.
 #
-# Es werden alle 14 vom Installationsskript verwalteten PostgreSQL-Rollen geprüft
-# (P2D2-Admin/-RO/-Admin-Role/-RO-Role, P2D2-User-<STAGE>, P2D2-<STAGE>). Die frühere
-# "Fund-3"-Ausklammerung ist mit dem ai-run
-# 2026-09-28-p2d2-standalone-addon-modulabgleich (Turns 6–10) geklärt.
+# Exit-Codes: 0 = keine Reste, 1 = Reste gefunden, 2 = Konfiguration fehlt
+# (DOMAIN/DOMAIN_NAME nicht gesetzt und nicht aus .env.p2d2-addon lesbar).
 #
 # Aufruf (Defaults passen für civitas-core-V1s, per Env überschreibbar):
-#   ./supplement/verify-uninstall.sh
+#   DOMAIN=udp.projekte-koenig.eu ./supplement/verify-uninstall.sh
 #   NS=... DBNS=... DOMAIN=... ./supplement/verify-uninstall.sh
 
 set -uo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # ── Config (Defaults analog p2d2-civitas-addon-v1s.sh) ─────────────────────────
 NS="${NS:-cc-prd-geodata-stack}"
 DBNS="${DBNS:-cc-prd-database-stack}"
-DOMAIN="${DOMAIN:-udp.data-dna.eu}"
 # Uninstall-TLS-Handhabung (Schritt 2c-3): auto/true = <host>-tls-Secrets sind
 # erlaubt und werden als bewusst behalten gemeldet; false = strikt (Reste).
 KEEP_TLS="${KEEP_TLS:-auto}"
@@ -32,6 +29,41 @@ KEEP_TLS="${KEEP_TLS:-auto}"
 IAM_REALM="${IAM_REALM:-cc-prd}"
 IAM_NS="${IAM_NS:-cc-prd-access-stack}"
 IAM_ADMIN_SECRET="${IAM_ADMIN_SECRET:-cc-prd-keycloak-admin}"
+
+# ── DOMAIN-Auflösung: kein Default mehr. Reihenfolge: DOMAIN -> ADDON_DOMAIN ->
+#    DOMAIN_NAME (Umgebung) -> .env.p2d2-addon (ADDON_DOMAIN, dann DOMAIN_NAME).
+#    Fehlt alles, Abbruch mit Exit 2.
+_resolve_domain() {
+  local env_file val
+  [[ -n "${DOMAIN:-}" ]] && return 0
+  [[ -n "${ADDON_DOMAIN:-}" ]] && { DOMAIN="${ADDON_DOMAIN}"; return 0; }
+  [[ -n "${DOMAIN_NAME:-}" ]] && { DOMAIN="${DOMAIN_NAME}"; return 0; }
+  for env_file in "${SCRIPT_DIR}/../.env.p2d2-addon" "${SCRIPT_DIR}/../../.env.p2d2-addon"; do
+    [[ -f "$env_file" ]] || continue
+    val="$(grep -E '^(export[[:space:]]+)?ADDON_DOMAIN=' "$env_file" | tail -1 \
+      | sed -E 's/^[^=]*=[[:space:]]*//; s/^["'"'"']//; s/["'"'"'][[:space:]]*$//')"
+    [[ -n "$val" ]] && { DOMAIN="$val"; return 0; }
+    val="$(grep -E '^(export[[:space:]]+)?DOMAIN_NAME=' "$env_file" | tail -1 \
+      | sed -E 's/^[^=]*=[[:space:]]*//; s/^["'"'"']//; s/["'"'"'][[:space:]]*$//')"
+    [[ -n "$val" ]] && { DOMAIN="$val"; return 0; }
+  done
+  return 1
+}
+if ! _resolve_domain; then
+  echo "FEHLER: DOMAIN/DOMAIN_NAME nicht gesetzt und nicht aus .env.p2d2-addon lesbar." >&2
+  echo "Aufruf: DOMAIN=udp.projekte-koenig.eu $0" >&2
+  exit 2
+fi
+
+# ── Master-Pod dynamisch (Label-basiert), Fallback central-db-0 ────────────────
+pg_master_pod() {
+  local pod
+  pod="$(kubectl -n "$DBNS" get pods -l application=spilo -l cluster-name=central-db \
+    -l spilo-role=master --field-selector=status.phase=Running -o name 2>/dev/null \
+    | head -1 | sed 's|pod/||')"
+  [[ -n "$pod" ]] || pod="central-db-0"
+  printf '%s' "$pod"
+}
 
 # ── Log-Helfer ─────────────────────────────────────────────────────────────────
 log()       { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
@@ -50,6 +82,11 @@ log ""
 log "== 1. Frontend (K8s-Ressourcen) =="
 fe=$(kubectl -n "$NS" get deploy,svc,cm,secret,ingress,pvc,jobs -o name 2>/dev/null \
   | grep -E 'p2d2|f-de1|f-de2|f-fv' || true)
+# <host>.<DOMAIN>-tls-Secrets werden in Check 1b als "bewusst behalten" geführt
+# (KEEP_TLS != false); hier nicht zusätzlich als Rest melden (Fehlalarm vermeiden).
+if [[ -n "$fe" && "$KEEP_TLS" != "false" ]]; then
+  fe=$(printf '%s\n' "$fe" | grep -vE "^secret/(www|dev|f-de1|f-de2|f-fv)\.${DOMAIN}-tls$" || true)
+fi
 if [[ -z "$fe" ]]; then
   log_ok "keine p2d2-/f-<stage>-Ressourcen"
 else
@@ -91,11 +128,19 @@ fi
 if [[ -z "$token" ]]; then
   note_reste "Keycloak-Token nicht erhältlich — IAM-Reste manuell prüfen"
 else
-  # OIDC-Client p2d2
-  cid=$(curl -sk --max-time 15 "https://idm.${DOMAIN}/admin/realms/${IAM_REALM}/clients" \
-    -H "Authorization: Bearer ${token}" 2>/dev/null \
-    | jq -r '.[] | select(.clientId=="p2d2") | .id // empty' 2>/dev/null | head -1 || true)
-  if [[ -z "$cid" ]]; then log_ok "OIDC-Client p2d2 nicht vorhanden"; else note_reste "OIDC-Client p2d2 vorhanden (id ${cid})"; fi
+  # OIDC-Client p2d2 (HTTP-Status explizit, damit ein REST-Fehler nicht "nicht
+  # vorhanden" vortäuscht).
+  cid_http=$(curl -sk --max-time 15 -o /dev/null -w '%{http_code}' \
+    "https://idm.${DOMAIN}/admin/realms/${IAM_REALM}/clients" \
+    -H "Authorization: Bearer ${token}" 2>/dev/null || true)
+  if [[ "$cid_http" != "200" ]]; then
+    note_reste "Keycloak-Clients nicht abfragbar (HTTP ${cid_http:-0}) — OIDC-Client manuell prüfen"
+  else
+    cid=$(curl -sk --max-time 15 "https://idm.${DOMAIN}/admin/realms/${IAM_REALM}/clients" \
+      -H "Authorization: Bearer ${token}" 2>/dev/null \
+      | jq -r '.[] | select(.clientId=="p2d2") | .id // empty' 2>/dev/null | head -1 || true)
+    if [[ -z "$cid" ]]; then log_ok "OIDC-Client p2d2 nicht vorhanden"; else note_reste "OIDC-Client p2d2 vorhanden (id ${cid})"; fi
+  fi
 
   # OSM-IdP-Broker osm
   osm_code=$(curl -sk --max-time 15 -o /dev/null -w "%{http_code}" \
@@ -132,17 +177,26 @@ gs_user=$(kubectl -n "$NS" get secret geoserver-geoserver -o jsonpath='{.data.ge
 gs_pw=$(kubectl -n "$NS" get secret geoserver-geoserver -o jsonpath='{.data.geoserver-password}' 2>/dev/null | base64 -d 2>/dev/null || true)
 
 if [[ -n "$gs_user" && -n "$gs_pw" ]]; then
-  ws_names=$(curl -sS -u "$gs_user:$gs_pw" \
-    "https://geoportal.${DOMAIN}/geoserver/rest/workspaces.json" 2>/dev/null \
-    | jq -r '.workspaces.workspace[]?.name // empty' 2>/dev/null || true)
-  ws_found=""
-  for ws in main dev de1 de2 fv friedhofsplaene; do
-    printf '%s\n' "$ws_names" | grep -qx "$ws" && ws_found="${ws_found} ${ws}"
-  done
-  if [[ -z "$ws_found" ]]; then
-    log_ok "keine p2d2-Workspaces (main/dev/de1/de2/fv/friedhofsplaene)"
+  # HTTP-Status explizit auswerten: != 200 bedeutet "nicht pruefbar" (Rest),
+  # nicht "keine Workspaces" (falsch-grün). Hinweis: curl -u legt die
+  # Zugangsdaten in der Prozessliste offen (bekannt, hier nicht geändert).
+  gs_http=$(curl -sS -u "$gs_user:$gs_pw" -o /dev/null -w '%{http_code}' \
+    "https://geoportal.${DOMAIN}/geoserver/rest/workspaces.json" 2>/dev/null || true)
+  if [[ "$gs_http" != "200" ]]; then
+    note_reste "GeoServer-REST nicht erreichbar (HTTP ${gs_http:-0}) — Workspaces nicht pruefbar"
   else
-    note_reste "GeoServer-Workspaces vorhanden:${ws_found}"
+    ws_names=$(curl -sS -u "$gs_user:$gs_pw" \
+      "https://geoportal.${DOMAIN}/geoserver/rest/workspaces.json" 2>/dev/null \
+      | jq -r '.workspaces.workspace[]?.name // empty' 2>/dev/null || true)
+    ws_found=""
+    for ws in main dev de1 de2 fv friedhofsplaene; do
+      printf '%s\n' "$ws_names" | grep -qx "$ws" && ws_found="${ws_found} ${ws}"
+    done
+    if [[ -z "$ws_found" ]]; then
+      log_ok "keine p2d2-Workspaces (main/dev/de1/de2/fv/friedhofsplaene)"
+    else
+      note_reste "GeoServer-Workspaces vorhanden:${ws_found}"
+    fi
   fi
 else
   note_reste "GeoServer-Admin-Secret nicht lesbar — Workspaces manuell prüfen"
@@ -179,39 +233,83 @@ fi
 
 superuser=$(kubectl -n "$DBNS" get secret postgres.central-db.credentials.postgresql.acid.zalan.do \
   -o jsonpath='{.data.username}' 2>/dev/null | base64 -d 2>/dev/null || true)
+db_pod=$(pg_master_pod)
 
 if [[ -n "$superuser" ]]; then
-  # Schemata (p2d2_*)
-  schemas=$(kubectl -n "$DBNS" exec central-db-0 -- psql -U "$superuser" -d p2d2 -tAc \
-    "SELECT nspname FROM pg_namespace WHERE nspname LIKE 'p2d2\\_%' ORDER BY nspname;" 2>/dev/null || true)
-  if [[ -z "$schemas" ]]; then
-    log_ok "keine p2d2_-Schemata"
+  # Datenbank-Existenz über die Maintenance-DB postgres; Verbindungsfehler ist ein
+  # Rest (nicht "nicht vorhanden").
+  db_out="$(kubectl -n "$DBNS" exec "$db_pod" -- psql -U "$superuser" -d postgres -tAc \
+    "SELECT 1 FROM pg_database WHERE datname='p2d2';" 2>/dev/null)"
+  db_rc=$?
+  db_exists=0
+  if [[ "$db_rc" -ne 0 ]]; then
+    note_reste "PostgreSQL nicht erreichbar — DB-Zustand manuell prüfen"
+  elif [[ -n "$(printf '%s' "$db_out" | tr -d '[:space:]')" ]]; then
+    note_reste "Datenbank p2d2 weiterhin vorhanden (pg_database)"
+    db_exists=1
   else
-    note_reste "p2d2-Schemata vorhanden:"
-    printf '      %s\n' $schemas
+    log_ok "Datenbank p2d2 nicht vorhanden"
   fi
 
-  # Rollen: alle 14 vom Installationsskript verwalteten P2D2-*-Rollen.
-  roles=$(kubectl -n "$DBNS" exec central-db-0 -- psql -U "$superuser" -d p2d2 -tAc \
-    "SELECT rolname FROM pg_roles WHERE rolname IN ('P2D2-Admin','P2D2-RO','P2D2-Admin-Role','P2D2-RO-Role','P2D2-User-MAIN','P2D2-User-DEVELOP','P2D2-User-DE1','P2D2-User-DE2','P2D2-User-FV','P2D2-MAIN','P2D2-DEVELOP','P2D2-DE1','P2D2-DE2','P2D2-FV') ORDER BY rolname;" 2>/dev/null || true)
-  if [[ -z "$roles" ]]; then
+  # Schemata (p2d2_*) — nur prüfbar, wenn die Datenbank existiert.
+  if [[ "$db_exists" -eq 1 ]]; then
+    schemas="$(kubectl -n "$DBNS" exec "$db_pod" -- psql -U "$superuser" -d p2d2 -tAc \
+      "SELECT nspname FROM pg_namespace WHERE nspname LIKE 'p2d2\\_%' ORDER BY nspname;" 2>/dev/null)"
+    schemas_rc=$?
+    if [[ "$schemas_rc" -ne 0 ]]; then
+      note_reste "Schema-Abfrage fehlgeschlagen (Verbindung) — Schemata manuell prüfen"
+    elif [[ -z "$(printf '%s' "$schemas" | tr -d '[:space:]')" ]]; then
+      log_ok "keine p2d2_-Schemata"
+    else
+      note_reste "p2d2-Schemata vorhanden:"
+      printf '      %s\n' $schemas
+    fi
+  else
+    log "    Schemaprüfung: n/a (Datenbank nicht vorhanden)"
+  fi
+
+  # Rollen: alle 14 vom Installationsskript verwalteten P2D2-*-Rollen über -d postgres.
+  roles="$(kubectl -n "$DBNS" exec "$db_pod" -- psql -U "$superuser" -d postgres -tAc \
+    "SELECT rolname FROM pg_roles WHERE rolname IN ('P2D2-Admin','P2D2-RO','P2D2-Admin-Role','P2D2-RO-Role','P2D2-User-MAIN','P2D2-User-DEVELOP','P2D2-User-DE1','P2D2-User-DE2','P2D2-User-FV','P2D2-MAIN','P2D2-DEVELOP','P2D2-DE1','P2D2-DE2','P2D2-FV') ORDER BY rolname;" 2>/dev/null)"
+  roles_rc=$?
+  if [[ "$roles_rc" -ne 0 ]]; then
+    note_reste "Rollen-Abfrage fehlgeschlagen (Verbindung) — P2D2-*-Rollen manuell prüfen"
+  elif [[ -z "$(printf '%s' "$roles" | tr -d '[:space:]')" ]]; then
     log_ok "keine P2D2-*-Rollen"
   else
     note_reste "P2D2-*-Rollen vorhanden:"
     printf '      %s\n' $roles
   fi
 
-  # Datenbank p2d2 muss gelöscht sein — nur p2d2 wird bewertet, fremde Datenbanken
-  # (frost/geodata/keycloak/…) sind keine Reste.
-  db_exists=$(kubectl -n "$DBNS" exec central-db-0 -- psql -U "$superuser" -d postgres -tAc \
-    "SELECT 1 FROM pg_database WHERE datname='p2d2';" 2>/dev/null || true)
-  if [[ -n "$db_exists" ]]; then
-    note_reste "Datenbank p2d2 weiterhin vorhanden (pg_database)"
+  # Operator-Rollen (p2d2_*): LOGIN + NOLOGIN — vom Uninstall neu entfernt.
+  op_roles="$(kubectl -n "$DBNS" exec "$db_pod" -- psql -U "$superuser" -d postgres -tAc \
+    "SELECT rolname FROM pg_roles WHERE rolname IN ('p2d2_owner','p2d2_reader','p2d2_writer','p2d2_owner_user','p2d2_reader_user','p2d2_writer_user') ORDER BY rolname;" 2>/dev/null)"
+  op_roles_rc=$?
+  if [[ "$op_roles_rc" -ne 0 ]]; then
+    note_reste "Operator-Rollen-Abfrage fehlgeschlagen (Verbindung) — p2d2_*-Rollen manuell prüfen"
+  elif [[ -z "$(printf '%s' "$op_roles" | tr -d '[:space:]')" ]]; then
+    log_ok "keine p2d2_*-Operator-Rollen"
   else
-    log_ok "Datenbank p2d2 nicht vorhanden"
+    note_reste "p2d2_*-Operator-Rollen vorhanden:"
+    printf '      %s\n' $op_roles
   fi
 else
   note_reste "Postgres-Superuser-Secret nicht lesbar — DB-Reste manuell prüfen"
+fi
+
+# Operator-Secrets im DB-Namespace (vom Uninstall neu entfernt).
+op_secrets=""
+for s in p2d2-owner-user.central-db.credentials.postgresql.acid.zalan.do \
+         p2d2-reader-user.central-db.credentials.postgresql.acid.zalan.do \
+         p2d2-writer-user.central-db.credentials.postgresql.acid.zalan.do; do
+  if kubectl -n "$DBNS" get secret "$s" >/dev/null 2>&1; then
+    op_secrets="${op_secrets} ${s}"
+  fi
+done
+if [[ -z "$op_secrets" ]]; then
+  log_ok "keine p2d2-Operator-Secrets"
+else
+  note_reste "p2d2-Operator-Secrets vorhanden:${op_secrets}"
 fi
 
 # ── Zusammenfassung ────────────────────────────────────────────────────────────
@@ -219,7 +317,8 @@ log ""
 log "============================================"
 if [[ "$RESTE" -eq 0 ]]; then
   log_ok "Keine Reste gefunden — Zustand sauber (Stand: $(date '+%Y-%m-%d %H:%M:%S'))."
+  exit 0
 else
   log_warn "${RESTE} Rest(e) gefunden — siehe Ausgabe oben."
+  exit 1
 fi
-log "============================================"
