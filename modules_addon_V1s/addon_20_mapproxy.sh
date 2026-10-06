@@ -45,7 +45,15 @@ install_addon_mapproxy() {
 # APISIX erzeugt beim POST ohne explizite ID eine numerische ID — daher Liste lesen,
 # per name filtern und die reale ID ermitteln, dann DELETE auf die ID.
 _mapproxy_apisix_delete_by_name() {
-  local coll="$1" name="$2" admin_key="$3" base="$4" id http_code
+  local coll="$1" name="$2" admin_key="$3" base="$4" id http_code list_http
+  # Listenabfrage: HTTP-Status explizit prüfen; curl-Fehler/401 sind "nicht abfragbar"
+  # (Rest), nicht "nicht vorhanden" (falsch-grün).
+  list_http=$(curl -sk --max-time 15 -o /dev/null -w "%{http_code}" \
+    -H "X-API-KEY: ${admin_key}" "${base}/${coll}" 2>/dev/null || true)
+  if [[ "${list_http}" != "200" ]]; then
+    log_warn "APISIX ${coll} nicht abfragbar (HTTP ${list_http:-0}) — ${name} manuell prüfen"
+    return 1
+  fi
   id=$(curl -sk --max-time 15 -H "X-API-KEY: ${admin_key}" "${base}/${coll}" 2>/dev/null \
     | jq -r --arg n "${name}" \
       '.list[]? | select(.value.name==$n) | (.value.id // (.key | split("/")[-1]))' 2>/dev/null \
