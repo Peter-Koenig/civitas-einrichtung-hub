@@ -191,6 +191,13 @@ run_in_vm_addon() {
     || { log_error "scp fehlgeschlagen — VM ${VM_IP_STATIC} nicht erreichbar?"; exit 1; }
   log_ok "Skript + Module kopiert nach ${VM_REMOTE_INSTALL_DIR}"
 
+  # Direkt aufgerufene Skripte müssen auf der VM ausführbar sein: scp ohne -p
+  # verliert das Execute-Bit. Nur explizit benannte Skripte (kein Wildcard auf
+  # ganze Verzeichnisse); Module unter modules_* werden gesourct und brauchen es nicht.
+  ssh "${ADDON_SSH_OPTS[@]}" "root@${VM_IP_STATIC}" \
+    "chmod +x ${VM_REMOTE_INSTALL_DIR}/p2d2-civitas-addon-v1s.sh" \
+    || { log_error "chmod +x des Hauptskripts fehlgeschlagen"; exit 1; }
+
   if [[ -d "${SCRIPT_DIR}/overlay_addon_V1s" ]]; then
     scp "${ADDON_SSH_OPTS[@]}" -r \
       "${SCRIPT_DIR}/overlay_addon_V1s" \
@@ -210,6 +217,15 @@ run_in_vm_addon() {
       "root@${VM_IP_STATIC}:${VM_REMOTE_INSTALL_DIR}/" \
       || { log_warn "Supplement-Verzeichnis konnte nicht kopiert werden (nicht fatal)"; }
     log_ok "Supplement-Verzeichnis kopiert"
+    # Direkt aufgerufene Supplement-Skripte ausführbar machen (scp ohne -p verliert
+    # das Execute-Bit). Explizite Liste, kein Wildcard auf ganze Verzeichnisse.
+    ssh "${ADDON_SSH_OPTS[@]}" "root@${VM_IP_STATIC}" \
+      "chmod +x ${VM_REMOTE_INSTALL_DIR}/supplement/verify-uninstall.sh \
+        ${VM_REMOTE_INSTALL_DIR}/supplement/verify-p2d2-schema-dumps.sh \
+        ${VM_REMOTE_INSTALL_DIR}/supplement/verify-p2d2-schema-runtime.sh \
+        ${VM_REMOTE_INSTALL_DIR}/supplement/p2d2-extract-db-dumps.py \
+        ${VM_REMOTE_INSTALL_DIR}/supplement/p2d2-extract-db-schema.py" \
+      || { log_warn "chmod +x der Supplement-Skripte fehlgeschlagen (nicht fatal)"; }
   else
     log_warn "Supplement-Verzeichnis nicht gefunden (${ADDON_SUPPLEMENT_DIR}) — Mosaic wird im VM-Lauf übersprungen"
   fi
@@ -317,12 +333,17 @@ log "============================================"
 ADDON_EXIT_CODE=0
 if [[ "${1:-}" == "--uninstall" ]]; then
   log "Modus: Uninstall (portal -> frontend -> iam -> mapproxy -> geoserver -> postgresql)"
-  portal_remove || log_warn "Portal-Kacheln konnten nicht entfernt werden - Rueckbau wird fortgesetzt (manuell pruefen: portal_status)"
-  uninstall_addon_frontend
-  uninstall_addon_iam
-  uninstall_addon_mapproxy
-  uninstall_addon_geoserver
-  uninstall_addon_postgresql
+  # Fehleraggregation analog zum Install-Zweig: ein Fehler in einem Modul soll die
+  # übrigen Module nicht überspringen. Rückgabewerte sammeln, am Ende ehrlich melden.
+  if ! portal_remove; then
+    log_warn "Portal-Kacheln konnten nicht entfernt werden - Rueckbau wird fortgesetzt (manuell pruefen: portal_status)"
+    ADDON_EXIT_CODE=1
+  fi
+  uninstall_addon_frontend   || ADDON_EXIT_CODE=1
+  uninstall_addon_iam        || ADDON_EXIT_CODE=1
+  uninstall_addon_mapproxy   || ADDON_EXIT_CODE=1
+  uninstall_addon_geoserver  || ADDON_EXIT_CODE=1
+  uninstall_addon_postgresql || ADDON_EXIT_CODE=1
 else
   install_addon_postgresql
   install_addon_geoserver
@@ -339,7 +360,11 @@ fi
 log ""
 log "============================================"
 if [[ "${1:-}" == "--uninstall" ]]; then
-  log " p2d2-AddOn (V1s) — Uninstall abgeschlossen."
+  if [[ "${ADDON_EXIT_CODE}" -eq 0 ]]; then
+    log " p2d2-AddOn (V1s) — Uninstall abgeschlossen (ohne Reste)."
+  else
+    log " p2d2-AddOn (V1s) — Uninstall mit Resten beendet (siehe Log)."
+  fi
 else
   log " p2d2-AddOn (V1s) — Installation abgeschlossen."
 fi
