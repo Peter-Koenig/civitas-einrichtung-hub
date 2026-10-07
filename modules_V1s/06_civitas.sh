@@ -53,6 +53,7 @@ install_civitas() {
   apply_overlay
   patch_masterportal_release_name
   install_cc_cli
+  verify_k8s_import
   render_inventory
   if [[ "${WG_ENABLED}" == "true" ]]; then
     setup_wireguard
@@ -144,6 +145,7 @@ install_cc_cli() {
   log "Installiere cc_cli ${CC_CLI_VERSION} aus GitLab Package Registry …"
 
   # Idempotenz: Binary vorhanden und Version korrekt?
+  local -i fresh=0
   if [[ -f "${CC_CLI_VENV_PATH}/bin/cc_cli" ]]; then
     local installed_ver
     installed_ver="$(
@@ -152,33 +154,130 @@ install_cc_cli() {
         || true
     )"
     if [[ "${installed_ver}" == "${CC_CLI_VERSION}" ]]; then
-      log_ok "cc_cli ${CC_CLI_VERSION} bereits installiert – überspringe"
-      return 0
+      log_ok "cc_cli ${CC_CLI_VERSION} bereits installiert – überspringe Neuinstallation"
     else
       log_warn "cc_cli ${installed_ver:-unbekannt} gefunden, erwartet ${CC_CLI_VERSION} – reinstalliere"
       rm -rf "${CC_CLI_VENV_PATH}"
+      fresh=1
     fi
+  else
+    fresh=1
   fi
 
-  apt-get install -y python3-venv --quiet
-  python3 -m venv "${CC_CLI_VENV_PATH}"
-  "${CC_CLI_VENV_PATH}/bin/pip" install \
-    --quiet \
-    --extra-index-url "${CC_CLI_REGISTRY_URL}" \
-    "cc-cli==${CC_CLI_VERSION}"
-  log "Installiere ansible ${ANSIBLE_VERSION} ins venv ..."
-  "${CC_CLI_VENV_PATH}/bin/pip" install --quiet "ansible==${ANSIBLE_VERSION}"
-  log_ok "ansible installiert: $("${CC_CLI_VENV_PATH}/bin/ansible" --version | head -1)"
+  if [[ "${fresh}" -eq 1 ]]; then
+    apt-get install -y python3-venv --quiet
+    python3 -m venv "${CC_CLI_VENV_PATH}"
+    "${CC_CLI_VENV_PATH}/bin/pip" install \
+      --quiet \
+      --extra-index-url "${CC_CLI_REGISTRY_URL}" \
+      "cc-cli==${CC_CLI_VERSION}"
+    log "Installiere ansible ${ANSIBLE_VERSION} ins venv ..."
+    "${CC_CLI_VENV_PATH}/bin/pip" install --quiet "ansible==${ANSIBLE_VERSION}"
+    log_ok "ansible installiert: $("${CC_CLI_VENV_PATH}/bin/ansible" --version | head -1)"
 
-  log "Installiere kubernetes-Python-Bibliothek ins venv ..."
-  "${CC_CLI_VENV_PATH}/bin/pip" install --quiet kubernetes
-  log_ok "kubernetes-Bibliothek installiert"
+    log "Setze Symlinks fuer ansible-playbook und ansible nach /usr/local/bin ..."
+    ln -sf "${CC_CLI_VENV_PATH}/bin/ansible-playbook" /usr/local/bin/ansible-playbook
+    ln -sf "${CC_CLI_VENV_PATH}/bin/ansible"          /usr/local/bin/ansible
+    log_ok "ansible-playbook im System-PATH: $(ansible-playbook --version | head -1)"
+    log_ok "cc_cli ${CC_CLI_VERSION} installiert"
+  fi
 
-  log "Setze Symlinks fuer ansible-playbook und ansible nach /usr/local/bin ..."
-  ln -sf "${CC_CLI_VENV_PATH}/bin/ansible-playbook" /usr/local/bin/ansible-playbook
-  ln -sf "${CC_CLI_VENV_PATH}/bin/ansible"          /usr/local/bin/ansible
-  log_ok "ansible-playbook im System-PATH: $(ansible-playbook --version | head -1)"
-  log_ok "cc_cli ${CC_CLI_VERSION} installiert"
+  # kubernetes-Python-Client gegen den Pin sicherstellen (beide Pfade,
+  # auch im Idempotenz-Fruehrueckpfad, ohne das venv zu loeschen).
+  ensure_k8s_pin
+}
+
+
+# ── kubernetes-Python-Client: Pin-Durchsetzung ────────────────────────────────
+# 37.0.0 entfernt kubernetes.client.apis (von kubernetes.core genutzt).
+# ensure_k8s_pin prueft die installierte Version gegen K8S_PY_PIN und
+# installiert bei Abweichung nur den Pin nach, ohne das venv zu loeschen.
+
+_k8s_installed_version() {
+  "${CC_CLI_VENV_PATH}/bin/pip" show kubernetes 2>/dev/null \
+    | sed -n 's/^Version: *//p' \
+    | head -1 \
+    || true
+}
+
+# 0 = installierte Version erfuellt K8S_PY_PIN, 1 = nicht (oder nicht feststellbar).
+_k8s_pin_satisfied() {
+  local installed="$1"
+  [[ -n "${installed}" ]] || return 1
+  local py="${CC_CLI_VENV_PATH}/bin/python3"
+  [[ -x "${py}" ]] || return 1
+  K8S_INSTALLED="${installed}" K8S_PIN="${K8S_PY_PIN}" "${py}" - >/dev/null 2>&1 <<'PY'
+import os
+import sys
+try:
+    from packaging.specifiers import SpecifierSet
+except Exception:
+    sys.exit(1)
+installed = os.environ.get("K8S_INSTALLED", "")
+pin = os.environ.get("K8S_PIN", "")
+spec = pin[len("kubernetes"):] if pin.startswith("kubernetes") else pin
+try:
+    ok = SpecifierSet(spec).contains(installed)
+except Exception:
+    sys.exit(1)
+sys.exit(0 if ok else 1)
+PY
+}
+
+_log_python_deps() {
+  local k8s_ver ansible_ver core_ver
+  k8s_ver="$(_k8s_installed_version)"
+  ansible_ver="$("${CC_CLI_VENV_PATH}/bin/ansible" --version 2>/dev/null | head -1 || true)"
+  core_ver="$("${CC_CLI_VENV_PATH}/bin/ansible-galaxy" collection list kubernetes.core 2>/dev/null | sed -n 's/^kubernetes\.core[[:space:]]*//p' | head -1 || true)"
+  log "venv-Versionen: kubernetes=${k8s_ver:-nicht installiert} | ansible=${ansible_ver:-unbekannt} | kubernetes.core=${core_ver:-unbekannt}"
+  return 0
+}
+
+ensure_k8s_pin() {
+  local installed
+  installed="$(_k8s_installed_version)"
+  if _k8s_pin_satisfied "${installed}"; then
+    log_ok "kubernetes-Client ${installed} erfuellt Pin ${K8S_PY_PIN}"
+  else
+    if [[ -n "${installed}" ]]; then
+      log_warn "kubernetes-Client ${installed} entspricht nicht ${K8S_PY_PIN} – installiere nach"
+    else
+      log "kubernetes-Client nicht installiert – installiere ${K8S_PY_PIN}"
+    fi
+    "${CC_CLI_VENV_PATH}/bin/pip" install --quiet "${K8S_PY_PIN}"
+    log_ok "kubernetes-Bibliothek installiert (${K8S_PY_PIN})"
+  fi
+  _log_python_deps
+}
+
+
+# ── Smoke-Test: Importpfad, den kubernetes.core nutzt ──────────────────────────
+# Bricht vor cc_cli exec ab, wenn kubernetes.client.apis nicht mehr importierbar
+# ist (Client 37.0.0). Meldet, ob der neue Pfad kubernetes.client.api ginge.
+verify_k8s_import() {
+  local py="${CC_CLI_VENV_PATH}/bin/python3"
+  [[ -x "${py}" ]] || { log_error "venv-Python nicht gefunden: ${py}"; exit 1; }
+
+  log "Pruefe kubernetes-Client-Importpfad (kubernetes.client.apis) ..."
+  local legacy_out
+  if legacy_out="$("${py}" -W default -c 'from kubernetes.client.apis import core_v1_api' 2>&1)"; then
+    log_ok "kubernetes-Client-Importpfad kubernetes.client.apis funktioniert"
+  else
+    local last_err
+    last_err="$(printf '%s\n' "${legacy_out}" | grep -v '^$' | tail -1)"
+    log_error "kubernetes-Client-Import fehlgeschlagen: ${last_err:-keine Detailzeile}"
+    log_error "K8S_PY_PIN=${K8S_PY_PIN} erzwingt einen kompatiblen Client; Installation erneut starten."
+    if "${py}" -W default -c 'from kubernetes.client.api import core_v1_api' >/dev/null 2>&1; then
+      log_error "Neuer Pfad kubernetes.client.api funktioniert – die Collection nutzt aber weiterhin kubernetes.client.apis."
+    fi
+    exit 1
+  fi
+
+  if "${py}" -W default -c 'from kubernetes.client.api import core_v1_api' >/dev/null 2>&1; then
+    log "Neuer Importpfad kubernetes.client.api ebenfalls verfuegbar (nur zur Info)."
+  else
+    log_warn "Neuer Importpfad kubernetes.client.api nicht verfuegbar – Client pruefen."
+  fi
 }
 
 
@@ -487,6 +586,175 @@ fatal_stats() {
   ' "${log_file}" 2>/dev/null || { echo "0 0 0"; return 0; }
 }
 
+# ── Sichtbare Fehlerzusammenfassung aus dem Ansible-Log (Allowlist) ───────────
+# Gibt hoechstens 12 Zeilen (je max. 300 Zeichen) ueber log_error aus: Task-Name,
+# Host und aus dem letzten nicht-ignorierten fatal:-Block nur die Allowlist-Felder
+# (msg, rc, attempts, namespace/pod/container, letzte stderr/stdout-Zeilen).
+# Keine Rohausgabe, kein command, kein invocation-JSON, keine Env. Parse-Fehler
+# brechen den Installer nicht ab (Fallback: erste Zeilen des Blocks, geschwaerzt).
+ansible_failure_summary() {
+  local log_file="$1"
+  [[ -f "${log_file}" ]] || { log_warn "Ansible-Log nicht vorhanden: ${log_file}"; return 0; }
+
+  local py
+  if [[ -x "${CC_CLI_VENV_PATH}/bin/python3" ]]; then
+    py="${CC_CLI_VENV_PATH}/bin/python3"
+  elif command -v python3 >/dev/null 2>&1; then
+    py="$(command -v python3)"
+  else
+    log_warn "python3 nicht gefunden – überspringe Fehlerzusammenfassung"
+    return 0
+  fi
+
+  local py_script
+  IFS= read -r -d '' py_script <<'PY' || true
+import json
+import re
+import sys
+
+SECRET_RE = re.compile(
+    r'(?i)(pass\w*|token|secret\w*|authorization|api[ _-]?key)(\s*[:=]\s*)([^\s,;}]+)'
+)
+
+
+def redact(value):
+    if not isinstance(value, str):
+        return value
+    return SECRET_RE.sub(r'\1\2****', value)
+
+
+def emit(raw):
+    line = redact(raw)
+    if len(line) > 300:
+        line = line[:297] + '...'
+    return line
+
+
+def oneline(value):
+    if value is None:
+        return None
+    if isinstance(value, (dict, list)):
+        value = json.dumps(value)
+    return str(value).replace('\r', ' ').replace('\n', ' ')
+
+
+FATAL_RE = re.compile(r'fatal: \[([^\]]+)\]: FAILED! => (.*)$')
+
+
+def main():
+    path = sys.argv[1]
+    try:
+        with open(path, 'r', encoding='utf-8', errors='replace') as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return
+
+    blocks = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        m = FATAL_RE.search(lines[i])
+        if not m:
+            i += 1
+            continue
+        host = m.group(1)
+        task = None
+        for j in range(i - 1, max(i - 40, -1), -1):
+            tm = re.search(r'TASK \[([^\]]*)\]', lines[j])
+            if tm:
+                task = tm.group(1).strip()
+                break
+        json_lines = [m.group(2)]
+        j = i + 1
+        block_end = i
+        parsed = None
+        try:
+            parsed = json.loads(m.group(2))
+        except Exception:
+            parsed = None
+        while parsed is None and j < n:
+            json_lines.append(lines[j])
+            block_end = j
+            try:
+                parsed = json.loads('\n'.join(json_lines))
+            except Exception:
+                parsed = None
+            j += 1
+        ignored = False
+        k = block_end + 1
+        while k < n and not FATAL_RE.search(lines[k]):
+            if '...ignoring' in lines[k]:
+                ignored = True
+                break
+            k += 1
+        blocks.append({
+            'host': host,
+            'task': task,
+            'json': '\n'.join(json_lines),
+            'raw': json_lines,
+            'ignored': ignored,
+        })
+        i = block_end + 1
+
+    target = None
+    for b in blocks:
+        if not b['ignored']:
+            target = b
+    if target is None:
+        return
+
+    data = None
+    try:
+        data = json.loads(target['json'])
+    except Exception:
+        data = None
+
+    out = []
+    if data is None:
+        for ln in target['raw'][:3]:
+            s = ln.strip()
+            if s and s not in ('{', '}'):
+                out.append(s)
+    else:
+        if target['task']:
+            out.append('Task: ' + target['task'])
+        out.append('Host: ' + target['host'])
+        if data.get('msg') is not None:
+            out.append('msg: ' + oneline(data.get('msg')))
+        if data.get('rc') is not None:
+            out.append('rc: ' + oneline(data.get('rc')))
+        if data.get('attempts') is not None:
+            out.append('attempts: ' + oneline(data.get('attempts')))
+        ma = data.get('invocation', {}).get('module_args', {})
+        if isinstance(ma, dict):
+            for key in ('namespace', 'pod', 'container'):
+                if ma.get(key):
+                    out.append(key + ': ' + oneline(ma.get(key)))
+        for key in ('module_stderr', 'stderr', 'module_stdout', 'stdout'):
+            v = data.get(key)
+            if isinstance(v, str):
+                sub = [ln for ln in v.splitlines() if ln.strip()]
+                for ln in sub[-4:]:
+                    out.append(key + ': ' + ln.strip())
+
+    printed = []
+    for raw in out:
+        if raw is None:
+            continue
+        printed.append(emit(raw))
+        if len(printed) >= 12:
+            break
+    if printed:
+        sys.stdout.write('\n'.join(printed) + '\n')
+
+
+main()
+PY
+  printf '%s' "${py_script}" | "${py}" - "${log_file}" 2>/dev/null | while IFS= read -r line; do
+    [[ -n "${line}" ]] && log_error "  ${line}"
+  done || true
+}
+
 log_ansible_log_metadata() {
   local log_file="$1" lines
   [[ -f "${log_file}" ]] || { log_warn "Ansible-Log nicht vorhanden: ${log_file}"; return 0; }
@@ -494,7 +762,17 @@ log_ansible_log_metadata() {
   log "Ansible-Log lokal vorhanden: ${log_file} (${lines} Zeilen)"
 }
 
-# ── Schritt 2.4: cc_cli exec ──────────────────────────────────────────────────
+# Letzte nicht-leere Zeile eines Logs, geschwaerzt und auf 300 Zeichen gekuerzt.
+_local_cause_line() {
+  local file="$1" line
+  [[ -f "${file}" ]] || return 0
+  line="$(grep -Ev '^[[:space:]]*$' "${file}" 2>/dev/null | tail -1 || true)"
+  [[ -n "${line}" ]] || return 0
+  line="$(printf '%s' "${line}" | sed -E 's#(pass[[:alnum:]_]*|token|secret[[:alnum:]_]*|authorization|api[ _-]?key)[[:space:]]*[=:][[:space:]]*[^[:space:],;}]+#\1=****#gI')"
+  printf '%s' "${line}" | cut -c1-300
+}
+
+# ── Schritt 2.4: cc_cli exec ─────────────────────────────────────────────────
 # Timeout schützt vor unbegrenzt hängenden Deployments.
 run_cc_cli_exec() {
   log "Fuehre cc_cli exec aus (Timeout: ${TIMEOUT_CC_CLI_EXEC}s) …"
@@ -589,12 +867,16 @@ run_cc_cli_exec() {
     fi
 
     if [[ "${transient}" == "true" && ${attempt} -lt ${CC_EXEC_ATTEMPTS} ]]; then
+      local cause
+      cause="$(_local_cause_line "${raw_file}")"
       log_warn "cc_cli exec: vorübergehender Fehler (Versuch ${attempt}/${CC_EXEC_ATTEMPTS}, rc=${rc}) — wiederhole in ${CC_EXEC_RETRY_DELAY}s mit demselben Inventory"
+      [[ -n "${cause}" ]] && log_warn "  Ursache: ${cause}"
       sleep "${CC_EXEC_RETRY_DELAY}"
       attempt=$((attempt + 1))
       rm -f "${raw_file}"
       continue
     fi
+    ansible_failure_summary "${ansible_log_file}"
     log_error "cc_cli exec: Playbook fehlgeschlagen — Logs pruefen:"
     log_error "  ${ansible_log_file}"
     log_error ""
