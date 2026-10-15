@@ -21,6 +21,10 @@
 # ADDON_DOMAIN müssen vorher vom Hauptskript (p2d2-civitas-addon-v1s.sh, Zeile 39/41)
 # exportiert sein. Für manuelle Tests: `export ADDON_NS=... ADDON_DOMAIN=...` vorher setzen.
 
+# Gemeinsame Passwort-/Secret-Helfer (Merge der Stage-Secrets, Turn 7).
+# shellcheck source=./addon_03_secrets.sh
+source "$(dirname "${BASH_SOURCE[0]}")/addon_03_secrets.sh"
+
 # Fail-Fast beim Funktionsaufruf (nicht beim Sourcen): ADDON_NS/ADDON_DOMAIN müssen
 # gesetzt sein. ADDON_DOMAIN wird erst im VM-Ablauf aus DOMAIN_NAME abgeleitet (B1),
 # daher ist eine Source-Time-Prüfung nicht möglich. Verhindert stilles Schreiben in
@@ -175,8 +179,9 @@ addon_compute_image_tag() {
 }
 
 # _addon_ensure_secret <namespace> <name> <key=value>...
-# Legt das Secret NUR bei Erstanlage an (existiert es, wird es NICHT überschrieben).
-# Fail-fast: leere/CHANGEME-Werte brechen ab, bevor irgendein Secret geschrieben wird.
+# Merge der Keys in das Secret (vorhandene Keys bleiben erhalten, fehlende/geänderte
+# werden gesetzt). Ein von addon_00 vorangelegtes Teil-Secret (nur DB_PASSWORD)
+# blockiert die übrigen Keys nicht. Fail-fast: leere/CHANGEME-Werte brechen ab.
 _addon_ensure_secret() {
   local ns="$1" name="$2"; shift 2
   local kv k v args=()
@@ -187,15 +192,11 @@ _addon_ensure_secret() {
       log_error "Secret ${name}: Wert für '${k}' fehlt oder ist CHANGEME — bitte in .env.p2d2-addon setzen (P2D2_*)."
       return 1
     fi
-    args+=(--from-literal="${k}=${v}")
+    args+=("${k}=${v}")
   done
-  if kubectl -n "${ns}" get secret "${name}" &>/dev/null; then
-    log_ok "Secret ${name} existiert bereits — wird NICHT überschrieben"
-    return 0
-  fi
-  kubectl -n "${ns}" create secret generic "${name}" "${args[@]}" \
-    || { log_error "Secret ${name} konnte nicht angelegt werden"; return 1; }
-  log_ok "Secret ${name} angelegt (${#args[@]} Keys, atomar)"
+  _p2d2_secret_apply "$ns" "$name" "${args[@]}" \
+    || { log_error "Secret ${name} konnte nicht angelegt/aktualisiert werden"; return 1; }
+  log_ok "Secret ${name} aktualisiert (${#args[@]} Keys)"
 }
 
 # apply_addon_secrets — befüllt Basis- + 5 Stage-Secrets aus .env.p2d2-addon.

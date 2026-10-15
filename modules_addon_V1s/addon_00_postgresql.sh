@@ -78,68 +78,10 @@ _pg_first_err() {
   printf '%s' "$1" | head -1 | cut -c1-200
 }
 
-# ── DB-Passwort-Mechanik (Turn 5) ──────────────────────────────────────────────
-# Login-Rollen P2D2-Admin / P2D2-RO / P2D2-<STAGE> erhalten kein Klartext-Literal.
-# Auflösung: Umgebung (.env) -> Cluster-Secret -> zufällig erzeugt. converge()
-# setzt das Passwort bei JEDEM Lauf (ALTER ROLE), damit Bestandsinstallationen mit
-# alten Platzhaltern konvergieren. Werte stehen nie in der Prozessliste.
-
-# _p2d2_pw_gen — zufälliges Passwort (Hex, ohne Shell-Sonderzeichen).
-_p2d2_pw_gen() { openssl rand -hex 24; }
-
-# _p2d2_pw_empty <wert> — leer oder Platzhalter (changeme*/CHANGEME*, case-insens.).
-_p2d2_pw_empty() {
-  local v="${1:-}"
-  [[ -z "${v}" || "${v,,}" == changeme* ]]
-}
-
-# _p2d2_secret_get <ns> <name> <key> — Secret-Key auslesen (leer bei Fehlen/Fehler).
-_p2d2_secret_get() {
-  local ns="$1" name="$2" key="$3"
-  kubectl -n "$ns" get secret "$name" -o jsonpath="{.data.${key}}" 2>/dev/null | base64 -d 2>/dev/null || true
-}
-
-# _p2d2_secret_apply <ns> <name> <key>=<wert> ... — Secret idempotent anlegen/
-# aktualisieren. Manifest über eine temp-Datei (Mode 600) + kubectl apply; die
-# Werte stehen NICHT in der Prozessliste (kein --from-literal).
-_p2d2_secret_apply() {
-  local ns="$1" name="$2"; shift 2
-  local kv k v manifest
-  manifest="$(mktemp)"; umask 077
-  {
-    printf 'apiVersion: v1\nkind: Secret\nmetadata:\n  name: %s\n  namespace: %s\ntype: Opaque\nstringData:\n' "$name" "$ns"
-    for kv in "$@"; do
-      k="${kv%%=*}"; v="${kv#*=}"
-      printf '  %s: "%s"\n' "$k" "$v"
-    done
-  } > "$manifest"
-  kubectl apply -f "$manifest" >/dev/null 2>&1
-  rm -f "$manifest"
-}
-
-# _p2d2_env_mirror <datei> <var> <wert> — Wert in der .env spiegeln.
-# Backup <datei>.bak (Mode 600, überschreibt vorhandene), atomar (temp + mv), nur
-# bei Änderung. Schreibfehler -> Warnung + Rückgabe 1 (kein Abbruch; der Wert
-# bleibt im Cluster-Secret).
-_p2d2_env_mirror() {
-  local file="$1" var="$2" value="$3" cur tmp
-  [[ -f "$file" ]] || { log_warn "Env-Datei nicht vorhanden (${file}) — Spiegeln übersprungen"; return 1; }
-  cur="$(sed -nE "s/^[[:space:]]*(export[[:space:]]+)?${var}=[[:space:]]*\"?([^\"]*)\"?[[:space:]]*\$/\2/p" "$file" | head -n1)"
-  [[ "$cur" == "$value" ]] && return 0
-  cp "$file" "$file.bak" 2>/dev/null || { log_warn "Backup ${file}.bak fehlgeschlagen — Spiegeln übersprungen"; return 1; }
-  chmod 600 "$file.bak" 2>/dev/null || true
-  tmp="${file}.tmp.$$"
-  if grep -qE "^[[:space:]]*(export[[:space:]]+)?${var}=" "$file"; then
-    sed -E "s|^([[:space:]]*(export[[:space:]]+)?${var}=).*$|\1\"${value}\"|" "$file" > "$tmp" 2>/dev/null \
-      || { log_warn "Env-Datei ${file} konnte nicht umgeschrieben werden"; return 1; }
-  else
-    cp "$file" "$tmp" 2>/dev/null || { log_warn "Env-Datei ${file} konnte nicht kopiert werden"; return 1; }
-    printf 'export %s="%s"\n' "$var" "$value" >> "$tmp"
-  fi
-  mv "$tmp" "$file" 2>/dev/null || { rm -f "$tmp"; log_warn "Env-Datei ${file} konnte nicht geschrieben werden"; return 1; }
-  chmod 600 "$file" 2>/dev/null || true
-  return 0
-}
+# Gemeinsame Passwort-/Secret-Helfer (addon_03_secrets.sh): Auflösung, Erzeugung,
+# Validierung, Secret-Merge, .env-Spiegel und Rückweg-Merge.
+# shellcheck source=./addon_03_secrets.sh
+source "$(dirname "${BASH_SOURCE[0]}")/addon_03_secrets.sh"
 
 # ensure_p2d2_database — stellt spec.preparedDatabases.p2d2 idempotent sicher,
 # wartet auf die Operator-Reconciliation und verifiziert die DB-Existenz.
@@ -372,6 +314,9 @@ _schema_state() {
 install_addon_postgresql() {
   log "=== AddOn 00: PostgreSQL (Rollen/Schemata/DDL/Grants/Dump-Import) ==="
 
+  # Passwortwerte aus der Umgebung vorab validieren (kein Teilzustand).
+  _p2d2_pw_validate_env || return 1
+
   local db_ns="${ADDON_DB_NS}"
   local db_name="p2d2"
   local secret="postgres.central-db.credentials.postgresql.acid.zalan.do"
@@ -431,14 +376,8 @@ install_addon_postgresql() {
   # 1) Gemeinsame Rollen (P2D2-Admin/-RO): Passwörter auflösen + konvergieren.
   log "  Gemeinsame Rollen (P2D2-Admin-Role/-Admin, P2D2-RO-Role/-RO)"
   local admin_pw ro_pw admin_secret="p2d2-db-admin-secret"
-  admin_pw="${P2D2_ADMIN_DB_PASSWORD:-}"
-  _p2d2_pw_empty "$admin_pw" && admin_pw="$(_p2d2_secret_get "$db_ns" "$admin_secret" "admin")"
-  _p2d2_pw_empty "$admin_pw" && admin_pw="$(_p2d2_pw_gen)"
-  ro_pw="${P2D2_RO_DB_PASSWORD:-}"
-  _p2d2_pw_empty "$ro_pw" && ro_pw="$(_p2d2_secret_get "$db_ns" "$admin_secret" "ro")"
-  _p2d2_pw_empty "$ro_pw" && ro_pw="$(_p2d2_pw_gen)"
-  export P2D2_ADMIN_DB_PASSWORD="$admin_pw"
-  export P2D2_RO_DB_PASSWORD="$ro_pw"
+  admin_pw="$(_p2d2_pw_resolve "P2D2_ADMIN_DB_PASSWORD" "$db_ns" "$admin_secret" "admin")" || return 1
+  ro_pw="$(_p2d2_pw_resolve "P2D2_RO_DB_PASSWORD" "$db_ns" "$admin_secret" "ro")" || return 1
 
   # Cluster-seitig ablegen (dediziertes Secret, nur diese beiden Keys).
   _p2d2_secret_apply "$db_ns" "$admin_secret" "admin=${admin_pw}" "ro=${ro_pw}" \
@@ -487,11 +426,8 @@ SQL
     # (a) Passwort auflösen (Umgebung -> Cluster-Secret -> erzeugt) + Rollen/Schema.
     secret_name="p2d2-${fe_suffix}-secret"
     pw_var="P2D2_${stage}_DB_PASSWORD"
-    stage_pw="${!pw_var:-}"
-    _p2d2_pw_empty "$stage_pw" && stage_pw="$(_p2d2_secret_get "${ADDON_NS}" "$secret_name" "DB_PASSWORD")"
-    _p2d2_pw_empty "$stage_pw" && stage_pw="$(_p2d2_pw_gen)"
     old_pw="$(_p2d2_secret_get "${ADDON_NS}" "$secret_name" "DB_PASSWORD")"
-    export "$pw_var"="$stage_pw"
+    stage_pw="$(_p2d2_pw_resolve "$pw_var" "${ADDON_NS}" "$secret_name" "DB_PASSWORD")" || return 1
 
     "${psql_pod[@]}" <<SQL
 SET log_statement = 'none';
@@ -512,7 +448,11 @@ CREATE SCHEMA IF NOT EXISTS ${schema};
 ALTER SCHEMA ${schema} OWNER TO "P2D2-Admin-Role";
 SQL
 
-    # (a2) .env spiegeln + Frontend-Deployment bei Änderung neu starten.
+    # (a2) Stage-Secret schreiben (nur DB_PASSWORD, andere Keys bleiben), dann
+    #      .env spiegeln und Frontend-Deployment bei Änderung neu starten.
+    if [[ -z "$old_pw" || "$old_pw" != "$stage_pw" ]]; then
+      _p2d2_secret_apply "${ADDON_NS}" "$secret_name" "DB_PASSWORD=${stage_pw}" || log_warn "Secret ${secret_name} konnte nicht aktualisiert werden"
+    fi
     _p2d2_env_mirror "${ADDON_ENV_FILE}" "$pw_var" "$stage_pw" || true
     if [[ -n "$old_pw" && "$old_pw" != "$stage_pw" ]] \
         && kubectl -n "${ADDON_NS}" get deployment "p2d2-${fe_suffix}" >/dev/null 2>&1; then
