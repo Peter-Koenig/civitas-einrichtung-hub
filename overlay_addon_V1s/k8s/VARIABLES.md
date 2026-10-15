@@ -57,6 +57,16 @@ Werte**, sondern nur Name, Ablage, Kategorie, Quelle/Herkunft und Status.
 | `OIDC_CLIENT_ID` | base-secret | K3 | Keycloak-OIDC-Client (ein Client, 5 Redirect-URIs) | **CHANGEME** — Betreiber/Keycloak |
 | `OIDC_CLIENT_SECRET` | base-secret | K4 | Keycloak-Client-Secret (echtes Secret) | **CHANGEME** — vom Betreiber zu ersetzen |
 
+## 2a. DB-Admin-/RO-Secret (`p2d2-db-admin-secret`, Namespace `cc-prd-database-stack`)
+
+Diese beiden Passwörter gehören zu den gemeinsamen Datenbank-Rollen (nicht zu den
+Frontend-Secrets) und werden im Datenbank-Namespace abgelegt.
+
+| Variable | Ablage | Kategorie | Quelle / Herkunft | Status |
+|---|---|---|---|---|
+| `P2D2_ADMIN_DB_PASSWORD` | `p2d2-db-admin-secret` Key `admin` | K2 | aus `.env` bzw. Secret übernommen, sonst erzeugt | wird erzeugt (bei leer/Platzhalter) |
+| `P2D2_RO_DB_PASSWORD` | `p2d2-db-admin-secret` Key `ro` | K2 | dito | wird erzeugt (bei leer/Platzhalter) |
+
 ## 3. Stage-Mapping (Übersicht der stage-spezifischen Werte)
 
 | Stage | Deployment | `<stage>`-Suffix (Ressourcen) | `DB_USER` | `WFST_WORKSPACE` / `PUBLIC_WFST_WORKSPACE` | `<KEY>` (Env-Suffix) | `WFST_USERNAME` / `WFST_USER_<KEY>` | `PUBLIC_SITE_URL` |
@@ -91,7 +101,7 @@ Werte**, sondern nur Name, Ablage, Kategorie, Quelle/Herkunft und Status.
 
 | Variable | Ablage | Kategorie | Quelle / Herkunft | Status |
 |---|---|---|---|---|
-| `DB_PASSWORD` | `<stage>-secret` | K3 | Cluster-DB-Rolle `<DB_USER>` (Rotation durch den Betreiber) | **CHANGEME** — vom Betreiber zu setzen |
+| `DB_PASSWORD` | `<stage>-secret` | K2 | aus `.env` bzw. Secret übernommen, sonst erzeugt | wird erzeugt (bei leer/Platzhalter) |
 | `WFST_PASSWORD` (plain) | `<stage>-secret` | K1 | GeoServer-Secret `p2d2-geoserver-wfst-<ws>` | **CHANGEME** — aus GeoServer-Secret übernehmen |
 | `WFST_PW_<KEY>` | `<stage>-secret` | K1 | dito (suffigiert) | **CHANGEME** — aus GeoServer-Secret übernehmen |
 | `SESSION_SECRET` | `<stage>-secret` | K2 | zufällig generiert (bleibt) | **CHANGEME** — bei Installation generieren |
@@ -147,12 +157,10 @@ ist im `central-db`-Cluster konfiguriert. → `DB_NAME: p2d2` ist korrekt gesetz
 
 ## Offene Punkte / Folgearbeit
 
-1. **Zitadel→Keycloak im Code (blockiert den Build).** Der Quellcode referenziert
-   weiterhin `ZITADEL_ISSUER/CLIENT_ID/CLIENT_SECRET/PROJECT_ID/ORG_ID`
-   (`astro.config.mjs`-Env-Schema, `src/lib/auth/oidc-client.ts`,
-   `src/pages/api/auth/{login,logout,callback}.ts`, `src/lib/auth/session.ts`,
-   `packages/core/src/preferences/metadata-parser.ts`). Erst nach diesem Refactor
-   akzeptiert der Build die hier auf `OIDC_*` umbenannten Variablen.
+1. **OIDC-Refactor umgesetzt.** Der Code nutzt `OIDC_*` statt `ZITADEL_*`;
+   verblieben ist nur der optionale Zitadel-Fallback `OIDC_ZITADEL_PROJECT_ID`
+   (Zitadel-Scopes/-Claims bei gesetzter Projekt-ID). Die auf `OIDC_*`
+   umbenannten Variablen werden vom Build akzeptiert.
 2. **Builder-Job-Env.** Der Webhook-Controller (`webhook-controller/index.js`,
    `createBuilderJob`) injiziert bislang keine Build-Env-Variablen — der erzeugte
    Job braucht ebenfalls `envFrom` (base + stage), analog zur Referenz in
