@@ -31,6 +31,7 @@ build_geoportal_backend_image() { :; }
 apply_overlay() { :; }
 patch_masterportal_release_name() { :; }
 install_cc_cli() { :; }
+verify_k8s_import() { :; }
 render_inventory() { :; }
 setup_wireguard() { :; }
 patch_playbook_urls() { :; }

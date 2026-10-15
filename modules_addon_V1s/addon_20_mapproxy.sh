@@ -40,12 +40,39 @@ install_addon_mapproxy() {
   log_ok "AddOn 20 MapProxy abgeschlossen (rudimentär, nicht idempotent)"
 }
 
+# addon_apisix_admin_key [creds_file] — liest APISIX_ADMIN_ROLE_KEY aus der
+# Credentials-Datei. Verarbeitet unquotierte, einfach/doppelt quotierte und
+# `export`-Zeilen; leer, nicht lesbar oder mehrdeutig -> Exit 1 (kein Log, kein Key).
+# shellcheck disable=SC2120  # optionaler Parameter, Aufruf auch ohne Argument (Default)
+addon_apisix_admin_key() {
+  local creds="${1:-${ADDON_APISIX_CREDENTIALS_FILE:-/root/civitas-install/credentials.env}}"
+  [[ -r "$creds" ]] || return 1
+  local count val
+  count="$(grep -cE '^[[:space:]]*(export[[:space:]]+)?APISIX_ADMIN_ROLE_KEY[[:space:]]*=' "$creds" 2>/dev/null || true)"
+  [[ "$count" == "1" ]] || return 1
+  val="$(sed -nE 's/^[[:space:]]*(export[[:space:]]+)?APISIX_ADMIN_ROLE_KEY[[:space:]]*=[[:space:]]*//p' "$creds" | head -n1)"
+  case "$val" in
+    \"*\") val="${val#\"}"; val="${val%\"}" ;;
+    \'*\') val="${val#\'}"; val="${val%\'}" ;;
+  esac
+  [[ -n "$val" ]] || return 1
+  printf '%s' "$val"
+}
+
 # _mapproxy_apisix_delete_by_name <collection> <name> <admin_key> <base>
 # Löscht ein APISIX-Admin-Objekt (routes|upstreams) anhand seines name-Felds.
 # APISIX erzeugt beim POST ohne explizite ID eine numerische ID — daher Liste lesen,
 # per name filtern und die reale ID ermitteln, dann DELETE auf die ID.
 _mapproxy_apisix_delete_by_name() {
-  local coll="$1" name="$2" admin_key="$3" base="$4" id http_code
+  local coll="$1" name="$2" admin_key="$3" base="$4" id http_code list_http
+  # Listenabfrage: HTTP-Status explizit prüfen; curl-Fehler/401 sind "nicht abfragbar"
+  # (Rest), nicht "nicht vorhanden" (falsch-grün).
+  list_http=$(curl -sk --max-time 15 -o /dev/null -w "%{http_code}" \
+    -H "X-API-KEY: ${admin_key}" "${base}/${coll}" 2>/dev/null || true)
+  if [[ "${list_http}" != "200" ]]; then
+    log_warn "APISIX ${coll} nicht abfragbar (HTTP ${list_http:-0}) — ${name} manuell prüfen"
+    return 1
+  fi
   id=$(curl -sk --max-time 15 -H "X-API-KEY: ${admin_key}" "${base}/${coll}" 2>/dev/null \
     | jq -r --arg n "${name}" \
       '.list[]? | select(.value.name==$n) | (.value.id // (.key | split("/")[-1]))' 2>/dev/null \
@@ -58,8 +85,10 @@ _mapproxy_apisix_delete_by_name() {
     -H "X-API-KEY: ${admin_key}" "${base}/${coll}/${id}" 2>/dev/null || true)
   if [[ "${http_code}" == "200" || "${http_code}" == "404" ]]; then
     log_ok "APISIX ${name} gelöscht (HTTP ${http_code})"
+    return 0
   else
     log_warn "APISIX ${name} löschen fehlgeschlagen (HTTP ${http_code})"
+    return 1
   fi
 }
 
@@ -77,16 +106,21 @@ uninstall_addon_mapproxy() {
   # APISIX-Routing /mapserver: Route + Upstream löschen (Admin-API, Turn 65).
   # Admin-Key aus der CIVITAS/CORE-Credentials-Datei (APISIX_ADMIN_ROLE_KEY),
   # Endpunkt https://api-admin.<DOMAIN>/apisix/admin (analog mapproxy-automatisierungshinweise).
-  local admin_key apisix_base
+  local admin_key apisix_base rc=0
   local creds="${ADDON_APISIX_CREDENTIALS_FILE:-/root/civitas-install/credentials.env}"
-  admin_key="$(sed -n 's/^APISIX_ADMIN_ROLE_KEY=//p' "${creds}" 2>/dev/null | head -n1 || true)"
+  admin_key="$(addon_apisix_admin_key)"
   if [[ -n "${admin_key}" ]]; then
     apisix_base="https://api-admin.${ADDON_DOMAIN}/apisix/admin"
-    _mapproxy_apisix_delete_by_name "routes" "mapserver-route" "${admin_key}" "${apisix_base}"
-    _mapproxy_apisix_delete_by_name "upstreams" "mapserver-upstream" "${admin_key}" "${apisix_base}"
+    _mapproxy_apisix_delete_by_name "routes" "mapserver-route" "${admin_key}" "${apisix_base}" || rc=1
+    _mapproxy_apisix_delete_by_name "upstreams" "mapserver-upstream" "${admin_key}" "${apisix_base}" || rc=1
   else
     log_warn "APISIX_ADMIN_ROLE_KEY nicht gefunden (${creds}) — mapserver-route/-upstream manuell prüfen"
+    rc=1
   fi
 
+  if [[ "${rc}" -ne 0 ]]; then
+    log_warn "Uninstall AddOn 20 MapProxy mit Resten/Fehlern beendet"
+    return 1
+  fi
   log_ok "Uninstall AddOn 20 MapProxy abgeschlossen"
 }

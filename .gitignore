@@ -31,3 +31,4 @@ supplement/*
 
 # LE-Zertifikats-Backup (enthält private Schlüssel)
 le-certs-backup.yaml
+p2d2-le-certs-backup*.yaml

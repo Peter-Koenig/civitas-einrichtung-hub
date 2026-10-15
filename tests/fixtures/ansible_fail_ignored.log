@@ -1,0 +1,9 @@
+2026-10-03 11:05:42,175 p=10106 u=root n=ansible | fatal: [localhost]: FAILED! => {
+    "msg": "earlier real failure",
+    "rc": 2
+}
+2026-10-03 11:05:42,175 p=10106 u=root n=ansible | fatal: [localhost]: FAILED! => {
+    "msg": "ignored failure",
+    "rc": 3
+}
+2026-10-03 11:05:42,175 p=10106 u=root n=ansible | ...ignoring

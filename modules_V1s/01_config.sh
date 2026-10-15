@@ -71,6 +71,11 @@ CC_CLI_VERSION="1.5.0"
 ANSIBLE_VERSION="10.6.0"   # ansible-core 2.17.x, kompatibel mit cc-cli 1.5.0
 CC_CLI_REGISTRY_URL="https://gitlab.com/api/v4/projects/62227605/packages/pypi/simple"
 CC_CLI_VENV_PATH="/opt/civitas-core-venv"
+# kubernetes-Python-Client: 37.0.0 entfernt den (von kubernetes.core genutzten)
+# Importpfad kubernetes.client.apis. Obergrenze <37 erzwingt einen kompatiblen
+# Client (36.0.3 verifiziert). Per Umgebung überschreibbar (vollständige
+# pip-Anforderung, z. B. "kubernetes==36.0.3").
+K8S_PY_PIN="${K8S_PY_PIN:-kubernetes>=24.2.0,<37}"
 
 # ── cc-cli Inventory (Ansible-Inventory für CIVITAS/CORE) ────────────────────
 ENVIRONMENT="cc-prd"                    # Environment-Name (cc-prd/cc-stg/cc-dev)

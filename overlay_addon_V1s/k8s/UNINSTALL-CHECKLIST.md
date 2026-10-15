@@ -50,6 +50,9 @@ Stages und ihre Ressourcen-Suffixe:
   RoleBinding `p2d2-webhook-controller-binding`.
 - **Builder-Jobs:** alle Jobs mit Namensmuster `p2d2-…-builder…`.
 - **Shared-Infra-Secrets:** `p2d2-builder-git-auth`, `p2d2-webhook-secrets`.
+- **Frontend-Images (containerd):** nur bei `P2D2_UNINSTALL_REMOVE_IMAGES=true` werden die
+  5 gebauten Images (`p2d2-frontend-{main,dev,de1,de2,fv}:cfg-<12-hex>`) aus dem
+  containerd-Namespace `k8s.io` entfernt; bei `false` (Default) bleiben sie.
 
 ### 1.2 Prüfbefehl (Reste erkennen)
 
@@ -89,6 +92,12 @@ kubectl -n "$NS" delete secret p2d2-builder-git-auth p2d2-webhook-secrets --igno
 # Builder-Jobs (nur p2d2-…-builder…, niemals fremde Jobs):
 kubectl -n "$NS" get jobs -o name | sed 's|.*/||' | grep -E '^p2d2-.*builder' \
   | xargs -r -I{} kubectl -n "$NS" delete job {} --ignore-not-found
+
+# Frontend-Images (nur bei P2D2_UNINSTALL_REMOVE_IMAGES=true):
+for stage in main dev de1 de2 fv; do
+  k3s ctr -n k8s.io images ls | awk -v n="p2d2-frontend-${stage}:" 'index($1, n) > 0 {print $1}' \
+    | xargs -r -n1 k3s ctr -n k8s.io images rm
+done
 ```
 
 ### 1.4 Ausdrücklich NICHT anfassen

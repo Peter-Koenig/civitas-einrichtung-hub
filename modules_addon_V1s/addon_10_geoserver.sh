@@ -222,7 +222,7 @@ uninstall_addon_geoserver() {
   # Turn 72: HTTP-Statuscode separat abfragen (curl liefert bei 404 Exit 0 und sonst
   # den rohen Tomcat-HTML-Body ins Log) — je Code log_ok statt Fehlerseite.
   # TODO: p2d2-Nutzer/Rollen/ACL (die die Install-Seite als TODO markiert) später ergänzen.
-  local ws http_code
+  local ws http_code rc=0
   for ws in friedhofsplaene fv de2 de1 dev main; do
     log "  Workspace ${ws} entfernen"
     http_code=$(curl -sS -o /dev/null -w "%{http_code}" -u "${admin_user}:${admin_pw}" -X DELETE \
@@ -230,7 +230,7 @@ uninstall_addon_geoserver() {
     case "${http_code}" in
       200|201|202) log_ok "    Workspace ${ws} entfernt" ;;
       404)         log_ok "    Workspace ${ws} bereits entfernt (übersprungen)" ;;
-      *)           log_warn "    Workspace ${ws} löschen fehlgeschlagen (HTTP ${http_code})" ;;
+      *)           log_warn "    Workspace ${ws} löschen fehlgeschlagen (HTTP ${http_code})"; rc=1 ;;
     esac
   done
 
@@ -247,6 +247,7 @@ uninstall_addon_geoserver() {
       log_ok "  Raster-Dateien unter data/geotiffs/ im GeoServer-Pod entfernt (Verzeichnis bleibt)"
     else
       log_warn "  Raster-Dateien im GeoServer-Pod konnten nicht entfernt werden (manuell prüfen)"
+      rc=1
     fi
   else
     log_warn "  GeoServer-Pod nicht gefunden — Raster-Dateien im Pod manuell prüfen"
@@ -261,5 +262,9 @@ uninstall_addon_geoserver() {
   done < <(kubectl -n "$ns" get secrets -o jsonpath='{.items[*].metadata.name}' 2>/dev/null \
     | tr ' ' '\n' | grep '^p2d2-geoserver-' || true)
 
+  if [[ "${rc}" -ne 0 ]]; then
+    log_warn "Uninstall AddOn 10 GeoServer mit Resten/Fehlern beendet"
+    return 1
+  fi
   log_ok "Uninstall AddOn 10 GeoServer abgeschlossen"
 }

@@ -1,0 +1,16 @@
+2026-10-03 11:05:42,175 p=10106 u=root n=ansible | TASK [warm up postgres connection] ********************
+2026-10-03 11:05:42,175 p=10106 u=root n=ansible | fatal: [localhost]: FAILED! => {
+    "attempts": 60,
+    "changed": false,
+    "msg": "MODULE FAILURE\nSee stdout/stderr for the exact error",
+    "module_stderr": "DeprecationWarning: kubernetes.client.apis is renamed ...\nTraceback (most recent call last):\nk8s_exec.py, line 171, in execute_module\nNameError: name core_v1_api is not defined\n",
+    "invocation": {
+        "module_args": {
+            "namespace": "cc-prd-database-stack",
+            "pod": "central-db-0",
+            "container": "postgres",
+            "command": "PGPASSWORD=supersecret psql -c 'SELECT 1'"
+        }
+    },
+    "rc": 1
+}

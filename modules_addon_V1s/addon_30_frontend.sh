@@ -386,6 +386,131 @@ addon_frontend_svc() {
   esac
 }
 
+# ── TLS-Backup (Teil B) ────────────────────────────────────────────────────────
+# addon_tls_secret_json <secret> — Secret als JSON, Server-Metadaten entfernt.
+addon_tls_secret_json() {
+  local secret="$1"
+  kubectl -n "${ADDON_NS}" get secret "${secret}" -o json 2>/dev/null \
+    | jq 'del(.metadata.resourceVersion, .metadata.uid, .metadata.creationTimestamp, .metadata.managedFields, .metadata.ownerReferences, .metadata.selfLink)' 2>/dev/null
+}
+
+# addon_tls_backup_relevant <json> <host> <min_days> — 0 wenn relevant, sonst 1.
+# Loggt nur Metadaten (Host, Aussteller, notAfter), nie Zertifikats-/Schlüsselinhalte.
+addon_tls_backup_relevant() {
+  local json="$1" host="$2" min_days="$3"
+  local type ns crt key issuer notafter notbefore reason=""
+  type="$(printf '%s' "$json" | jq -r '.type // empty')"
+  ns="$(printf '%s' "$json" | jq -r '.metadata.namespace // empty')"
+  crt="$(printf '%s' "$json" | jq -r '.data["tls.crt"] // empty')"
+  key="$(printf '%s' "$json" | jq -r '.data["tls.key"] // empty')"
+  [[ "$type" == "kubernetes.io/tls" ]] || reason="type"
+  [[ -n "$crt" && -n "$key" ]] || reason="${reason:+${reason},}tls.crt/tls.key"
+  [[ "$ns" == "${ADDON_NS}" ]] || reason="${reason:+${reason},}namespace"
+  if [[ -z "$reason" ]]; then
+    local crt_file key_file
+    crt_file="$(mktemp)"; key_file="$(mktemp)"
+    printf '%s' "$crt" | base64 -d > "$crt_file" 2>/dev/null || true
+    printf '%s' "$key" | base64 -d > "$key_file" 2>/dev/null || true
+    issuer="$(openssl x509 -in "$crt_file" -noout -issuer 2>/dev/null || true)"
+    if [[ "$issuer" != *"Let's Encrypt"* ]]; then reason="${reason:+${reason},}issuer"; fi
+    if [[ "$issuer" == *"STAGING"* ]]; then reason="${reason:+${reason},}staging"; fi
+    if ! openssl x509 -in "$crt_file" -noout -checkend $((min_days * 86400)) >/dev/null 2>&1; then
+      reason="${reason:+${reason},}checkend"
+    fi
+    notbefore="$(openssl x509 -in "$crt_file" -noout -startdate 2>/dev/null | cut -d= -f2- || true)"
+    notafter="$(openssl x509 -in "$crt_file" -noout -enddate 2>/dev/null | cut -d= -f2- || true)"
+    if [[ -n "$notbefore" ]] && [[ "$(date -d "$notbefore" +%s 2>/dev/null || echo 0)" -gt "$(date +%s)" ]]; then
+      reason="${reason:+${reason},}notBefore-Zukunft"
+    fi
+    # DNS-SAN: exakt <host>, kein weiterer Name außerhalb ${ADDON_DOMAIN}.
+    local dns dns_host=0 dns_foreign=0
+    while IFS= read -r dns; do
+      [[ -z "$dns" ]] && continue
+      if [[ "$dns" == "$host" ]]; then dns_host=1; continue; fi
+      if [[ "$dns" != *".${ADDON_DOMAIN}" ]]; then dns_foreign=1; fi
+    done < <(openssl x509 -in "$crt_file" -noout -ext subjectAltName 2>/dev/null \
+      | tr ',' '\n' | sed -n 's/^[[:space:]]*DNS://p')
+    [[ "$dns_host" -eq 1 ]] || reason="${reason:+${reason},}SAN-host"
+    [[ "$dns_foreign" -eq 0 ]] || reason="${reason:+${reason},}SAN-fremd"
+    # Public Key des Zertifikats passt zum privaten Schluessel.
+    local pub_cert pub_key
+    pub_cert="$(openssl x509 -in "$crt_file" -noout -pubkey 2>/dev/null | openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | awk '{print $1}' || true)"
+    pub_key="$(openssl pkey -in "$key_file" -pubout -outform DER 2>/dev/null | sha256sum | awk '{print $1}' || true)"
+    if [[ -n "$pub_cert" && -n "$pub_key" && "$pub_cert" != "$pub_key" ]]; then
+      reason="${reason:+${reason},}key-match"
+    fi
+    rm -f "$crt_file" "$key_file"
+  fi
+  if [[ -n "$reason" ]]; then
+    log "Backup-Eintrag ${host} nicht relevant (${reason}; Aussteller=${issuer:-?}; notAfter=${notafter:-?})"
+    return 1
+  fi
+  return 0
+}
+
+# addon_restore_tls_backup — stellt die 5 TLS-Secrets aus dem Backup wieder her
+# (B3). Vorhandene Secrets werden nie überschrieben; Fehler brechen den Install nicht ab.
+addon_restore_tls_backup() {
+  local backup_file="${VM_REMOTE_INSTALL_DIR:-/root/p2d2-addon}/../p2d2-le-certs-backup.yaml"
+  [[ -f "${backup_file}" ]] || { log "Kein TLS-Backup vorhanden — Restore übersprungen"; return 0; }
+  local min_days="${P2D2_TLS_BACKUP_MIN_DAYS:-30}"
+  local stage host secret entry
+  for stage in main dev de1 de2 fv; do
+    host="$(addon_frontend_host "${stage}")"
+    secret="${host}-tls"
+    if kubectl -n "${ADDON_NS}" get secret "${secret}" >/dev/null 2>&1; then
+      log "TLS-Secret ${secret} vorhanden — unverändert"
+      continue
+    fi
+    entry="$(jq -r --arg n "${secret}" '.[]? | select(.metadata.name == $n)' "${backup_file}" 2>/dev/null || true)"
+    if [[ -z "$entry" ]]; then
+      log "Kein Backup-Eintrag für ${secret} — übersprungen"
+      continue
+    fi
+    if addon_tls_backup_relevant "${entry}" "${host}" "${min_days}"; then
+      if printf '%s\n' "${entry}" | kubectl apply -f - >/dev/null 2>&1; then
+        log_ok "TLS-Secret ${secret} aus Backup wiederhergestellt"
+      else
+        log_warn "TLS-Secret ${secret} konnte nicht wiederhergestellt werden — Rückfall auf Neuausstellung"
+      fi
+    fi
+  done
+  return 0
+}
+
+# addon_export_tls_backup — schreibt die 5 TLS-Secrets atomar ins Backup (B4).
+# Nur im Install-Lauf und nur bei ACME-Issuer; alles-oder-nichts.
+addon_export_tls_backup() {
+  local issuer="${ADDON_CERT_ISSUER_RESOLVED:-}"
+  [[ -n "$issuer" ]] || issuer="$(addon_install_cert_issuer 2>/dev/null || true)"
+  addon_cert_is_acme "${issuer}" || { log "Issuer ${issuer} ist kein ACME-Issuer — kein TLS-Export"; return 0; }
+  local backup_file="${VM_REMOTE_INSTALL_DIR:-/root/p2d2-addon}/../p2d2-le-certs-backup.yaml"
+  local collected stage host secret json
+  collected=""
+  for stage in main dev de1 de2 fv; do
+    host="$(addon_frontend_host "${stage}")"
+    secret="${host}-tls"
+    json="$(addon_tls_secret_json "${secret}")"
+    if [[ -z "$json" ]] || ! addon_tls_backup_relevant "${json}" "${host}" 0; then
+      log_warn "TLS-Secret ${secret} unbrauchbar oder nicht lesbar — Export übersprungen (bestehende Datei bleibt)"
+      return 0
+    fi
+    collected="${collected}${collected:+$'\n'}${json}"
+  done
+  # alles-oder-nichts: 5 gültige Einträge, je type/tls.crt/tls.key.
+  if [[ "$(printf '%s\n' "${collected}" | jq -s 'length' 2>/dev/null)" != "5" ]]; then
+    log_warn "TLS-Export übersprungen (erwartet 5 Einträge)"
+    return 0
+  fi
+  local tmp
+  tmp="$(mktemp "${backup_file}.tmp.XXXXXX")"
+  ( umask 077; printf '%s\n' "${collected}" | jq -s '.' > "$tmp" )
+  chmod 600 "$tmp"
+  mv "$tmp" "${backup_file}"
+  chmod 600 "${backup_file}"
+  log_ok "TLS-Backup exportiert (${backup_file})"
+}
+
 # addon_render_ingress <stage> <issuer> — reines Ingress-Rendering (U4).
 addon_render_ingress() {
   local stage="$1" issuer="$2" svc host secret
@@ -705,6 +830,37 @@ addon_secret_tls_provenance() {
 # Löst den früheren DANGER-Sonderfall ab (der Install-Platzhalter ist seit Turn 45-62
 # produktiv und kann die Ressourcen wiederherstellen).
 #
+# addon_frontend_image_names — die 5 exakt gebauten Image-Namen (build-stage.sh).
+addon_frontend_image_names() {
+  printf '%s\n' p2d2-frontend-main p2d2-frontend-dev p2d2-frontend-de1 p2d2-frontend-de2 p2d2-frontend-fv
+}
+
+# addon_remove_frontend_images — entfernt die 5 Frontend-Images aus containerd.
+# Werkzeug/Namensraum belegt: k3s ctr -n k8s.io (build-stage.sh L176,
+# modules_V1s/06c_image_build.sh). Exakte Namen, kein Wildcard.
+addon_remove_frontend_images() {
+  local stage name ref list rc remaining
+  for stage in main dev de1 de2 fv; do
+    name="p2d2-frontend-${stage}:"
+    while IFS= read -r ref; do
+      [[ -n "${ref}" ]] && k3s ctr -n k8s.io images rm "${ref}" >/dev/null 2>&1 || true
+    done < <(k3s ctr -n k8s.io images ls 2>/dev/null | awk -v n="${name}" 'index($1, n) > 0 {print $1}')
+  done
+  # Verifikation: kein Image der fünf Namen darf übrig sein.
+  list="$(k3s ctr -n k8s.io images ls 2>/dev/null | awk '{print $1}')"
+  rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    log_warn "containerd-Image-Liste nicht lesbar — Frontend-Image-Entfernung nicht verifizierbar"
+    return 1
+  fi
+  remaining="$(printf '%s\n' "$list" | grep -E 'p2d2-frontend-(main|dev|de1|de2|fv):' || true)"
+  if [[ -n "$remaining" ]]; then
+    log_warn "Frontend-Images weiterhin vorhanden: $(printf '%s' "$remaining" | tr '\n' ' ')"
+    return 1
+  fi
+  return 0
+}
+
 # Gelöscht wird je Stage: Deployment, Service, ConfigMap, Secret, Ingress, Certificate
 # (ausdrücklich, V2) sowie Alt-PVCs aus der PVC-basierten Vorversion. Das TLS-Secret
 # <host>-tls bleibt bei ACME-Issuern erhalten (E3, V1, P2D2_UNINSTALL_KEEP_TLS).
@@ -716,9 +872,9 @@ uninstall_addon_frontend() {
   addon_frontend_guard || return 1
 
   local ns="${ADDON_NS}"
-  # V6: Enum-Prüfung läuft hier, weil addon_validate_config beim Uninstall nicht läuft.
-  local keep_mode
+  local keep_mode remove_images rc=0
   keep_mode="$(addon_validate_uninstall_keep_tls)" || return 1
+  remove_images="$(addon_validate_uninstall_remove_images)" || return 1
 
   local stage svc host cm secret tls_secret provenance cert_name cert_pem issuer enddate
   for stage in main dev de1 de2 fv; do
@@ -780,5 +936,22 @@ uninstall_addon_frontend() {
   kubectl -n "${ns}" delete secret p2d2-builder-git-auth --ignore-not-found || true
   kubectl -n "${ns}" delete secret p2d2-webhook-secrets --ignore-not-found || true
 
+  # N7: gebaute Frontend-Images (containerd, Namespace k8s.io) nur mit Schalter entfernen.
+  if [[ "${remove_images}" == "true" ]]; then
+    if addon_remove_frontend_images; then
+      log_ok "Frontend-Images entfernt (containerd k8s.io)"
+    else
+      log_warn "Frontend-Image-Entfernung nicht vollständig — manuell prüfen"
+      rc=1
+    fi
+  else
+    log_ok "Frontend-Images bewusst behalten (P2D2_UNINSTALL_REMOVE_IMAGES=false)"
+    log "  Löschen bei Bedarf: P2D2_UNINSTALL_REMOVE_IMAGES=true"
+  fi
+
+  if [[ "${rc}" -ne 0 ]]; then
+    log_warn "Uninstall AddOn 30 Frontend mit Resten/Fehlern beendet"
+    return 1
+  fi
   log_ok "Uninstall AddOn 30 Frontend abgeschlossen"
 }
