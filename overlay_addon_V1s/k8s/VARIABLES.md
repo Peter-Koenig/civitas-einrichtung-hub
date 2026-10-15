@@ -67,6 +67,12 @@ Frontend-Secrets) und werden im Datenbank-Namespace abgelegt.
 | `P2D2_ADMIN_DB_PASSWORD` | `p2d2-db-admin-secret` Key `admin` | K2 | aus `.env` bzw. Secret übernommen, sonst erzeugt | wird erzeugt (bei leer/Platzhalter) |
 | `P2D2_RO_DB_PASSWORD` | `p2d2-db-admin-secret` Key `ro` | K2 | dito | wird erzeugt (bei leer/Platzhalter) |
 
+Rangfolge je Passwort: (1) Wert aus der Umgebung/`.env`, (2) sonst vorhandenes
+Cluster-Secret, (3) sonst zufällig erzeugt. Die Werte werden bei der Installation
+in der `.env.p2d2-addon` gespiegelt und nach dem VM-Lauf zurück in die Host-`.env`
+übernommen (nur diese verwalteten Variablen). Vor der ersten Änderung wird genau
+ein Backup `<datei>.bak` (Modus 600) je Lauf angelegt.
+
 ## 3. Stage-Mapping (Übersicht der stage-spezifischen Werte)
 
 | Stage | Deployment | `<stage>`-Suffix (Ressourcen) | `DB_USER` | `WFST_WORKSPACE` / `PUBLIC_WFST_WORKSPACE` | `<KEY>` (Env-Suffix) | `WFST_USERNAME` / `WFST_USER_<KEY>` | `PUBLIC_SITE_URL` |
