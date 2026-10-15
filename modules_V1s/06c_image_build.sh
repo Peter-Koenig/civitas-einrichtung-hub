@@ -126,7 +126,6 @@ build_geoportal_backend_image() {
     # Images ausschließlich im Namespace `k8s.io` sucht — das lokal gebaute
     # Image wäre sonst für Pods unsichtbar (ImagePullBackOff statt Start).
     # Beleg: ai-runs/2026-08-31-v1s-installationsskript-lauffaehig
-    #   perplexity/003-perplexity-followup-containerd-namespace-belege-*.md
     log "Exportiere Image und importiere in containerd (Namespace k8s.io) …"
     docker image save "${V1S_IMAGE_REF}" \
       | k3s ctr -n k8s.io images import - \
