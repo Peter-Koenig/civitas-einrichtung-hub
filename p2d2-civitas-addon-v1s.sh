@@ -115,6 +115,7 @@ log_error() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✗ $*" >&2; }
 # eingebunden (Source-Time-Guards, Turn 14).
 source "${SCRIPT_DIR}/modules_addon_V1s/addon_05_ssh.sh"
 source "${SCRIPT_DIR}/modules_addon_V1s/addon_01_config.sh"
+source "${SCRIPT_DIR}/modules_addon_V1s/addon_03_secrets.sh"
 
 # ── Fail-Fast-Vorprüfungen (Turn 63/65) ────────────────────────────────────────
 # _preflight_env — prüft, dass .env.p2d2-addon alle Pflichtvariablen liefert.
@@ -304,6 +305,19 @@ run_in_vm_addon() {
       log_warn "TLS-Backup konnte nicht zurückgeholt werden"
     fi
   fi
+
+  # DB-Passwörter (Turn 7): verwaltete Variablen aus der VM-Kopie in die Host-.env
+  # zurückübernehmen (nur diese Zeilen, keine Ganzdatei-Kopie). Läuft auch im
+  # Fehlerfall des VM-Hops.
+  local env_vm_file="${VM_REMOTE_INSTALL_DIR}/../.env.p2d2-addon"
+  local env_tmp
+  env_tmp="$(mktemp)"; chmod 600 "$env_tmp"
+  if scp "${ADDON_SSH_OPTS[@]}" "root@${VM_IP_STATIC}:${env_vm_file}" "$env_tmp" 2>/dev/null; then
+    _p2d2_env_merge_from "$env_tmp" "${ADDON_ENV_FILE}" || true
+  else
+    log_warn "VM-Env nicht lesbar — verwaltete Werte liegen in ${env_vm_file} (VM)"
+  fi
+  rm -f "$env_tmp"
 
   if [[ "${ssh_exit}" -ne 0 ]]; then
     log_error "Lauf in der VM fehlgeschlagen — bitte VM-Log prüfen"
