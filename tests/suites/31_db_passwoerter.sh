@@ -122,4 +122,46 @@ check "d UNRELATED unverändert" "keep-me" "$(sed -n 's/^export UNRELATED="\([^"
 check "d .bak vorhanden" "yes" "$([[ -f "$T/host-env.bak" ]] && echo yes || echo no)"
 check "d .bak Mode 600" "600" "$(stat -c '%a' "$T/host-env.bak")"
 
+# ── D2(a) Sentinel + direkter Aufruf setzt/exportiert im aufrufenden Prozess ──
+_f() { export ZZ_TEST=1; printf x; }
+v="$(_f)"
+check "D2 Substitution verliert Export" "yes" "$([[ -z "${ZZ_TEST:-}" ]] && echo yes || echo no)"
+_f >/dev/null
+check "D2 direkter Aufruf behält Export" "1" "${ZZ_TEST:-}"
+
+# ── D2(a) _p2d2_pw_resolve direkt aufgerufen -> Variable gesetzt ─────────────
+unset P2D2_MAIN_DB_PASSWORD
+_p2d2_pw_resolve P2D2_MAIN_DB_PASSWORD "ns" "p2d2-main-secret" "DB_PASSWORD"
+check "D2 resolve setzt Variable" "yes" "$([[ -n "${P2D2_MAIN_DB_PASSWORD:-}" ]] && echo yes || echo no)"
+check "D2 resolve valider Wert" "0" "$(_p2d2_pw_is_valid "${P2D2_MAIN_DB_PASSWORD}" && echo 0 || echo 1)"
+
+# ── D2(b) _addon_ensure_secret bricht für aufgelöstes DB_PASSWORD nicht ab ────
+export ADDON_DOMAIN="udp.example.org"
+# shellcheck disable=SC1090,SC1091
+source "$REPO/modules_addon_V1s/addon_30_frontend.sh"
+: > "$LOGBUF"
+_addon_ensure_secret ns p2d2-main-secret "DB_PASSWORD=${P2D2_MAIN_DB_PASSWORD}" >/dev/null 2>&1
+check "D2 ensure_secret ok (aufgelöst)" "0" "$?"
+
+# ── D2(c) statisch: kein _p2d2_pw_resolve in Befehlssubstitution ─────────────
+check "D2 kein _p2d2_pw_resolve in Substitution" "0" \
+  "$(grep -rEn '\$\([[:space:]]*_p2d2_pw_resolve' "$REPO/modules_addon_V1s" "$REPO/p2d2-civitas-addon-v1s.sh" | wc -l)"
+
+# ── D3 Kommentar am Zeilenende bleibt erhalten ───────────────────────────────
+cat > "$T/env3" <<EOF
+export P2D2_MAIN_DB_PASSWORD="old"   # K3 - kommentar
+EOF
+_p2d2_env_backup_reset
+_p2d2_env_mirror "$T/env3" "P2D2_MAIN_DB_PASSWORD" "new-value" >/dev/null 2>&1
+check "D3 Wert ersetzt" "new-value" "$(_p2d2_env_read "$T/env3" "P2D2_MAIN_DB_PASSWORD")"
+check "D3 Kommentar erhalten" "yes" "$(grep -q '# K3 - kommentar' "$T/env3" && echo yes || echo no)"
+before_sum3="$(sha256sum "$T/env3" | awk '{print $1}')"
+_p2d2_env_mirror "$T/env3" "P2D2_MAIN_DB_PASSWORD" "new-value" >/dev/null 2>&1
+check "D3 idempotent (Kommentar)" "$before_sum3" "$(sha256sum "$T/env3" | awk '{print $1}')"
+
+# ── D5 umask bleibt unverändert ───────────────────────────────────────────────
+u0="$(umask)"
+_p2d2_secret_apply ns p2d2-x-secret "DB_PASSWORD=abcdefghijklmnop" >/dev/null 2>&1
+check "D5 umask unverändert" "$u0" "$(umask)"
+
 rm -rf "$T"
