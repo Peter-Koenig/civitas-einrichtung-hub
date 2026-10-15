@@ -46,6 +46,9 @@ addon_validate_nonempty() {
     return 1
   fi
   if [[ "${val}" == *"CHANGEME"* ]]; then
+    if [[ "${allow_empty}" == "1" ]]; then
+      return 0
+    fi
     log_error "addon_validate_nonempty: ${name} enthält CHANGEME"
     return 1
   fi
@@ -217,9 +220,11 @@ addon_validate_config() {
     addon_validate_nonempty "${v}" || return 1
   done
   for key in MAIN DEVELOP DE1 DE2 FV; do
-    for v in "P2D2_${key}_DB_PASSWORD" "P2D2_${key}_WFST_PASSWORD" "P2D2_${key}_SESSION_SECRET"; do
-      addon_validate_nonempty "${v}" || return 1
-    done
+    # DB-Passwort darf leer/CHANGEME sein (leer = wird erzeugt, Turn 5);
+    # WFS-T-/Session-Secrets bleiben Pflicht.
+    addon_validate_nonempty "P2D2_${key}_DB_PASSWORD" 1 || return 1
+    addon_validate_nonempty "P2D2_${key}_WFST_PASSWORD" || return 1
+    addon_validate_nonempty "P2D2_${key}_SESSION_SECRET" || return 1
   done
 
   log_ok ".env.p2d2-addon validiert (Konfigurationsvertrag)"
