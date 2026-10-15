@@ -178,18 +178,26 @@ addon_compute_image_tag() {
   printf 'cfg-%s' "$(printf '%s' "${canonical}" | sha256sum | awk '{print substr($1,1,12)}')"
 }
 
+# _p2d2_is_managed_key <key> — wird der Key von addon_00 aufgelöst (DB_PASSWORD)?
+# (später um WFS-T-Keys erweiterbar).
+_p2d2_is_managed_key() { [[ "$1" == "DB_PASSWORD" ]]; }
+
 # _addon_ensure_secret <namespace> <name> <key=value>...
 # Merge der Keys in das Secret (vorhandene Keys bleiben erhalten, fehlende/geänderte
 # werden gesetzt). Ein von addon_00 vorangelegtes Teil-Secret (nur DB_PASSWORD)
-# blockiert die übrigen Keys nicht. Fail-fast: leere/CHANGEME-Werte brechen ab.
+# blockiert die übrigen Keys nicht. Fail-fast: leere/Platzhalter-Werte brechen ab.
 _addon_ensure_secret() {
   local ns="$1" name="$2"; shift 2
   local kv k v args=()
   for kv in "$@"; do
     k="${kv%%=*}"
     v="${kv#*=}"
-    if [[ -z "${v}" || "${v}" == "CHANGEME" ]]; then
-      log_error "Secret ${name}: Wert für '${k}' fehlt oder ist CHANGEME — bitte in .env.p2d2-addon setzen (P2D2_*)."
+    if _p2d2_pw_empty "$v"; then
+      if _p2d2_is_managed_key "$k"; then
+        log_error "Secret ${name}: '${k}' ist nicht aufgelöst (interner Fehler: addon_00 muss vorher laufen und die Variable exportieren)"
+      else
+        log_error "Secret ${name}: Wert für '${k}' fehlt oder ist ein Platzhalter — bitte in .env.p2d2-addon setzen (P2D2_*)."
+      fi
       return 1
     fi
     args+=("${k}=${v}")
@@ -245,7 +253,7 @@ apply_addon_secrets() {
       "SESSION_SECRET=$(_addon_get "P2D2_${key}_SESSION_SECRET")" || return 1
   done
 
-  log_ok "Basis- + Stage-Secrets aus .env.p2d2-addon befüllt (nur Erstanlage)"
+  log_ok "Basis- + Stage-Secrets befüllt (Merge: vorhandene Keys bleiben, geänderte werden aktualisiert)"
   return 0
 }
 
@@ -706,7 +714,7 @@ install_addon_frontend() {
   overlay_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../overlay_addon_V1s/k8s" && pwd)"
   local tag_dir="${VM_REMOTE_INSTALL_DIR:-/root/p2d2-addon}"
 
-  # 1) Secrets aus .env.p2d2-addon befüllen (Basis + 5 Stages, atomar, nur Erstanlage).
+  # 1) Secrets aus .env.p2d2-addon befüllen (Basis + 5 Stages, Merge).
   apply_addon_secrets || return 1
 
   # 2) Basis-ConfigMap generieren und anwenden (nicht-sensibel, Allowlist F1).

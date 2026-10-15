@@ -376,8 +376,9 @@ install_addon_postgresql() {
   # 1) Gemeinsame Rollen (P2D2-Admin/-RO): Passwörter auflösen + konvergieren.
   log "  Gemeinsame Rollen (P2D2-Admin-Role/-Admin, P2D2-RO-Role/-RO)"
   local admin_pw ro_pw admin_secret="p2d2-db-admin-secret"
-  admin_pw="$(_p2d2_pw_resolve "P2D2_ADMIN_DB_PASSWORD" "$db_ns" "$admin_secret" "admin")" || return 1
-  ro_pw="$(_p2d2_pw_resolve "P2D2_RO_DB_PASSWORD" "$db_ns" "$admin_secret" "ro")" || return 1
+  _p2d2_pw_resolve P2D2_ADMIN_DB_PASSWORD "$db_ns" "$admin_secret" admin || return 1
+  _p2d2_pw_resolve P2D2_RO_DB_PASSWORD    "$db_ns" "$admin_secret" ro    || return 1
+  admin_pw="${P2D2_ADMIN_DB_PASSWORD}"; ro_pw="${P2D2_RO_DB_PASSWORD}"
 
   # Cluster-seitig ablegen (dediziertes Secret, nur diese beiden Keys).
   _p2d2_secret_apply "$db_ns" "$admin_secret" "admin=${admin_pw}" "ro=${ro_pw}" \
@@ -427,7 +428,8 @@ SQL
     secret_name="p2d2-${fe_suffix}-secret"
     pw_var="P2D2_${stage}_DB_PASSWORD"
     old_pw="$(_p2d2_secret_get "${ADDON_NS}" "$secret_name" "DB_PASSWORD")"
-    stage_pw="$(_p2d2_pw_resolve "$pw_var" "${ADDON_NS}" "$secret_name" "DB_PASSWORD")" || return 1
+    _p2d2_pw_resolve "$pw_var" "${ADDON_NS}" "$secret_name" "DB_PASSWORD" || return 1
+    stage_pw="${!pw_var}"
 
     "${psql_pod[@]}" <<SQL
 SET log_statement = 'none';
