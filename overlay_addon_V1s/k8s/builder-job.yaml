@@ -5,7 +5,7 @@
 #   git clone -> npm ci -> npm run build:<stage> -> dist/ ins PVC
 #
 # Git-Auth: Token aus Secret p2d2-builder-git-auth. Das Secret wird NICHT von
-# diesem Manifest verwaltet, sondern separat von Peter befüllt (echte GitLab/
+# diesem Manifest verwaltet, sondern separat vom Betreiber befüllt (echte GitLab/
 # GitHub-Tokens) — siehe k8s/VARIABLES.md. Key je Provider:
 #   GitLab: gitlab-token  |  GitHub: github-token
 #

@@ -15,8 +15,8 @@ Werte**, sondern nur Name, Ablage, Kategorie, Quelle/Herkunft und Status.
 | **K1** | Aus p2d2-Standalone übernommen (Wert bekannt, Quelle dokumentiert). |
 | **K1-adaptiert** | Standalone-Wert wurde für die Cluster-Autarkie umgestellt. Original- UND Cluster-Ziel sind dokumentiert. |
 | **K2** | Während der Installation zufällig erzeugt, bleibt (kein Nachtrag nötig). |
-| **K3** | Noch leer/Platzhalter, muss von **Peter** befüllt werden. |
-| **K4** | Zufällig erzeugt, wird von **Peter** durch den echten Wert ersetzt. |
+| **K3** | Noch leer/Platzhalter, muss vom Betreiber befüllt werden. |
+| **K4** | Zufällig erzeugt, wird vom Betreiber durch den echten Wert ersetzt. |
 
 ## Ablage-Legende
 
@@ -51,11 +51,11 @@ Werte**, sondern nur Name, Ablage, Kategorie, Quelle/Herkunft und Status.
 
 | Variable | Ablage | Kategorie | Quelle / Herkunft | Status |
 |---|---|---|---|---|
-| `ALTCHA_HMAC_KEY` | base-secret | K1 | `.env.base` (echter Wert) | **CHANGEME** — Peter trägt Wert ein |
-| `SMTP_PASS` | base-secret | K1 | `.env.base` (echter Wert) | **CHANGEME** — Peter trägt Wert ein |
-| `OIDC_ISSUER` | base-secret | K3 | Keycloak-Realm-URL (ein Realm für alle Stages) | **CHANGEME** — Peter/Keycloak |
-| `OIDC_CLIENT_ID` | base-secret | K3 | Keycloak-OIDC-Client (ein Client, 5 Redirect-URIs) | **CHANGEME** — Peter/Keycloak |
-| `OIDC_CLIENT_SECRET` | base-secret | K4 | Keycloak-Client-Secret (echtes Secret) | **CHANGEME** — Peter ersetzt |
+| `ALTCHA_HMAC_KEY` | base-secret | K1 | `.env.base` (echter Wert) | **CHANGEME** — vom Betreiber einzutragen |
+| `SMTP_PASS` | base-secret | K1 | `.env.base` (echter Wert) | **CHANGEME** — vom Betreiber einzutragen |
+| `OIDC_ISSUER` | base-secret | K3 | Keycloak-Realm-URL (ein Realm für alle Stages) | **CHANGEME** — Betreiber/Keycloak |
+| `OIDC_CLIENT_ID` | base-secret | K3 | Keycloak-OIDC-Client (ein Client, 5 Redirect-URIs) | **CHANGEME** — Betreiber/Keycloak |
+| `OIDC_CLIENT_SECRET` | base-secret | K4 | Keycloak-Client-Secret (echtes Secret) | **CHANGEME** — vom Betreiber zu ersetzen |
 
 ## 3. Stage-Mapping (Übersicht der stage-spezifischen Werte)
 
@@ -91,7 +91,7 @@ Werte**, sondern nur Name, Ablage, Kategorie, Quelle/Herkunft und Status.
 
 | Variable | Ablage | Kategorie | Quelle / Herkunft | Status |
 |---|---|---|---|---|
-| `DB_PASSWORD` | `<stage>-secret` | K3 | Cluster-DB-Rolle `<DB_USER>` (Rotation durch Peter) | **CHANGEME** — Peter |
+| `DB_PASSWORD` | `<stage>-secret` | K3 | Cluster-DB-Rolle `<DB_USER>` (Rotation durch den Betreiber) | **CHANGEME** — vom Betreiber zu setzen |
 | `WFST_PASSWORD` (plain) | `<stage>-secret` | K1 | GeoServer-Secret `p2d2-geoserver-wfst-<ws>` | **CHANGEME** — aus GeoServer-Secret übernehmen |
 | `WFST_PW_<KEY>` | `<stage>-secret` | K1 | dito (suffigiert) | **CHANGEME** — aus GeoServer-Secret übernehmen |
 | `SESSION_SECRET` | `<stage>-secret` | K2 | zufällig generiert (bleibt) | **CHANGEME** — bei Installation generieren |
@@ -104,10 +104,10 @@ Werte**, sondern nur Name, Ablage, Kategorie, Quelle/Herkunft und Status.
 
 | Secret | Key | Kategorie | Quelle / Herkunft | Status |
 |---|---|---|---|---|
-| `p2d2-builder-git-auth` | `gitlab-token` | K3 | GitLab Deploy-/Access-Token | **vorhanden** (von Peter erzeugt) |
-| `p2d2-builder-git-auth` | `github-token` | K3 | GitHub Deploy-/PAT-Token | **vorhanden** (von Peter erzeugt) |
-| `p2d2-webhook-secrets` | `github-hmac-secret` | K3 | GitHub Webhook-HMAC-Secret | **vorhanden** (von Peter erzeugt) |
-| `p2d2-webhook-secrets` | `gitlab-webhook-token` | K3 | GitLab Webhook-Token | **vorhanden** (von Peter erzeugt) |
+| `p2d2-builder-git-auth` | `gitlab-token` | K3 | GitLab Deploy-/Access-Token | **vorhanden** (manuell erzeugt) |
+| `p2d2-builder-git-auth` | `github-token` | K3 | GitHub Deploy-/PAT-Token | **vorhanden** (manuell erzeugt) |
+| `p2d2-webhook-secrets` | `github-hmac-secret` | K3 | GitHub Webhook-HMAC-Secret | **vorhanden** (manuell erzeugt) |
+| `p2d2-webhook-secrets` | `gitlab-webhook-token` | K3 | GitLab Webhook-Token | **vorhanden** (manuell erzeugt) |
 
 > Diese beiden Secrets halten echte Werte und sind deshalb **bewusst aus den
 > Manifesten entfernt** worden (`builder-job.yaml` und `webhook-controller/deployment.yaml`
