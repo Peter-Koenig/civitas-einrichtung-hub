@@ -75,5 +75,51 @@ check "h kein changeme-Literal" "" "$hit"
 # ── (g) keine Passwörter per --from-literal (Prozessliste) ────────────────────
 check "g kein --from-literal Passwort" "0" \
   "$(grep -cE 'from-literal=.*(admin_pw|ro_pw|stage_pw|DB_PASSWORD)' "$REPO/modules_addon_V1s/addon_00_postgresql.sh")"
+check "g kein --from-literal in Bibliothek" "0" \
+  "$(grep -cE 'from-literal' "$REPO/modules_addon_V1s/addon_03_secrets.sh")"
+
+# ── C8(a) mehrere Variablen -> .bak enthält den Ausgangszustand ───────────────
+cat > "$T/env2" <<EOF
+# Kopf
+export P2D2_MAIN_DB_PASSWORD="orig-main"
+export P2D2_RO_DB_PASSWORD="orig-ro"
+EOF
+_p2d2_env_backup_reset
+_p2d2_env_mirror "$T/env2" "P2D2_MAIN_DB_PASSWORD" "new-main" >/dev/null 2>&1
+_p2d2_env_mirror "$T/env2" "P2D2_RO_DB_PASSWORD" "new-ro" >/dev/null 2>&1
+check "a .bak = Ausgangszustand (main)" "orig-main" "$(sed -n 's/^export P2D2_MAIN_DB_PASSWORD="\([^"]*\)"/\1/p' "$T/env2.bak")"
+check "a .bak = Ausgangszustand (ro)" "orig-ro" "$(sed -n 's/^export P2D2_RO_DB_PASSWORD="\([^"]*\)"/\1/p' "$T/env2.bak")"
+
+# ── C8(c) Validierung: Sonderzeichen/zu kurz -> abgelehnt ─────────────────────
+: > "$LOGBUF"
+_p2d2_pw_validate "P2D2_MAIN_DB_PASSWORD" "abc'def" >/dev/null 2>&1
+check "c Hochkomma abgelehnt" "1" "$?"
+_p2d2_pw_validate "P2D2_MAIN_DB_PASSWORD" 'abc$def' >/dev/null 2>&1
+check "c Dollar abgelehnt" "1" "$?"
+_p2d2_pw_validate "P2D2_MAIN_DB_PASSWORD" "short" >/dev/null 2>&1
+check "c zu kurz abgelehnt" "1" "$?"
+_p2d2_pw_validate "P2D2_MAIN_DB_PASSWORD" "abcdefghijklmnopqrstuvwxyz" >/dev/null 2>&1
+check "c gültiger Wert ok" "0" "$?"
+check "c Fehlermeldung ohne Wert" "no" "$(grep -q "abc'def" "$LOGBUF" && echo yes || echo no)"
+
+# ── C8(d) Host-Merge: nur verwaltete Zeilen, ein .bak, Mode 600 ───────────────
+cat > "$T/vm-env" <<EOF
+export P2D2_MAIN_DB_PASSWORD="vm-main"
+export P2D2_MAIN_SESSION_SECRET="vm-session"
+export UNRELATED="keep-me"
+EOF
+cat > "$T/host-env" <<EOF
+# Kopf
+export P2D2_MAIN_DB_PASSWORD="host-old"
+export P2D2_MAIN_SESSION_SECRET="host-session"
+export UNRELATED="keep-me"
+EOF
+_p2d2_env_backup_reset
+_p2d2_env_merge_from "$T/vm-env" "$T/host-env" >/dev/null 2>&1
+check "d DB_PASSWORD übernommen" "vm-main" "$(sed -n 's/^export P2D2_MAIN_DB_PASSWORD="\([^"]*\)"/\1/p' "$T/host-env")"
+check "d SESSION_SECRET unverändert" "host-session" "$(sed -n 's/^export P2D2_MAIN_SESSION_SECRET="\([^"]*\)"/\1/p' "$T/host-env")"
+check "d UNRELATED unverändert" "keep-me" "$(sed -n 's/^export UNRELATED="\([^"]*\)"/\1/p' "$T/host-env")"
+check "d .bak vorhanden" "yes" "$([[ -f "$T/host-env.bak" ]] && echo yes || echo no)"
+check "d .bak Mode 600" "600" "$(stat -c '%a' "$T/host-env.bak")"
 
 rm -rf "$T"
