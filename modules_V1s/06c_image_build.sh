@@ -83,6 +83,19 @@ _v1s_dockerfile_uses_bake_context() {
   return 1
 }
 
+# _v1s_reset_portal_config — setzt ausschließlich portal-config/ auf den
+# getrackten Zustand zurück. Schritt 2 benennt portal-config/default → <instance>
+# um: für Git sind danach die getrackten Dateien unter default/ gelöscht und
+# <instance>/ ist unversioniert. Ein erneuter Lauf muss (a) das unversionierte
+# <instance>/ entfernen und (b) die gelöschten Dateien unter default/ aus dem
+# Index wiederherstellen — sonst bricht Schritt 2 mit „Weder … noch …“ ab
+# (v. a. im ungepinnten Pfad, wo checkout/pull gelöschte Dateien nicht
+# wiederherstellen). NUR portal-config/ anfassen, nichts anderes im Klon.
+_v1s_reset_portal_config() {
+  git -C "${V1S_FORK_PATH}" clean -fdq -- portal-config/ || true
+  git -C "${V1S_FORK_PATH}" checkout -- portal-config/ 2>/dev/null || true
+}
+
 
 # ── Hauptfunktion: Portal-Backend-Image bauen und importieren ────────────────
 # Schritt 2.0b — zwischen clone_civitas_repo() und apply_overlay().
@@ -93,11 +106,9 @@ build_geoportal_backend_image() {
   # Klon direkt in der Ziel-VM, kein sdt-Zwischenschritt.
   if [[ -d "${V1S_FORK_PATH}/.git" ]]; then
     log "Soft-Fork bereits vorhanden: ${V1S_FORK_PATH} — aktualisiere …"
-    # Build-Workspace: unversionierte Artefakte unter portal-config/ aus einem
-    # Vorlauf entfernen (Schritt 2 benennt default → <instance> um; beim zweiten
-    # Lauf bliebe sonst <instance> liegen und käme zusätzlich ins Image).
-    # NUR portal-config/ anfassen, nichts anderes im Klon.
-    git -C "${V1S_FORK_PATH}" clean -fdq -- portal-config/ || true
+    # Build-Workspace: portal-config/ auf den getrackten Zustand zurück (siehe
+    # _v1s_reset_portal_config). NUR portal-config/ anfassen, nichts anderes.
+    _v1s_reset_portal_config
     if [[ -n "${V1S_FORK_REF:-}" ]]; then
       # Gepinnter Stand: nur fetchen + detach, KEIN pull --ff-only (der Pin darf
       # nicht durch einen Branch-Vorlauf überschrieben werden). Tags und
