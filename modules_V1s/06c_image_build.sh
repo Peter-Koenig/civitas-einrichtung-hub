@@ -93,12 +93,21 @@ build_geoportal_backend_image() {
   # Klon direkt in der Ziel-VM, kein sdt-Zwischenschritt.
   if [[ -d "${V1S_FORK_PATH}/.git" ]]; then
     log "Soft-Fork bereits vorhanden: ${V1S_FORK_PATH} — aktualisiere …"
+    # Build-Workspace: unversionierte Artefakte unter portal-config/ aus einem
+    # Vorlauf entfernen (Schritt 2 benennt default → <instance> um; beim zweiten
+    # Lauf bliebe sonst <instance> liegen und käme zusätzlich ins Image).
+    # NUR portal-config/ anfassen, nichts anderes im Klon.
+    git -C "${V1S_FORK_PATH}" clean -fdq -- portal-config/ || true
     if [[ -n "${V1S_FORK_REF:-}" ]]; then
       # Gepinnter Stand: nur fetchen + detach, KEIN pull --ff-only (der Pin darf
-      # nicht durch einen Branch-Vorlauf überschrieben werden).
+      # nicht durch einen Branch-Vorlauf überschrieben werden). Tags und
+      # abgekürzte Hashes werden LOKAL aufgelöst (der --single-branch-Klon
+      # enthält die komplette History von ${V1S_FORK_BRANCH}); Commits außerhalb
+      # dieser History brauchen einen vollständigen Hash und einen Server, der
+      # das Holen per SHA erlaubt.
       git -C "${V1S_FORK_PATH}" fetch origin --tags "${V1S_FORK_BRANCH}" \
         || log_warn "git fetch fehlgeschlagen — fahre mit vorhandenem Stand fort"
-      git -C "${V1S_FORK_PATH}" checkout --detach "${V1S_FORK_REF}" \
+      git -C "${V1S_FORK_PATH}" checkout --force --detach "${V1S_FORK_REF}" \
         || { log_error "V1S_FORK_REF '${V1S_FORK_REF}' nicht auflösbar — Abbruch"; exit 1; }
     else
       git -C "${V1S_FORK_PATH}" fetch origin "${V1S_FORK_BRANCH}" \
@@ -116,8 +125,11 @@ build_geoportal_backend_image() {
       "${V1S_FORK_URL}" "${V1S_FORK_PATH}" \
       || { log_error "Soft-Fork-Klon fehlgeschlagen — Abbruch"; exit 1; }
     if [[ -n "${V1S_FORK_REF:-}" ]]; then
-      git -C "${V1S_FORK_PATH}" fetch origin --tags "${V1S_FORK_REF}" \
-        || { log_error "V1S_FORK_REF '${V1S_FORK_REF}' nicht holbar — Abbruch"; exit 1; }
+      # Tags OHNE Refspec holen — ein abgekürzter Hash ist nicht als Refspec
+      # fetchbar ("couldn't find remote ref"); er wird lokal aufgelöst. Ein
+      # Fehlschlag ist nur eine Warnung, fatal ist allein der checkout --detach.
+      git -C "${V1S_FORK_PATH}" fetch origin --tags \
+        || log_warn "git fetch --tags fehlgeschlagen — fahre mit vorhandenem Stand fort"
       git -C "${V1S_FORK_PATH}" checkout --detach "${V1S_FORK_REF}" \
         || { log_error "V1S_FORK_REF '${V1S_FORK_REF}' nicht auflösbar — Abbruch"; exit 1; }
     else
