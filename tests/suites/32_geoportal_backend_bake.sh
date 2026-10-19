@@ -26,6 +26,9 @@ is_installed() {
 source "$REPO/modules_V1s/06c_image_build.sh"
 set +e
 
+# Echtes Git für Fall M (vor PATH-Ergänzung um das Stub-Verzeichnis sichern).
+REAL_PATH="$PATH"
+
 STUBS="$T/stubs"
 mkdir -p "$STUBS"
 export PATH="$STUBS:$PATH"
@@ -59,9 +62,11 @@ case "$cmd" in
     mkdir -p "$dst/.git"
     ;;
   fetch)
-    case "$*" in
-      *" --tags "*) exit 128 ;;   # --tags MIT Refspec (abgekürzter Hash nicht holbar)
-    esac
+    if [ "${GIT_FETCH_FAIL:-0}" = "1" ]; then
+      case "$*" in
+        *" --tags "*) exit 128 ;;   # --tags MIT Refspec (abgekürzter Hash nicht holbar)
+      esac
+    fi
     ;;
   checkout)
     if [ "${GIT_CHECKOUT_FAIL:-0}" = "1" ]; then
@@ -104,6 +109,7 @@ STUB
 cat > "$STUBS/k3s" <<'STUB'
 #!/usr/bin/env bash
 printf 'k3s %s\n' "$*" >> "${K3S_LOG:?}"
+cat >/dev/null
 exit 0
 STUB
 
@@ -138,6 +144,7 @@ reset_flags() {
   export FAKE_NO_DOCKER=0
   export DOCKER_INSPECT_FAIL=0
   export GIT_CHECKOUT_FAIL=0
+  export GIT_FETCH_FAIL=0
   export V1S_FORK_REF=""
 }
 
@@ -166,6 +173,7 @@ check "A Plattform linux/amd64"       "yes" "$(grep -q '\*\.platform=linux/amd64
 check "A Tag überschrieben"           "yes" "$(grep -q 'geoportal_backend.tags=geoportal_backend:v1s-test' "$DOCKER_LOG" && echo yes || echo no)"
 check "A kein docker build"           "no"  "$(grep -q 'docker build ' "$DOCKER_LOG" && echo yes || echo no)"
 check "A Image verifiziert (inspect)" "yes" "$(grep -q 'image inspect geoportal_backend:v1s-test' "$DOCKER_LOG" && echo yes || echo no)"
+check "A k3s ctr import (k8s.io)"     "yes" "$(grep -q 'ctr -n k8s.io images import -' "$K3S_LOG" && echo yes || echo no)"
 
 # ── (B) Fallback bei fehlendem Bake-Target ─────────────────────────────────────
 setup_fork "nobake"; reset_flags; reset_logs
@@ -197,11 +205,19 @@ check "D unbekannte Arch -> Exit 1" "1" "$?"
 check "D Arch-Meldung"               "yes" "$(grep -q 'Nicht unterstützte Host-Architektur' "$LOGBUF" && echo yes || echo no)"
 
 # ── (E) Gepinnter Fork-Stand (vorhandener Klon) wird nicht überschrieben ──────
+# E1: Fetch-Erfolgsfall.
 setup_fork "bake"; reset_flags; reset_logs
-export V1S_FORK_REF="c8d6b74"
+export V1S_FORK_REF="c8d6b74" GIT_FETCH_FAIL=0
 run_build
-check "E checkout --detach"     "yes" "$(grep -q 'checkout --force --detach c8d6b74' "$GIT_LOG" && echo yes || echo no)"
-check "E kein pull --ff-only"   "no"  "$(grep -q 'pull --ff-only' "$GIT_LOG" && echo yes || echo no)"
+check "E1 checkout --detach"   "yes" "$(grep -q 'checkout --force --detach c8d6b74' "$GIT_LOG" && echo yes || echo no)"
+check "E1 kein pull --ff-only" "no"  "$(grep -q 'pull --ff-only' "$GIT_LOG" && echo yes || echo no)"
+
+# E2: Fetch-Warnpfad (fetch schlägt fehl, checkout läuft trotzdem).
+setup_fork "bake"; reset_flags; reset_logs
+export V1S_FORK_REF="c8d6b74" GIT_FETCH_FAIL=1
+run_build
+check "E2 checkout --detach"   "yes" "$(grep -q 'checkout --force --detach c8d6b74' "$GIT_LOG" && echo yes || echo no)"
+check "E2 kein pull --ff-only" "no"  "$(grep -q 'pull --ff-only' "$GIT_LOG" && echo yes || echo no)"
 
 # ── (F) Ungepinnt -> pull --ff-only + Warnung ─────────────────────────────────
 setup_fork "bake"; reset_flags; reset_logs
@@ -255,5 +271,35 @@ export V1S_FORK_REF="c8d6b74" GIT_CHECKOUT_FAIL=1
 run_build
 check "L checkout fail -> Exit 1"  "1"   "$?"
 check "L Fehlermeldung"            "yes" "$(grep -q 'nicht auflösbar' "$LOGBUF" && echo yes || echo no)"
+
+# ── (M) Echtes Git: _v1s_reset_portal_config stellt default/ wieder her ──────
+MR="$T/repo-m"
+mkdir -p "$MR"
+(
+  export PATH="$REAL_PATH"
+  cd "$MR"
+  git init -q -b main 2>/dev/null
+  mkdir -p portal-config/default
+  echo "x" > portal-config/default/x.txt
+  echo "y" > outside.txt
+  git add portal-config/default/x.txt outside.txt
+  git -c user.name=test -c user.email=test@example.invalid commit -q -m basis
+)
+# Schritt 2 nachbilden: default -> Standard (getrackt gelöscht, Standard unversioniert).
+mv "$MR/portal-config/default" "$MR/portal-config/Standard"
+# Unversionierte Datei außerhalb von portal-config/ anlegen.
+echo "keep" > "$MR/outside-untracked.txt"
+
+export V1S_FORK_PATH="$MR"
+( export PATH="$REAL_PATH"; _v1s_reset_portal_config >/dev/null 2>&1 )
+check "M Exit 0"                         "0"   "$?"
+check "M default/x.txt wiederhergestellt" "yes" "$([ -f "$MR/portal-config/default/x.txt" ] && echo yes || echo no)"
+check "M Standard entfernt"              "no"  "$([ -d "$MR/portal-config/Standard" ] && echo yes || echo no)"
+check "M untracked außerhalb bleibt"      "yes" "$([ -f "$MR/outside-untracked.txt" ] && echo yes || echo no)"
+check "M getrackte Datei außerhalb bleibt" "yes" "$([ -f "$MR/outside.txt" ] && echo yes || echo no)"
+
+( export PATH="$REAL_PATH"; _v1s_reset_portal_config >/dev/null 2>&1 )
+check "M zweiter Aufruf Exit 0"          "0"   "$?"
+check "M default/x.txt nach 2. Aufruf"    "yes" "$([ -f "$MR/portal-config/default/x.txt" ] && echo yes || echo no)"
 
 rm -rf "$T"
