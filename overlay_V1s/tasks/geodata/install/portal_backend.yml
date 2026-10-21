@@ -14,7 +14,6 @@
 #      Image, statt einen Registry-Pull zu versuchen), sonst "Always".
 #
 # Lauf-Referenz: ai-runs/2026-08-31-v1s-installationsskript-lauffaehig
-#   perplexity/002-perplexity-followup-portal-backend-image-referenz-*.md
 ---
 - name: "Portal Backend: Get Admin credentials"
   kubernetes.core.k8s_info:

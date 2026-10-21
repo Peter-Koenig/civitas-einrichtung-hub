@@ -120,6 +120,7 @@ V1S_INSTANCE_NAME="Standard"                           # Instanzname, case-sensi
 V1S_IMAGE_TAG="${V1S_IMAGE_TAG:-v1s-local}"            # Lokaler Image-Tag (z. B. v1s-YYYY-MM-DD)
 V1S_IMAGE_REF="geoportal_backend:${V1S_IMAGE_TAG}"     # Vollständige Image-Referenz für Build + Import
 V1S_DOCKER_INSTALLED_BY_SCRIPT="false"                 # Laufzeit-Flag: Docker vom Skript installiert? (steuert Deinstallation)
+V1S_FORK_REF="${V1S_FORK_REF:-}"                       # optional: Soft-Fork auf Tag/Commit pinnen (leer = Branch-HEAD, ungepinnt)
 
 # ── Timeouts ─────────────────────────────────────────────────────────────────
 TIMEOUT_CC_CLI_EXEC=2700             # Sekunden für cc_cli exec (45 Min; Monitoring-Reaktivierung Turn 5 lädt zusätzliche Helm-Charts)

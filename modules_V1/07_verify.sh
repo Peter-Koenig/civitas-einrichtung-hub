@@ -13,7 +13,7 @@
 # See the Licence for the specific language governing permissions and
 # limitations under the Licence.
 #
-# 07_verify.sh — Phase 3: Verifikation und Fehlerreport (Orchestrator)
+# 07_verify.sh — Phase 3: Verifikation und Fehlerreport
 #
 # Siehe: skriptarchitektur.md (V1), Modul 07
 # Siehe: installationsphasen-und-abnahme.md (V1), Phase 3

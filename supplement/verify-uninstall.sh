@@ -457,6 +457,13 @@ else
   note_reste "p2d2-Operator-Secrets vorhanden:${op_secrets}"
 fi
 
+# AddOn-DB-Admin-/RO-Secret (Turn 5, dediziertes Secret im DB-Namespace).
+if kubectl -n "$DBNS" get secret p2d2-db-admin-secret >/dev/null 2>&1; then
+  note_reste "p2d2-db-admin-secret vorhanden (AddOn-DB-Admin-/RO-Passwörter)"
+else
+  log_ok "p2d2-db-admin-secret entfernt"
+fi
+
 # ── 6. Frontend-Images (containerd) ───────────────────────────────────────────
 log ""
 log "== 6. Frontend-Images (containerd) =="

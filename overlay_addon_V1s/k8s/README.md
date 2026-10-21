@@ -39,7 +39,7 @@ erzeugt `modules_addon_V1s/addon_30_frontend.sh` aus `.env.p2d2-addon`.
 ## Secrets
 
 - `p2d2-base-secret` + `p2d2-<stage>-secret` sind mit `CHANGEME`-Platzhaltern
-  angelegt und werden von Peter befüllt (siehe `VARIABLES.md`, Kategorien K1–K4).
+  angelegt und werden vom Betreiber befüllt (siehe `VARIABLES.md`, Kategorien K1–K4).
 - Die echten Git-/Webhook-Secrets (`p2d2-builder-git-auth`, `p2d2-webhook-secrets`)
   werden **nicht** über diese Manifeste angelegt/überschrieben; sie sind AddOn-scoped
   und werden beim Uninstall (`uninstall_addon_frontend()`) mit entfernt.

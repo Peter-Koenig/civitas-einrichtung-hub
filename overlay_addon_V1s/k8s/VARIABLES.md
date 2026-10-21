@@ -15,8 +15,8 @@ Werte**, sondern nur Name, Ablage, Kategorie, Quelle/Herkunft und Status.
 | **K1** | Aus p2d2-Standalone übernommen (Wert bekannt, Quelle dokumentiert). |
 | **K1-adaptiert** | Standalone-Wert wurde für die Cluster-Autarkie umgestellt. Original- UND Cluster-Ziel sind dokumentiert. |
 | **K2** | Während der Installation zufällig erzeugt, bleibt (kein Nachtrag nötig). |
-| **K3** | Noch leer/Platzhalter, muss von **Peter** befüllt werden. |
-| **K4** | Zufällig erzeugt, wird von **Peter** durch den echten Wert ersetzt. |
+| **K3** | Noch leer/Platzhalter, muss vom Betreiber befüllt werden. |
+| **K4** | Zufällig erzeugt, wird vom Betreiber durch den echten Wert ersetzt. |
 
 ## Ablage-Legende
 
@@ -51,11 +51,27 @@ Werte**, sondern nur Name, Ablage, Kategorie, Quelle/Herkunft und Status.
 
 | Variable | Ablage | Kategorie | Quelle / Herkunft | Status |
 |---|---|---|---|---|
-| `ALTCHA_HMAC_KEY` | base-secret | K1 | `.env.base` (echter Wert) | **CHANGEME** — Peter trägt Wert ein |
-| `SMTP_PASS` | base-secret | K1 | `.env.base` (echter Wert) | **CHANGEME** — Peter trägt Wert ein |
-| `OIDC_ISSUER` | base-secret | K3 | Keycloak-Realm-URL (ein Realm für alle Stages) | **CHANGEME** — Peter/Keycloak |
-| `OIDC_CLIENT_ID` | base-secret | K3 | Keycloak-OIDC-Client (ein Client, 5 Redirect-URIs) | **CHANGEME** — Peter/Keycloak |
-| `OIDC_CLIENT_SECRET` | base-secret | K4 | Keycloak-Client-Secret (echtes Secret) | **CHANGEME** — Peter ersetzt |
+| `ALTCHA_HMAC_KEY` | base-secret | K1 | `.env.base` (echter Wert) | **CHANGEME** — vom Betreiber einzutragen |
+| `SMTP_PASS` | base-secret | K1 | `.env.base` (echter Wert) | **CHANGEME** — vom Betreiber einzutragen |
+| `OIDC_ISSUER` | base-secret | K3 | Keycloak-Realm-URL (ein Realm für alle Stages) | **CHANGEME** — Betreiber/Keycloak |
+| `OIDC_CLIENT_ID` | base-secret | K3 | Keycloak-OIDC-Client (ein Client, 5 Redirect-URIs) | **CHANGEME** — Betreiber/Keycloak |
+| `OIDC_CLIENT_SECRET` | base-secret | K4 | Keycloak-Client-Secret (echtes Secret) | **CHANGEME** — vom Betreiber zu ersetzen |
+
+## 2a. DB-Admin-/RO-Secret (`p2d2-db-admin-secret`, Namespace `cc-prd-database-stack`)
+
+Diese beiden Passwörter gehören zu den gemeinsamen Datenbank-Rollen (nicht zu den
+Frontend-Secrets) und werden im Datenbank-Namespace abgelegt.
+
+| Variable | Ablage | Kategorie | Quelle / Herkunft | Status |
+|---|---|---|---|---|
+| `P2D2_ADMIN_DB_PASSWORD` | `p2d2-db-admin-secret` Key `admin` | K2 | aus `.env` bzw. Secret übernommen, sonst erzeugt | wird erzeugt (bei leer/Platzhalter) |
+| `P2D2_RO_DB_PASSWORD` | `p2d2-db-admin-secret` Key `ro` | K2 | dito | wird erzeugt (bei leer/Platzhalter) |
+
+Rangfolge je Passwort: (1) Wert aus der Umgebung/`.env`, (2) sonst vorhandenes
+Cluster-Secret, (3) sonst zufällig erzeugt. Die Werte werden bei der Installation
+in der `.env.p2d2-addon` gespiegelt und nach dem VM-Lauf zurück in die Host-`.env`
+übernommen (nur diese verwalteten Variablen). Vor der ersten Änderung wird genau
+ein Backup `<datei>.bak` (Modus 600) je Lauf angelegt.
 
 ## 3. Stage-Mapping (Übersicht der stage-spezifischen Werte)
 
@@ -91,7 +107,7 @@ Werte**, sondern nur Name, Ablage, Kategorie, Quelle/Herkunft und Status.
 
 | Variable | Ablage | Kategorie | Quelle / Herkunft | Status |
 |---|---|---|---|---|
-| `DB_PASSWORD` | `<stage>-secret` | K3 | Cluster-DB-Rolle `<DB_USER>` (Rotation durch Peter) | **CHANGEME** — Peter |
+| `DB_PASSWORD` | `<stage>-secret` | K2 | aus `.env` bzw. Secret übernommen, sonst erzeugt | wird erzeugt (bei leer/Platzhalter) |
 | `WFST_PASSWORD` (plain) | `<stage>-secret` | K1 | GeoServer-Secret `p2d2-geoserver-wfst-<ws>` | **CHANGEME** — aus GeoServer-Secret übernehmen |
 | `WFST_PW_<KEY>` | `<stage>-secret` | K1 | dito (suffigiert) | **CHANGEME** — aus GeoServer-Secret übernehmen |
 | `SESSION_SECRET` | `<stage>-secret` | K2 | zufällig generiert (bleibt) | **CHANGEME** — bei Installation generieren |
@@ -104,10 +120,10 @@ Werte**, sondern nur Name, Ablage, Kategorie, Quelle/Herkunft und Status.
 
 | Secret | Key | Kategorie | Quelle / Herkunft | Status |
 |---|---|---|---|---|
-| `p2d2-builder-git-auth` | `gitlab-token` | K3 | GitLab Deploy-/Access-Token | **vorhanden** (von Peter erzeugt) |
-| `p2d2-builder-git-auth` | `github-token` | K3 | GitHub Deploy-/PAT-Token | **vorhanden** (von Peter erzeugt) |
-| `p2d2-webhook-secrets` | `github-hmac-secret` | K3 | GitHub Webhook-HMAC-Secret | **vorhanden** (von Peter erzeugt) |
-| `p2d2-webhook-secrets` | `gitlab-webhook-token` | K3 | GitLab Webhook-Token | **vorhanden** (von Peter erzeugt) |
+| `p2d2-builder-git-auth` | `gitlab-token` | K3 | GitLab Deploy-/Access-Token | **vorhanden** (manuell erzeugt) |
+| `p2d2-builder-git-auth` | `github-token` | K3 | GitHub Deploy-/PAT-Token | **vorhanden** (manuell erzeugt) |
+| `p2d2-webhook-secrets` | `github-hmac-secret` | K3 | GitHub Webhook-HMAC-Secret | **vorhanden** (manuell erzeugt) |
+| `p2d2-webhook-secrets` | `gitlab-webhook-token` | K3 | GitLab Webhook-Token | **vorhanden** (manuell erzeugt) |
 
 > Diese beiden Secrets halten echte Werte und sind deshalb **bewusst aus den
 > Manifesten entfernt** worden (`builder-job.yaml` und `webhook-controller/deployment.yaml`
@@ -147,12 +163,10 @@ ist im `central-db`-Cluster konfiguriert. → `DB_NAME: p2d2` ist korrekt gesetz
 
 ## Offene Punkte / Folgearbeit
 
-1. **Zitadel→Keycloak im Code (blockiert den Build).** Der Quellcode referenziert
-   weiterhin `ZITADEL_ISSUER/CLIENT_ID/CLIENT_SECRET/PROJECT_ID/ORG_ID`
-   (`astro.config.mjs`-Env-Schema, `src/lib/auth/oidc-client.ts`,
-   `src/pages/api/auth/{login,logout,callback}.ts`, `src/lib/auth/session.ts`,
-   `packages/core/src/preferences/metadata-parser.ts`). Erst nach diesem Refactor
-   akzeptiert der Build die hier auf `OIDC_*` umbenannten Variablen.
+1. **OIDC-Refactor umgesetzt.** Der Code nutzt `OIDC_*` statt `ZITADEL_*`;
+   verblieben ist nur der optionale Zitadel-Fallback `OIDC_ZITADEL_PROJECT_ID`
+   (Zitadel-Scopes/-Claims bei gesetzter Projekt-ID). Die auf `OIDC_*`
+   umbenannten Variablen werden vom Build akzeptiert.
 2. **Builder-Job-Env.** Der Webhook-Controller (`webhook-controller/index.js`,
    `createBuilderJob`) injiziert bislang keine Build-Env-Variablen — der erzeugte
    Job braucht ebenfalls `envFrom` (base + stage), analog zur Referenz in
