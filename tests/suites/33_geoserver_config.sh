@@ -22,11 +22,24 @@ export CURL_LOG="$T/curl.log"
 export CURL_BODY_LOG="$T/curl-body.log"
 export CURL_STDIN_LOG="$T/curl-stdin.log"
 export KUBECTL_LOG="$T/kubectl.log"
+export JQ_LOG="$T/jq.log"
 
 # Stub-Verzeichnis voranstellen (überschreibt die globalen tests/stubs/*).
 STUBS="$T/stubs"
 mkdir -p "$STUBS"
 export PATH="$STUBS:$PATH"
+
+# Datastore-Konfiguration für alle Läufe (C2) + DB-Testpasswort (nicht-sensibel).
+export P2D2_BASE_DB_HOST="central-db.test.svc.cluster.local"
+export P2D2_BASE_DB_PORT="5432"
+export P2D2_BASE_DB_NAME="p2d2"
+export P2D2_MAIN_DB_USER="P2D2-MAIN"
+export P2D2_DEVELOP_DB_USER="P2D2-DEVELOP"
+export P2D2_DE1_DB_USER="P2D2-DE1"
+export P2D2_DE2_DB_USER="P2D2-DE2"
+export P2D2_FV_DB_USER="P2D2-FV"
+DB_PW="dbpassword1234567890"
+DB_PW_B64="ZGJwYXNzd29yZDEyMzQ1Njc4OTA="
 
 # ── curl-Stub (GeoServer-REST, zustandsbehaftet) ──────────────────────────────
 cat > "$STUBS/curl" <<'STUB'
@@ -62,6 +75,7 @@ S="${GS_STATE_DIR:?}"
 has_role() { grep -qx "$1" "$S/roles.list" 2>/dev/null; }
 has_user() { grep -qx "$1" "$S/users.list" 2>/dev/null; }
 has_ws()   { grep -qx "$1" "$S/workspaces.list" 2>/dev/null; }
+has_ds()   { grep -qx "$2" "$S/ds/$1.list" 2>/dev/null; }
 
 roles_json() {
   printf '{"roles":['
@@ -108,6 +122,20 @@ workspaces_json() {
     done < "$S/workspaces.list"
   fi
   printf ']}}'
+}
+datastores_json() {
+  if [ -f "$S/ds/$1.list" ]; then
+    printf '{"dataStores":{"dataStore":['
+    local first=1 d
+    while IFS= read -r d; do
+      [ -n "$d" ] || continue
+      [ "$first" = "1" ] || printf ','
+      printf '{"name":"%s","href":""}' "$d"; first=0
+    done < "$S/ds/$1.list"
+    printf ']}}'
+  else
+    printf '{"dataStores":""}'
+  fi
 }
 
 code="200"; body=""
@@ -203,6 +231,56 @@ case "$url" in
     esac ;;
   *"/rest/workspaces.json")
     body="$(workspaces_json)" ;;
+  *"/rest/workspaces/"*"/datastores.json")
+    ws="${url#*/rest/workspaces/}"; ws="${ws%%/*}"
+    body="$(datastores_json "$ws")" ;;
+  *"/featuretypes.json"*)
+    if [ "${GS_LIST_AVAILABLE_FAIL:-0}" = "1" ]; then code=500
+    else body='{"list":{"string":["a","b"]}}'; code=200; fi ;;
+  *"/rest/workspaces/"*"/datastores/"*".json")
+    ws="${url#*/rest/workspaces/}"; ws="${ws%%/*}"
+    ds="${url#*/datastores/}"; ds="${ds%.json}"
+    if [ -f "$S/ds/$ws/$ds.json" ]; then body="$(cat "$S/ds/$ws/$ds.json")"; code=200
+    else code=404; fi ;;
+  *"/rest/workspaces/"*"/datastores")
+    ws="${url#*/rest/workspaces/}"; ws="${ws%%/*}"
+    case "$method" in
+      POST)
+        if [ -n "$body_file" ] && [ -f "$body_file" ]; then
+          ds="$(jq -r '.dataStore.name // empty' "$body_file" 2>/dev/null)"
+          if [ -n "$ds" ]; then
+            mkdir -p "$S/ds/$ws"
+            cp "$body_file" "$S/ds/$ws/$ds.json"
+            grep -qx "$ds" "$S/ds/$ws.list" 2>/dev/null || printf '%s\n' "$ds" >> "$S/ds/$ws.list"
+            code=201
+          else code=500; fi
+        else code=500; fi ;;
+      *) code=500 ;;
+    esac ;;
+  *"/rest/workspaces/"*"/datastores/"*)
+    ws="${url#*/rest/workspaces/}"; ws="${ws%%/*}"
+    ds="${url##*/datastores/}"
+    case "$method" in
+      PUT)
+        if [ -n "$body_file" ] && [ -f "$body_file" ] && [ -f "$S/ds/$ws/$ds.json" ]; then
+          cp "$body_file" "$S/ds/$ws/$ds.json"
+          code=200
+        else code=404; fi ;;
+      DELETE)
+        if [ "${GS_DELETE_FAIL:-0}" = "1" ]; then
+          [ -n "${GS_403_BODY:-}" ] && body="$GS_403_BODY"
+          code=500
+        elif [ "${GS_DS_NONEMPTY:-0}" = "1" ] && [ -f "$S/ds/$ws/$ds.json" ]; then
+          [ -n "${GS_403_BODY:-}" ] && body="$GS_403_BODY"
+          code=403
+        elif [ -f "$S/ds/$ws/$ds.json" ]; then
+          rm -f "$S/ds/$ws/$ds.json"
+          grep -vx "$ds" "$S/ds/$ws.list" > "$S/ds/$ws.list.tmp" 2>/dev/null || true
+          mv "$S/ds/$ws.list.tmp" "$S/ds/$ws.list"
+          code=200
+        else code=404; fi ;;
+      *) code=500 ;;
+    esac ;;
   *"/rest/namespaces/"*".json")
     ws="${url##*/rest/namespaces/}"; ws="${ws%.json}"
     if [ -f "$S/namespaces/$ws.uri" ]; then
@@ -238,7 +316,9 @@ case "$url" in
           mv "$S/workspaces.list.tmp" "$S/workspaces.list"
           rm -f "$S/namespaces/$ws.uri"
           code=404
-        elif [ "${GS_WS_NONEMPTY:-0}" = "1" ] && has_ws "$ws"; then code=403
+        elif [ "${GS_WS_NONEMPTY:-0}" = "1" ] && has_ws "$ws"; then
+          [ -n "${GS_403_BODY:-}" ] && body="$GS_403_BODY"
+          code=403
         elif has_ws "$ws"; then
           grep -vx "$ws" "$S/workspaces.list" > "$S/workspaces.list.tmp" 2>/dev/null || true
           mv "$S/workspaces.list.tmp" "$S/workspaces.list"
@@ -302,6 +382,9 @@ case "$o_val" in
   jsonpath=*.data.password*)
     if [ -f "$S/secrets/$name.b64" ]; then cat "$S/secrets/$name.b64"; exit 0; fi
     exit 1 ;;
+  jsonpath=*.data.DB_PASSWORD*)
+    if [ -f "$S/secrets/$name.dbpw" ]; then cat "$S/secrets/$name.dbpw"; exit 0; fi
+    exit 1 ;;
 esac
 
 # _secret_apply Existenz-Check: get secret <name> -o json
@@ -352,17 +435,28 @@ exit 0
 STUB
 chmod +x "$STUBS/kubectl"
 
+# ── jq-Wrapper (zeichnet Argumente auf, delegiert an das echte jq) ─────────────────
+cat > "$STUBS/jq" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${JQ_LOG:?}"
+exec /usr/bin/jq "$@"
+STUB
+chmod +x "$STUBS/jq"
+
 # ── Helfer ─────────────────────────────────────────────────────────────────────
-clear_logs() { : > "$CURL_LOG"; : > "$CURL_BODY_LOG"; : > "$CURL_STDIN_LOG"; : > "$KUBECTL_LOG"; }
+clear_logs() { : > "$CURL_LOG"; : > "$CURL_BODY_LOG"; : > "$CURL_STDIN_LOG"; : > "$KUBECTL_LOG"; : > "$JQ_LOG"; }
 
 reset_state() {
   rm -rf "$GS_STATE_DIR" "$KUBE_STATE_DIR"
-  mkdir -p "$GS_STATE_DIR/userroles" "$GS_STATE_DIR/namespaces" "$KUBE_STATE_DIR/secrets"
+  mkdir -p "$GS_STATE_DIR/userroles" "$GS_STATE_DIR/namespaces" "$GS_STATE_DIR/ds" "$KUBE_STATE_DIR/secrets"
   printf '%s\n' admin > "$GS_STATE_DIR/users.list"
   printf '%s\n' ADMIN > "$GS_STATE_DIR/roles.list"
   : > "$GS_STATE_DIR/workspaces.list"
+  for n in p2d2-main-secret p2d2-dev-secret p2d2-f-de1-secret p2d2-f-de2-secret p2d2-f-fv-secret; do
+    seed_db_secret "$n" "$DB_PW_B64"
+  done
   clear_logs
-  unset GS_OFF GS_NEG200 GS_PREFLIGHT_FAIL GS_DELETE_FAIL GS_USERS_500 GS_USERS_EMPTY GS_USERS_FAIL_ON GS_USERS_EMPTY_ON GS_ROLES_EMPTY_ON GS_WS_NONEMPTY GS_WS_DELETE_404 GS_WS_EMPTY_FORM GS_WS_VERIFY_BAD KUBECTL_NO_NS KUBECTL_APPLY_FAIL 2>/dev/null || true
+  unset GS_OFF GS_NEG200 GS_PREFLIGHT_FAIL GS_DELETE_FAIL GS_USERS_500 GS_USERS_EMPTY GS_USERS_FAIL_ON GS_USERS_EMPTY_ON GS_ROLES_EMPTY_ON GS_WS_NONEMPTY GS_WS_DELETE_404 GS_WS_EMPTY_FORM GS_WS_VERIFY_BAD GS_DS_NONEMPTY GS_403_BODY GS_LIST_AVAILABLE_FAIL KUBECTL_NO_NS KUBECTL_APPLY_FAIL 2>/dev/null || true
 }
 
 run_script() { run_script_in "$WORK" "$@"; }
@@ -380,6 +474,11 @@ latest_howto() { ls -t "$WORK"/p2d2-geoserver-config_v1_*.howto.md 2>/dev/null |
 seed_secret() { # <name> <b64>
   mkdir -p "$KUBE_STATE_DIR/secrets"
   printf '%s' "$2" > "$KUBE_STATE_DIR/secrets/$1.b64"
+}
+
+seed_db_secret() { # <name> <b64>  (Key DB_PASSWORD)
+  mkdir -p "$KUBE_STATE_DIR/secrets"
+  printf '%s' "$2" > "$KUBE_STATE_DIR/secrets/$1.dbpw"
 }
 
 seed_workspace() { # <ws> [uri]
@@ -860,5 +959,126 @@ rc="$(run_script --url "$URL" --ns "$NS")"
 check "A3 Lesefehler Exit 2"      "2" "$rc"
 check "A3 keine Temp-Datei übrig" "0" "$(find "$T/tmpdir" -type f | awk 'END{print NR}')"
 unset GS_USERS_500 TMPDIR
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (41) R1: Workspace-Verifikation sichtbar (log_ok + howto_step)
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "R1 Exit 0"                       "0" "$rc"
+check "R1 Namespace-URI ok sichtbar"    "yes" "$(grep -q 'Namespace-URI ok' "$T/out.log" && echo yes || echo no)"
+check "R1 WMS GetCapabilities sichtbar" "yes" "$(grep -q 'WMS GetCapabilities 200' "$T/out.log" && echo yes || echo no)"
+check "R1 WFS GetCapabilities sichtbar" "yes" "$(grep -q 'WFS GetCapabilities 200' "$T/out.log" && echo yes || echo no)"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (42) R2: Antworttext erscheint gekürzt in der Fehlermeldung
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+LONG="$(head -c 240 /dev/zero | tr '\0' 'A')TAIL"
+export GS_WS_NONEMPTY=1
+export GS_403_BODY="$LONG"
+clear_logs
+rc="$(run_script --uninstall --url "$URL" --ns "$NS")"
+check "R2 Exit 1"                          "1" "$rc"
+check "R2 Antworttext gekürzt (kein TAIL)" "0" "$(grep -c 'TAIL' "$T/err.log" || true)"
+check "R2 Antworttext vorhanden (A…)"      "yes" "$(grep -q 'AAAAAA' "$T/err.log" && echo yes || echo no)"
+unset GS_WS_NONEMPTY GS_403_BODY
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (43) Datastores: Erstlauf legt fünf Datastores mit 20 Einträgen an
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "DS Erstlauf Exit 0"        "0" "$rc"
+check "DS Erstlauf 5 Datastores"  "5" "$(find "$GS_STATE_DIR/ds" -name '*.json' -type f | awk 'END{print NR}')"
+check "DS Payload 20 Einträge"    "20" "$(jq '.dataStore.connectionParameters.entry | length' "$GS_STATE_DIR/ds/main/main_pg.json" 2>/dev/null || echo 0)"
+check "DS Payload passwd korrekt" "$DB_PW" "$(jq -r '.dataStore.connectionParameters.entry[] | select(."@key"=="passwd") | ."$"' "$GS_STATE_DIR/ds/main/main_pg.json" 2>/dev/null)"
+check "DS Payload user korrekt"   "P2D2-MAIN" "$(jq -r '.dataStore.connectionParameters.entry[] | select(."@key"=="user") | ."$"' "$GS_STATE_DIR/ds/main/main_pg.json" 2>/dev/null)"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (44) Datastores: Zweitlauf setzt per PUT
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+clear_logs
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "DS Zweitlauf Exit 0"     "0" "$rc"
+check "DS Zweitlauf 5 PUT"      "5" "$(grep -c 'METHOD=PUT' "$CURL_BODY_LOG" || true)"
+check "DS Zweitlauf kein POST"  "0" "$(grep 'datastores' "$CURL_BODY_LOG" | grep -c 'METHOD=POST')"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (45) Datastores: fehlender ENV-Schlüssel -> Exit 2 ohne Mutation
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+unset P2D2_BASE_DB_NAME
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "DS fehlender ENV Exit 2"    "2" "$rc"
+check "DS fehlender ENV kein POST" "0" "$(grep -c '\-X POST' "$CURL_LOG" || true)"
+export P2D2_BASE_DB_NAME="p2d2"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (46) Datastores: fehlendes Secret -> Fehler der Stage, übrige laufen, Exit 1
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+rm -f "$KUBE_STATE_DIR/secrets/p2d2-main-secret.dbpw"
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "DS fehlendes Secret Exit 1"        "1" "$rc"
+check "DS fehlendes Secret 4 weitere"     "4" "$(grep 'datastores' "$CURL_BODY_LOG" | grep -c 'METHOD=POST')"
+check "DS fehlendes Secret kein main POST" "0" "$(grep -c 'workspaces/main/datastores METHOD=POST' "$CURL_BODY_LOG" || true)"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (47) Datastores: Dry-run ohne POST/PUT
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+rc="$(run_script --dry-run --url "$URL" --ns "$NS")"
+check "DS Dry-Run Exit 0"           "0" "$rc"
+check "DS Dry-Run kein POST/PUT"    "0" "$(grep -c 'METHOD=POST\|METHOD=PUT' "$CURL_BODY_LOG" || true)"
+check "DS Dry-Run keine Datastores" "0" "$(find "$GS_STATE_DIR/ds" -name '*.json' -type f 2>/dev/null | awk 'END{print NR}')"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (48) Datastores: Uninstall löscht Datastores vor Workspaces, ohne recurse
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+clear_logs
+rc="$(run_script --uninstall --url "$URL" --ns "$NS")"
+check "DS Uninstall Exit 0"           "0" "$rc"
+check "DS Uninstall ohne recurse"     "0" "$(grep -c 'recurse' "$CURL_LOG" || true)"
+check "DS Uninstall keine Datastores" "0" "$(find "$GS_STATE_DIR/ds" -name '*.json' -type f 2>/dev/null | awk 'END{print NR}')"
+ds_line="$(grep -n -- '-X DELETE' "$CURL_LOG" | grep 'datastores/' | head -1 | cut -d: -f1)"
+ws_line="$(grep -n -- '-X DELETE' "$CURL_LOG" | grep 'workspaces/' | grep -v 'datastores/' | head -1 | cut -d: -f1)"
+check "DS Uninstall Datastores vor Workspaces" "yes" "$([ -n "$ds_line" ] && [ -n "$ws_line" ] && [ "$ds_line" -lt "$ws_line" ] && echo yes || echo no)"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (49) Datastores: 403 beim Löschen -> Exit 1, Secrets bleiben
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+export GS_DS_NONEMPTY=1
+clear_logs
+rc="$(run_script --uninstall --url "$URL" --ns "$NS")"
+check "DS nicht-leer Exit 1"          "1" "$rc"
+check "DS nicht-leer Secrets bleiben" "6" "$(count_secrets)"
+unset GS_DS_NONEMPTY
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (50) Datastores: Verifikationsfehler (list=available ungleich 200) -> Exit 1
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+export GS_LIST_AVAILABLE_FAIL=1
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "DS Verifikation list=available Exit 1"  "1" "$rc"
+check "DS Verifikation list=available Meldung" "yes" "$(grep -q 'list=available' "$T/err.log" && echo yes || echo no)"
+unset GS_LIST_AVAILABLE_FAIL
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (51) Datastores: kein DB-Passwort in Argumentlisten von curl/kubectl/jq
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+check "DS kein DB-Passwort in curl-Args"    "0" "$(grep -c "$DB_PW" "$CURL_LOG" || true)"
+check "DS kein DB-Passwort in kubectl-Args" "0" "$(grep -c "$DB_PW" "$KUBECTL_LOG" || true)"
+check "DS kein DB-Passwort in jq-Args"      "0" "$(grep -c "$DB_PW" "$JQ_LOG" || true)"
 
 rm -rf "$T"
