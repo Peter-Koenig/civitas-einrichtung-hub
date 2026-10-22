@@ -2,14 +2,15 @@
 # SPDX-License-Identifier: EUPL-1.2
 # Copyright (C) 2024-2026 p2d2 Contributors
 #
-# p2d2-geoserver-config_v1.sh — GeoServer-Konfiguration, Schritt 1:
-# WFS-T-/WFS-Benutzer, Rollen und Kubernetes-Secrets (CIVITAS/CORE-AddOn).
+# p2d2-geoserver-config_v1.sh — GeoServer-Konfiguration (CIVITAS/CORE-AddOn).
+# Schritt 1: WFS-T-/WFS-Benutzer, Rollen und Kubernetes-Secrets.
+# Schritt 2: Workspaces (Name + Namespace-URI) analog zum Standalone.
 #
 # Läuft in der CIVITAS/CORE-VM (root, kubectl vorhanden). Legt die fünf
 # WFS-T-Benutzer und den WFS-Lese-Benutzer samt Rollen an bzw. setzt deren
 # Passwort, erzeugt die Passwörter und speichert sie als Kubernetes-Secrets
-# (das Secret ist Single Source of Truth). --uninstall entfernt genau diese
-# Objekte wieder.
+# (das Secret ist Single Source of Truth). Legt außerdem die sechs Workspaces
+# an. --uninstall entfernt genau diese Objekte wieder.
 #
 # Bewusst klein und flach: keine Statusbericht-/-Authz-/k8s-Diagnose.
 #
@@ -35,6 +36,15 @@ RO|-|p2d2_wfs_user|WFS-USER|p2d2-geoserver-wfs-user'
 
 # Benutzer/Rollen, die dieses Skript NIE anfasst.
 NEVER_TOUCH_USERS='admin p2d2_wfst_user'
+
+# Workspace-Soll-Tabelle (Schritt 2): Workspace | Namespace-URI.
+# Identisch zum Standalone-Export 2026-09-29; keine Workspace-ACLs, keine Umbenennung.
+WS_TABLE='main|urn:data-dna:govdata:main
+dev|urn:data-dna:govdata:dev
+de1|urn:data-dna:govdata:de1
+de2|urn:data-dna:govdata:de2
+fv|urn:data-dna:govdata:fv
+friedhofsplaene|urn:data-dna:tiffdata'
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Globals
@@ -93,13 +103,13 @@ usage() {
 
 print_help() {
   cat <<EOF
-${SCRIPT_NAME} — GeoServer-Konfiguration, Schritt 1: WFS-T-/WFS-Benutzer, Rollen und Kubernetes-Secrets.
+${SCRIPT_NAME} — GeoServer-Konfiguration: WFS-T-/WFS-Benutzer, Rollen, Kubernetes-Secrets und Workspaces.
 
 Usage: bash ./${SCRIPT_NAME} [--dry-run] [--uninstall] [--url BASE] [--ns NAMESPACE] [--help|-h]
 
 Optionen:
   --dry-run      Nur planen: keine Änderung an GeoServer oder Kubernetes.
-  --uninstall    Genau die angelegten Benutzer/Rollen/Secrets wieder entfernen.
+  --uninstall    Genau die angelegten Benutzer/Rollen/Secrets/Workspaces wieder entfernen.
   --url BASE     GeoServer-Basis-URL (z. B. https://geoportal.<domain>/geoserver).
   --ns NAMESPACE Kubernetes-Namespace (Standard: ADDON_NS bzw. cc-prd-geodata-stack).
   --help, -h     Diese Hilfe.
@@ -271,6 +281,7 @@ preflight() {
   [[ -n "$GS_ADMIN_USER" && -n "$GS_ADMIN_PW" ]] \
     || { log_error "Admin-Zugang (Secret geoserver-geoserver) nicht lesbar"; exit 2; }
   check_never_touch || exit 2
+  check_ws_table || exit 2
 
   local code
   code="$(_gs_http_code GET 'security/roles.json')"
@@ -332,6 +343,42 @@ read_user_roles() {
   rm -f "$_GS_BODY_FILE"
 }
 
+# read_workspaces — Workspace-Namen (sortiert) auf stdout; 0 ok, 1 Fehler.
+# Akzeptiert .workspaces.workspace als Array oder als ""/null (leer).
+read_workspaces() {
+  _gs_get 'workspaces.json'
+  [[ "$_GS_CODE" == "200" ]] || { rm -f "$_GS_BODY_FILE"; log_error "Lesen workspaces.json fehlgeschlagen (HTTP $_GS_CODE)"; return 1; }
+  if jq -e '.workspaces.workspace | type == "array"' "$_GS_BODY_FILE" >/dev/null 2>&1; then
+    jq -r '.workspaces.workspace[]?.name // empty' "$_GS_BODY_FILE" 2>/dev/null | sort
+  elif jq -e '(.workspaces.workspace == "" or .workspaces.workspace == null)' "$_GS_BODY_FILE" >/dev/null 2>&1; then
+    :
+  else
+    rm -f "$_GS_BODY_FILE"; log_error "workspaces.json: unerwartete JSON-Form"; return 1
+  fi
+  rm -f "$_GS_BODY_FILE"
+}
+
+# read_namespace_uri <ws> — Namespace-URI auf stdout (leer bei Fehler); 0 ok, 1 Fehler.
+read_namespace_uri() {
+  local ws="$1"
+  _gs_get "namespaces/${ws}.json"
+  case "$_GS_CODE" in
+    200) ;;
+    *) rm -f "$_GS_BODY_FILE"; log_error "Lesen namespaces/${ws}.json fehlgeschlagen (HTTP $_GS_CODE)"; return 1 ;;
+  esac
+  jq -e '.namespace.uri | type == "string"' "$_GS_BODY_FILE" >/dev/null 2>&1 \
+    || { rm -f "$_GS_BODY_FILE"; log_error "namespaces/${ws}.json: unerwartete JSON-Form"; return 1; }
+  jq -r '.namespace.uri // empty' "$_GS_BODY_FILE" 2>/dev/null
+  rm -f "$_GS_BODY_FILE"
+}
+
+# _http_code_url <url> — authentifizierter GET auf eine beliebige URL; gibt HTTP-Code.
+_http_code_url() {
+  local url="$1" code
+  code="$( _curl_user_cfg "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - -o /dev/null -w '%{http_code}' "$url" 2>/dev/null )" || code="000"
+  printf '%s' "$code"
+}
+
 # Globaler Bestand (K8), nach dem Preflight einmal gelesen.
 _INV_USERS=()
 _INV_ROLES=()
@@ -387,6 +434,21 @@ check_never_touch() {
     for n in $NEVER_TOUCH_USERS; do
       [[ "$user" == "$n" ]] && { log_error "Soll-Tabelle enthält verbotenen Benutzer: $user"; return 1; }
     done
+  done <<< "$SOL_TABLE"
+  return 0
+}
+
+# Startprüfung: jeder Workspace aus SOL_TABLE (Spalte 2, außer "-") muss in WS_TABLE stehen.
+check_ws_table() {
+  local key ws user w want
+  while IFS='|' read -r key ws user _ _; do
+    [[ -n "$key" ]] || continue
+    [[ "$ws" == "-" ]] && continue
+    want=0
+    while IFS='|' read -r w _; do
+      [[ "$w" == "$ws" ]] && { want=1; break; }
+    done <<< "$WS_TABLE"
+    [[ "$want" -eq 1 ]] || { log_error "Soll-Workspace $ws fehlt in WS_TABLE"; return 1; }
   done <<< "$SOL_TABLE"
   return 0
 }
@@ -510,11 +572,15 @@ do_install() {
     done
   done <<< "$SOL_TABLE"
 
+  # Workspaces anlegen (Schritt 2, nach Benutzern/Rollen/Zuordnungen)
+  install_workspaces || return 1
+
   # Verifikation (im Dry-run übersprungen, K1)
   if [[ "$DRY_RUN" -eq 1 ]]; then
     log "  Verifikation wird im Dry-run übersprungen"
   else
     verify_install || return 1
+    verify_workspaces || return 1
   fi
   return 0
 }
@@ -558,6 +624,121 @@ verify_install() {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Workspaces (Schritt 2): anlegen / verifizieren / löschen
+# ═══════════════════════════════════════════════════════════════════════════
+install_workspaces() {
+  local -a existing
+  local ws uri cur code rc=0 f
+  local tmp
+  tmp="$(mktemp)"; chmod 600 "$tmp"
+  if ! read_workspaces > "$tmp"; then
+    rm -f "$tmp"; log_error "Workspace-Liste nicht lesbar"; return 1
+  fi
+  mapfile -t existing < "$tmp"
+  rm -f "$tmp"
+
+  log "== Workspaces =="
+  while IFS='|' read -r ws uri; do
+    [[ -n "$ws" ]] || continue
+    if ! _has "$ws" "${existing[@]}"; then
+      log "  Workspace $ws anlegen"
+      if [[ "$DRY_RUN" -eq 1 ]]; then
+        howto_step "POST namespaces" "201" "-" "JSON {\"namespace\":{\"prefix\":\"$ws\",\"uri\":\"$uri\"}}"
+        continue
+      fi
+      f="$(mktemp)"; chmod 600 "$f"
+      jq -nc --arg p "$ws" --arg u "$uri" '{namespace:{prefix:$p,uri:$u}}' > "$f"
+      code="$(_gs_http_code POST 'namespaces' "$f" 'application/json')"
+      rm -f "$f"
+      howto_step "POST namespaces" "201" "$code" "JSON {\"namespace\":{\"prefix\":\"$ws\",\"uri\":\"$uri\"}}"
+      if [[ "$code" == "200" || "$code" == "201" ]]; then
+        log_ok "  Workspace $ws angelegt"
+      else
+        log_error "Workspace $ws anlegen fehlgeschlagen (HTTP $code)"; rc=1
+      fi
+    else
+      if ! cur="$(read_namespace_uri "$ws")"; then
+        log_error "Workspace $ws: Namespace nicht lesbar"; rc=1
+        continue
+      fi
+      if [[ -z "$cur" ]]; then
+        log_error "Workspace $ws vorhanden, aber Namespace fehlt"; rc=1
+      elif [[ "$cur" != "$uri" ]]; then
+        log_error "Workspace $ws: Namespace-URI weicht ab (erwartet $uri, vorhanden $cur)"; rc=1
+      else
+        log "  Workspace $ws vorhanden, URI stimmt"
+      fi
+    fi
+  done <<< "$WS_TABLE"
+  return "$rc"
+}
+
+verify_workspaces() {
+  local ws uri cur code rc=0 name
+  log "== Verifikation Workspaces =="
+  while IFS='|' read -r ws uri; do
+    [[ -n "$ws" ]] || continue
+    # Namespace-URI
+    if ! cur="$(read_namespace_uri "$ws")"; then
+      log_error "Verifikation $ws: Namespace nicht lesbar"; rc=1
+    elif [[ "$cur" != "$uri" ]]; then
+      log_error "Verifikation $ws: Namespace-URI weicht ab (erwartet $uri, vorhanden $cur)"; rc=1
+    fi
+    # Workspace vorhanden und name stimmt
+    _gs_get "workspaces/${ws}.json"
+    if [[ "$_GS_CODE" == "200" ]]; then
+      name="$(jq -r '.workspace.name // empty' "$_GS_BODY_FILE" 2>/dev/null)"
+      rm -f "$_GS_BODY_FILE"
+      [[ "$name" == "$ws" ]] || { log_error "Verifikation $ws: workspaces/$ws.json name weicht ab (erwartet $ws, erhalten $name)"; rc=1; }
+    else
+      rm -f "$_GS_BODY_FILE"
+      log_error "Verifikation $ws: GET workspaces/$ws.json -> $_GS_CODE (erwartet 200)"; rc=1
+    fi
+    # Virtuelle Dienste (informativ; ob ein leerer Workspace 200 liefert, ist offen)
+    code="$(_http_code_url "$GS_BASE/$ws/wms?service=WMS&version=1.3.0&request=GetCapabilities")"
+    [[ "$code" == "200" ]] || log_warn "Verifikation $ws: WMS GetCapabilities -> $code (erwartet 200)"
+    if [[ "$ws" != "friedhofsplaene" ]]; then
+      code="$(_http_code_url "$GS_BASE/$ws/wfs?service=WFS&version=2.0.0&request=GetCapabilities")"
+      [[ "$code" == "200" ]] || log_warn "Verifikation $ws: WFS GetCapabilities -> $code (erwartet 200)"
+    fi
+  done <<< "$WS_TABLE"
+  return "$rc"
+}
+
+uninstall_workspaces() {
+  local -a existing
+  local ws code rc=0
+  local tmp
+  tmp="$(mktemp)"; chmod 600 "$tmp"
+  if ! read_workspaces > "$tmp"; then
+    rm -f "$tmp"; log_error "Workspace-Liste nicht lesbar"; return 1
+  fi
+  mapfile -t existing < "$tmp"
+  rm -f "$tmp"
+
+  log "== Workspaces entfernen =="
+  while IFS='|' read -r ws _; do
+    [[ -n "$ws" ]] || continue
+    if ! _has "$ws" "${existing[@]}"; then
+      log "  Workspace $ws nicht vorhanden — übersprungen"
+      continue
+    fi
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      howto_step "DELETE workspaces/$ws" "200" "-" "404 = schon weg, ohne recurse"
+      continue
+    fi
+    code="$(_gs_http_code DELETE "workspaces/${ws}")"
+    howto_step "DELETE workspaces/$ws" "200" "$code" "404 = schon weg, ohne recurse"
+    case "$code" in
+      200|201) log_ok "  Workspace $ws gelöscht" ;;
+      404)     log "  Workspace $ws schon weg" ;;
+      *)       log_error "Workspace $ws löschen fehlgeschlagen (HTTP $code)"; rc=1 ;;
+    esac
+  done <<< "$WS_TABLE"
+  return "$rc"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Uninstall (nur exakt benannte Objekte)
 # ═══════════════════════════════════════════════════════════════════════════
 do_uninstall() {
@@ -568,6 +749,9 @@ do_uninstall() {
   # Bestand aus _load_inventory (in main gelesen + plausibel geprüft, K8).
   existing_users=("${_INV_USERS[@]}")
   existing_roles=("${_INV_ROLES[@]}")
+
+  # 0) Workspaces entfernen (Reihenfolge umgekehrt zum Install; vor Benutzern/Rollen/Secrets)
+  uninstall_workspaces || rc=1
 
   # 1) Rollenzuordnungen lösen (nur vorhandene)
   while IFS='|' read -r key _ user roles secret; do
@@ -680,6 +864,20 @@ do_uninstall() {
     kubectl -n "$NAMESPACE" get secret "$secret" >/dev/null 2>&1 && { log_error "Secret $secret noch vorhanden"; rc=1; }
   done <<< "$SOL_TABLE"
 
+  # Workspaces: nicht mehr gelistet (Schritt 2)
+  local -a after_ws
+  local wtmp ws
+  wtmp="$(mktemp)"; chmod 600 "$wtmp"
+  if ! read_workspaces > "$wtmp"; then
+    rm -f "$wtmp"; log_error "Schlussverifikation: Workspace-Liste nicht lesbar"; return 1
+  fi
+  mapfile -t after_ws < "$wtmp"
+  rm -f "$wtmp"
+  while IFS='|' read -r ws _; do
+    [[ -n "$ws" ]] || continue
+    _has "$ws" "${after_ws[@]}" && { log_error "Workspace $ws noch vorhanden"; rc=1; }
+  done <<< "$WS_TABLE"
+
   [[ "$rc" -eq 0 ]] && log_ok "Uninstall verifiziert (alle Soll-Objekte entfernt)"
   return "$rc"
 }
@@ -735,8 +933,18 @@ main() {
   howto "- Secret: wiederverwenden, wenn ein gültiger Wert vorhanden ist, sonst neu erzeugen."
   howto "- Benutzer: anlegen (POST usergroup/users) oder Passwort setzen (POST usergroup/user/<name>)."
   howto "- Uninstall: nur Vorhandenes löschen; 404 gilt als 'schon weg'."
-  howto "- Reihenfolge Install: Rollen -> je Benutzer Secret -> Benutzer -> Zuordnungen -> Verifikation."
-  howto "- Reihenfolge Uninstall: Zuordnungen -> Benutzer -> Rollen -> Secrets -> Verifikation."
+  howto "- Reihenfolge Install: Rollen -> je Benutzer Secret -> Benutzer -> Zuordnungen -> Workspaces -> Verifikation."
+  howto "- Reihenfolge Uninstall: Workspaces -> Zuordnungen -> Benutzer -> Rollen -> Secrets -> Verifikation."
+  howto ""
+  howto "## Workspaces"
+  howto 'GET workspaces.json        -> {"workspaces":{"workspace":[{"name":...,"href":...}]}}'
+  howto 'GET namespaces/<ws>.json  -> {"namespace":{"prefix":...,"uri":...}}'
+  howto 'GET workspaces/<ws>.json  -> {"workspace":{"name":...}}'
+  howto 'POST namespaces           -> {"namespace":{"prefix":"<ws>","uri":"<uri>"}} (Content-Type application/json); 200/201 = ok'
+  howto 'DELETE workspaces/<ws>    -> 200 = gelöscht, 404 = schon weg, ohne recurse'
+  howto '- Anlegen: Workspace fehlt -> POST namespaces (legt Workspace und Namespace an).'
+  howto '- Vorhanden: GET namespaces/<ws>.json; URI gleich -> ok, abweichend/fehlt -> Fehler, keine Änderung.'
+  howto '- Verifikation: namespaces/<ws>.json URI, workspaces/<ws>.json name, WMS/WFS GetCapabilities (informativ).'
   howto ""
 
   if [[ "$UNINSTALL" -eq 1 ]]; then
