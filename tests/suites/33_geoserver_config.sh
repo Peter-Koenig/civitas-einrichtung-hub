@@ -20,6 +20,7 @@ export GS_STATE_DIR="$T/gs"
 export KUBE_STATE_DIR="$T/kube"
 export CURL_LOG="$T/curl.log"
 export CURL_BODY_LOG="$T/curl-body.log"
+export CURL_STDIN_LOG="$T/curl-stdin.log"
 export KUBECTL_LOG="$T/kubectl.log"
 
 # Stub-Verzeichnis voranstellen (überschreibt die globalen tests/stubs/*).
@@ -51,6 +52,7 @@ for a in "$@"; do
 done
 
 stdin_data="$(cat 2>/dev/null || true)"
+printf 'STDIN=%s\n' "$stdin_data" >> "${CURL_STDIN_LOG:?}"
 
 if [ -n "$body_file" ] && [ -f "$body_file" ]; then
   { printf 'URL=%s METHOD=%s\n' "$url" "$method"; cat "$body_file"; printf '\n---\n'; } >> "${CURL_BODY_LOG:?}"
@@ -59,6 +61,7 @@ fi
 S="${GS_STATE_DIR:?}"
 has_role() { grep -qx "$1" "$S/roles.list" 2>/dev/null; }
 has_user() { grep -qx "$1" "$S/users.list" 2>/dev/null; }
+has_ws()   { grep -qx "$1" "$S/workspaces.list" 2>/dev/null; }
 
 roles_json() {
   printf '{"roles":['
@@ -92,6 +95,20 @@ userroles_json() {
   fi
   printf ']}'
 }
+workspaces_json() {
+  if [ "${GS_WS_EMPTY_FORM:-}" = "str" ]; then printf '{"workspaces":{"workspace":""}}'; return; fi
+  if [ "${GS_WS_EMPTY_FORM:-}" = "arr" ]; then printf '{"workspaces":{"workspace":[]}}'; return; fi
+  printf '{"workspaces":{"workspace":['
+  local first=1 w
+  if [ -f "$S/workspaces.list" ]; then
+    while IFS= read -r w; do
+      [ -n "$w" ] || continue
+      [ "$first" = "1" ] || printf ','
+      printf '{"name":"%s","href":""}' "$w"; first=0
+    done < "$S/workspaces.list"
+  fi
+  printf ']}}'
+}
 
 code="200"; body=""
 case "$url" in
@@ -101,7 +118,13 @@ case "$url" in
     fi ;;
   *"/security/roles.json")
     [ "${GS_PREFLIGHT_FAIL:-0}" = "1" ] && code=500
-    body="$(roles_json)" ;;
+    empty_roles=0
+    if [ -n "${GS_ROLES_EMPTY_ON:-}" ]; then
+      c=0; [ -f "$S/roles_empty_count" ] && c="$(cat "$S/roles_empty_count")"
+      c=$((c+1)); printf '%s' "$c" > "$S/roles_empty_count"
+      [ "$c" -ge "$GS_ROLES_EMPTY_ON" ] && empty_roles=1
+    fi
+    if [ "$empty_roles" = "1" ]; then body='{"roles":[]}'; else body="$(roles_json)"; fi ;;
   *"/security/usergroup/users.json")
     if [ -n "${GS_USERS_FAIL_ON:-}" ]; then
       c=0; [ -f "$S/users_get_count" ] && c="$(cat "$S/users_get_count")"
@@ -109,8 +132,14 @@ case "$url" in
       [ "$c" -ge "$GS_USERS_FAIL_ON" ] && code=500
     fi
     [ "${GS_USERS_500:-0}" = "1" ] && code=500
-    if [ "${GS_USERS_EMPTY:-0}" = "1" ]; then body='{"users":[]}'
-    else body="$(users_json)"; fi ;;
+    empty_users=0
+    [ "${GS_USERS_EMPTY:-0}" = "1" ] && empty_users=1
+    if [ -n "${GS_USERS_EMPTY_ON:-}" ]; then
+      c=0; [ -f "$S/users_empty_count" ] && c="$(cat "$S/users_empty_count")"
+      c=$((c+1)); printf '%s' "$c" > "$S/users_empty_count"
+      [ "$c" -ge "$GS_USERS_EMPTY_ON" ] && empty_users=1
+    fi
+    if [ "$empty_users" = "1" ]; then body='{"users":[]}'; else body="$(users_json)"; fi ;;
   *"/security/roles/user/"*".json")
     u="${url##*/security/roles/user/}"; u="${u%.json}"
     body="$(userroles_json "$u")" ;;
@@ -172,6 +201,55 @@ case "$url" in
         else code=404; fi ;;
       *) code=500 ;;
     esac ;;
+  *"/rest/workspaces.json")
+    body="$(workspaces_json)" ;;
+  *"/rest/namespaces/"*".json")
+    ws="${url##*/rest/namespaces/}"; ws="${ws%.json}"
+    if [ -f "$S/namespaces/$ws.uri" ]; then
+      u="$(cat "$S/namespaces/$ws.uri")"
+      [ "${GS_WS_VERIFY_BAD:-0}" = "1" ] && u="${u}BAD"
+      body="$(jq -nc --arg p "$ws" --arg u "$u" '{namespace:{prefix:$p,uri:$u}}')"
+    else code=404; fi ;;
+  *"/rest/workspaces/"*".json")
+    ws="${url##*/rest/workspaces/}"; ws="${ws%.json}"
+    has_ws "$ws" && body="{\"workspace\":{\"name\":\"$ws\"}}" || code=404 ;;
+  *"/rest/namespaces")
+    case "$method" in
+      POST)
+        if [ -n "$body_file" ] && [ -f "$body_file" ]; then
+          p="$(jq -r '.namespace.prefix // empty' "$body_file" 2>/dev/null)"
+          u="$(jq -r '.namespace.uri // empty' "$body_file" 2>/dev/null)"
+          if [ -n "$p" ]; then
+            mkdir -p "$S/namespaces"
+            printf '%s\n' "$p" >> "$S/workspaces.list"
+            printf '%s' "$u" > "$S/namespaces/$p.uri"
+            code=201
+          else code=500; fi
+        else code=500; fi ;;
+      *) code=500 ;;
+    esac ;;
+  *"/rest/workspaces/"*)
+    ws="${url##*/rest/workspaces/}"
+    case "$method" in
+      DELETE)
+        if [ "${GS_DELETE_FAIL:-0}" = "1" ]; then code=500
+        elif [ "${GS_WS_DELETE_404:-0}" = "1" ]; then
+          grep -vx "$ws" "$S/workspaces.list" > "$S/workspaces.list.tmp" 2>/dev/null || true
+          mv "$S/workspaces.list.tmp" "$S/workspaces.list"
+          rm -f "$S/namespaces/$ws.uri"
+          code=404
+        elif [ "${GS_WS_NONEMPTY:-0}" = "1" ] && has_ws "$ws"; then code=403
+        elif has_ws "$ws"; then
+          grep -vx "$ws" "$S/workspaces.list" > "$S/workspaces.list.tmp" 2>/dev/null || true
+          mv "$S/workspaces.list.tmp" "$S/workspaces.list"
+          rm -f "$S/namespaces/$ws.uri"
+          code=200
+        else code=404; fi ;;
+      *) code=500 ;;
+    esac ;;
+  *"/wms"*|*"/wfs"*)
+    ws="${url#*/geoserver/}"; ws="${ws%%/*}"
+    has_ws "$ws" && code=200 || code=404 ;;
   *) code=500 ;;
 esac
 
@@ -275,15 +353,16 @@ STUB
 chmod +x "$STUBS/kubectl"
 
 # ── Helfer ─────────────────────────────────────────────────────────────────────
-clear_logs() { : > "$CURL_LOG"; : > "$CURL_BODY_LOG"; : > "$KUBECTL_LOG"; }
+clear_logs() { : > "$CURL_LOG"; : > "$CURL_BODY_LOG"; : > "$CURL_STDIN_LOG"; : > "$KUBECTL_LOG"; }
 
 reset_state() {
   rm -rf "$GS_STATE_DIR" "$KUBE_STATE_DIR"
-  mkdir -p "$GS_STATE_DIR/userroles" "$KUBE_STATE_DIR/secrets"
+  mkdir -p "$GS_STATE_DIR/userroles" "$GS_STATE_DIR/namespaces" "$KUBE_STATE_DIR/secrets"
   printf '%s\n' admin > "$GS_STATE_DIR/users.list"
   printf '%s\n' ADMIN > "$GS_STATE_DIR/roles.list"
+  : > "$GS_STATE_DIR/workspaces.list"
   clear_logs
-  unset GS_OFF GS_NEG200 GS_PREFLIGHT_FAIL GS_DELETE_FAIL GS_USERS_500 GS_USERS_EMPTY GS_USERS_FAIL_ON KUBECTL_NO_NS KUBECTL_APPLY_FAIL 2>/dev/null || true
+  unset GS_OFF GS_NEG200 GS_PREFLIGHT_FAIL GS_DELETE_FAIL GS_USERS_500 GS_USERS_EMPTY GS_USERS_FAIL_ON GS_USERS_EMPTY_ON GS_ROLES_EMPTY_ON GS_WS_NONEMPTY GS_WS_DELETE_404 GS_WS_EMPTY_FORM GS_WS_VERIFY_BAD KUBECTL_NO_NS KUBECTL_APPLY_FAIL 2>/dev/null || true
 }
 
 run_script() { run_script_in "$WORK" "$@"; }
@@ -301,6 +380,12 @@ latest_howto() { ls -t "$WORK"/p2d2-geoserver-config_v1_*.howto.md 2>/dev/null |
 seed_secret() { # <name> <b64>
   mkdir -p "$KUBE_STATE_DIR/secrets"
   printf '%s' "$2" > "$KUBE_STATE_DIR/secrets/$1.b64"
+}
+
+seed_workspace() { # <ws> [uri]
+  mkdir -p "$GS_STATE_DIR/namespaces"
+  printf '%s\n' "$1" >> "$GS_STATE_DIR/workspaces.list"
+  [ -n "${2:-}" ] && printf '%s' "$2" > "$GS_STATE_DIR/namespaces/$1.uri"
 }
 
 NS="cc-prd-geodata-stack"
@@ -597,6 +682,7 @@ check "How-To Verifikation"      "yes" "$(grep -q '## Verifikation' "$howto_file
 check "How-To Entscheidungslogik" "yes" "$(grep -q '## Entscheidungslogik' "$howto_file" && echo yes || echo no)"
 check "How-To erhaltene Codes"   "yes" "$(grep -q 'erhalten 20' "$howto_file" && echo yes || echo no)"
 check "How-To Modus ausgeführt"  "yes" "$(grep -q 'Modus: ausgeführt' "$howto_file" && echo yes || echo no)"
+check "How-To Workspaces Abschnitt" "yes" "$(grep -q '## Workspaces' "$howto_file" && echo yes || echo no)"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (25) How-To Dry-Run: Modus geplant
@@ -605,5 +691,174 @@ reset_state
 run_script --dry-run --url "$URL" --ns "$NS" >/dev/null 2>&1
 howto_file="$(latest_howto)"
 check "How-To Dry-Run geplant" "yes" "$(grep -q 'Modus: dry-run (geplant)' "$howto_file" && echo yes || echo no)"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (26) Workspaces: Erstlauf legt sechs Workspaces mit korrektem Payload an
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "WS Erstlauf Exit 0"              "0" "$rc"
+check "WS Erstlauf 6 Workspaces"        "6" "$(count_lines "$GS_STATE_DIR/workspaces.list")"
+check "WS main URI"                     "urn:data-dna:govdata:main" "$(cat "$GS_STATE_DIR/namespaces/main.uri")"
+check "WS friedhofsplaene URI"          "urn:data-dna:tiffdata" "$(cat "$GS_STATE_DIR/namespaces/friedhofsplaene.uri")"
+check "WS Payload prefix main"          "yes" "$(grep -q '"prefix":"main"' "$CURL_BODY_LOG" && echo yes || echo no)"
+check "WS Payload uri main"             "yes" "$(grep -q '"uri":"urn:data-dna:govdata:main"' "$CURL_BODY_LOG" && echo yes || echo no)"
+check "WS kein Passwort in curl-Args"    "0" "$(grep -c "$PASS_VALID" "$CURL_LOG" || true)"
+check "WS kein Passwort in kubectl-Args" "0" "$(grep -c "$PASS_VALID" "$KUBECTL_LOG" || true)"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (27) Workspaces: Zweitlauf idempotent
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+clear_logs
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "WS Zweitlauf Exit 0"               "0" "$rc"
+check "WS Zweitlauf weiterhin 6"          "6" "$(count_lines "$GS_STATE_DIR/workspaces.list")"
+check "WS Zweitlauf kein namespaces POST" "0" "$(grep -c 'rest/namespaces' "$CURL_BODY_LOG" || true)"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (28) Workspaces: Konflikt (abweichende URI) -> Exit 1, keine Änderung, Rest läuft
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+seed_workspace "main" "urn:data-dna:govdata:WRONG"
+clear_logs
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "WS Konflikt Exit 1"               "1" "$rc"
+check "WS Konflikt main URI unverändert" "urn:data-dna:govdata:WRONG" "$(cat "$GS_STATE_DIR/namespaces/main.uri")"
+check "WS Konflikt 5 weitere angelegt"   "5" "$(grep -c 'rest/namespaces' "$CURL_BODY_LOG" || true)"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (29) Workspaces: leere Liste als "" und als []
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+export GS_WS_EMPTY_FORM=str
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "WS leer (str) Exit 0"    "0" "$rc"
+check "WS leer (str) 6 angelegt" "6" "$(count_lines "$GS_STATE_DIR/workspaces.list")"
+unset GS_WS_EMPTY_FORM
+reset_state
+export GS_WS_EMPTY_FORM=arr
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "WS leer (arr) Exit 0"    "0" "$rc"
+check "WS leer (arr) 6 angelegt" "6" "$(count_lines "$GS_STATE_DIR/workspaces.list")"
+unset GS_WS_EMPTY_FORM
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (30) Workspaces: Workspace ohne Namespace -> Exit 1, übrige laufen weiter
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+seed_workspace "dev"
+clear_logs
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "WS ohne Namespace Exit 1"  "1" "$rc"
+check "WS ohne Namespace Meldung" "yes" "$(grep -q 'Namespace nicht lesbar' "$T/err.log" && echo yes || echo no)"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (31) Workspaces: Dry-run ohne POST
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+rc="$(run_script --dry-run --url "$URL" --ns "$NS")"
+check "WS Dry-Run Exit 0"               "0" "$rc"
+check "WS Dry-Run kein namespaces POST" "0" "$(grep -c 'rest/namespaces' "$CURL_BODY_LOG" || true)"
+check "WS Dry-Run keine Workspaces"     "0" "$(count_lines "$GS_STATE_DIR/workspaces.list")"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (32) Workspaces: Uninstall löscht nur Soll, ohne recurse
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+seed_workspace "foreign_ws" "urn:data-dna:govdata:foreign"
+clear_logs
+rc="$(run_script --uninstall --url "$URL" --ns "$NS")"
+check "WS Uninstall Exit 0"          "0" "$rc"
+check "WS Uninstall foreign bleibt"  "foreign_ws" "$(cat "$GS_STATE_DIR/workspaces.list")"
+check "WS Uninstall ohne recurse"    "0" "$(grep -c 'recurse' "$CURL_LOG" || true)"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (33) Workspaces: DELETE 404 gilt als schon weg
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+export GS_WS_DELETE_404=1
+clear_logs
+rc="$(run_script --uninstall --url "$URL" --ns "$NS")"
+check "WS 404 Exit 0"    "0" "$rc"
+check "WS 404 schon weg" "yes" "$(grep -q 'schon weg' "$T/out.log" && echo yes || echo no)"
+unset GS_WS_DELETE_404
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (34) Workspaces: nicht-leerer Workspace (403) -> Exit 1, Secrets bleiben
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+export GS_WS_NONEMPTY=1
+clear_logs
+rc="$(run_script --uninstall --url "$URL" --ns "$NS")"
+check "WS nicht-leer Exit 1"          "1" "$rc"
+check "WS nicht-leer Secrets bleiben" "6" "$(count_secrets)"
+unset GS_WS_NONEMPTY
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (35) Workspaces: aggregierter Verifikationsfehler -> Exit 1
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+export GS_WS_VERIFY_BAD=1
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "WS Verifikation Fehler Exit 1" "1" "$rc"
+check "WS Verifikation Meldung"       "yes" "$(grep -q 'weicht ab' "$T/err.log" && echo yes || echo no)"
+unset GS_WS_VERIFY_BAD
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (36) Workspaces: Startprüfung SOL/WS (tampered copy)
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+sed 's/main|urn:data-dna:govdata:main//' "$SCRIPT" > "$T/script-ws-missing.sh"
+rc="$( cd "$WORK" && bash "$T/script-ws-missing.sh" --url "$URL" --ns "$NS" >"$T/out.log" 2>"$T/err.log"; printf '%s' "$?" )"
+check "WS Startprüfung Exit 2"  "2" "$rc"
+check "WS Startprüfung Meldung" "yes" "$(grep -q 'fehlt in WS_TABLE' "$T/err.log" && echo yes || echo no)"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (37) A1: Uninstall-Schlussverifikation mit leerer Liste -> Exit 1
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+export GS_USERS_EMPTY_ON=2
+clear_logs
+rc="$(run_script --uninstall --url "$URL" --ns "$NS")"
+check "A1 Schlussverifikation Exit 1"         "1" "$rc"
+check "A1 keine Uninstall-verifiziert-Zeile"  "0" "$(grep -c 'Uninstall verifiziert' "$T/out.log" || true)"
+unset GS_USERS_EMPTY_ON
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (38) A2: Credential-Escaping (Anführungszeichen + Backslash)
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+export GS_ADMIN_PW='ab"cd\ef'
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "A2 escape Exit 0"           "0" "$rc"
+check "A2 escape in stdin-Konfig"  "yes" "$(grep -Fq 'ab\"cd\\ef' "$CURL_STDIN_LOG" && echo yes || echo no)"
+unset GS_ADMIN_PW
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (39) A2: Passwort mit Zeilenumbruch -> Exit 2
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+export GS_ADMIN_PW=$'secret\nline2'
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "A2 newline Exit 2" "2" "$rc"
+unset GS_ADMIN_PW
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (40) A3: Lesefehler hinterlässt keine Temp-Datei
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+mkdir -p "$T/tmpdir"
+export TMPDIR="$T/tmpdir"
+export GS_USERS_500=1
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "A3 Lesefehler Exit 2"      "2" "$rc"
+check "A3 keine Temp-Datei übrig" "0" "$(find "$T/tmpdir" -type f | awk 'END{print NR}')"
+unset GS_USERS_500 TMPDIR
 
 rm -rf "$T"
