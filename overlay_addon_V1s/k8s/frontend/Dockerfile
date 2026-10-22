@@ -1,7 +1,7 @@
 # Multi-Stage-Build für das p2d2-Frontend (Astro SSR, standalone).
 #
-# Stufe 1 (build):    node:20      — npm ci + npm run build:de1 IM Container.
-# Stufe 2 (runtime):  node:20-slim — übernimmt dist/ + node_modules.
+# Stufe 1 (build):    node:24.22.1 — npm ci + npm run build:de1 IM Container.
+# Stufe 2 (runtime):  node:24.22.1-slim — übernimmt dist/ + node_modules.
 #
 # Der Build läuft damit IM Container (nicht auf dem k3s-Node): der Host braucht nur
 # git (Clone) + docker + k3s ctr — kein Node.js/npm.
@@ -14,7 +14,7 @@
 # ConfigMaps/Secrets (siehe k8s/VARIABLES.md).
 
 # ── Build-Stage ──────────────────────────────────────────────────────────────
-FROM node:20 AS build
+FROM node:24.22.1 AS build
 
 ARG PUBLIC_SITE_URL
 ARG PUBLIC_WFST_ENDPOINT
@@ -37,6 +37,9 @@ WORKDIR /app
 # `workspaces: ["packages/core"]`.
 COPY package*.json ./
 COPY packages/core/package.json ./packages/core/
+# Optionaler engine-strict-Pin: .npmrc übernehmen, falls im Klon vorhanden.
+# Die Wildcard .npmrc* läuft auch ohne .npmrc im Klon durch.
+COPY .npmrc* ./
 RUN npm ci
 
 # Quellen kopieren und die Stage bauen (BUILD_SCRIPT je Stage: build, build:develop,
@@ -45,7 +48,7 @@ COPY . .
 RUN npm run "$BUILD_SCRIPT"
 
 # ── Runtime-Stage ────────────────────────────────────────────────────────────
-FROM node:20-slim
+FROM node:24.22.1-slim
 
 ENV NODE_ENV=production
 WORKDIR /app

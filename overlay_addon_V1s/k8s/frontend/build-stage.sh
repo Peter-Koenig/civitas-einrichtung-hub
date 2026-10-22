@@ -7,7 +7,7 @@
 # fest verdrahtet (F5).
 #
 # Ablauf: git clone (Host) -> docker build (Multi-Stage: npm ci + npm run
-#         <build-script> im node:20-Container) -> docker save | k3s ctr import
+#         <build-script> im node:24.22.1-Container) -> docker save | k3s ctr import
 #
 # Aufruf (auf dem k3s-Node, als User mit docker-/k3s-ctr-Zugriff):
 #   set -a; source ../.env.p2d2-addon; set +a   # liefert P2D2_GITHUB_TOKEN / P2D2_GITLAB_TOKEN
@@ -162,7 +162,7 @@ TAG="$(addon_compute_image_tag "${STAGE}" "${GIT_HOST}" "${GIT_REPO_PATH}" "${GI
 cp "${SCRIPT_DIR}/Dockerfile" "${APP_DIR}/Dockerfile"
 cp "${SCRIPT_DIR}/.dockerignore" "${APP_DIR}/.dockerignore"
 
-echo ">> docker build (npm ci + npm run ${BUILD_SCRIPT} im node:20-Container, Tag ${TAG})"
+echo ">> docker build (npm ci + npm run ${BUILD_SCRIPT} im node:24.22.1-Container, Tag ${TAG})"
 docker build \
   --build-arg BUILD_SCRIPT="${BUILD_SCRIPT}" \
   --build-arg PUBLIC_SITE_URL="${PUBLIC_SITE_URL}" \

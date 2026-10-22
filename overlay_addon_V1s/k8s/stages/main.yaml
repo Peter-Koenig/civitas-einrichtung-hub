@@ -19,7 +19,7 @@ spec:
     spec:
       containers:
         - name: astro
-          # Image-basierte Auslieferung (statt node:20-slim + PVC). Das Image wird
+          # Image-basierte Auslieferung (statt node:24.22.1-slim + PVC). Das Image wird
           # ausschliesslich über __P2D2_IMAGE__ gerendert (F6), der Tag kommt aus
           # install_addon_frontend_build (deterministisch, cfg-<12-hex>).
           image: __P2D2_IMAGE__
