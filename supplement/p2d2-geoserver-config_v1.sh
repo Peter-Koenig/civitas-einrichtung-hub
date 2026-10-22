@@ -78,6 +78,11 @@ howto() {
   printf '%s\n' "$*" >&"$HOWTO_FD"
 }
 
+# howto_step "<Methode Pfad>" "<erwartet>" "<erhalten>" "<Beschreibung>"
+howto_step() {
+  howto "$1 (erwartet $2, erhalten $3)${4:+ — $4}"
+}
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Argumente
 # ═══════════════════════════════════════════════════════════════════════════
@@ -98,6 +103,10 @@ Optionen:
   --url BASE     GeoServer-Basis-URL (z. B. https://geoportal.<domain>/geoserver).
   --ns NAMESPACE Kubernetes-Namespace (Standard: ADDON_NS bzw. cc-prd-geodata-stack).
   --help, -h     Diese Hilfe.
+
+Umgebungsvariablen:
+  GS_ADMIN_USER, GS_ADMIN_PW   Admin-Zugang für GeoServer-REST. Nur GEMEINSAM setzen;
+                               sie haben Vorrang vor dem Secret geoserver-geoserver.
 
 Exit-Codes: 0 = ok, 1 = Fehler, 2 = Aufruf-/Voraussetzungsfehler.
 EOF
@@ -255,9 +264,11 @@ preflight() {
 
   # Admin-Zugang: Secret zuerst, Env-Override GS_ADMIN_USER/GS_ADMIN_PW gewinnt.
   # Das Admin-Passwort wird nie ausgegeben.
-  local secret_user secret_pw
+  local secret_user secret_pw pw_src
   secret_user="$(kubectl -n "$NAMESPACE" get secret geoserver-geoserver -o jsonpath='{.data.geoserver-user}' 2>/dev/null | base64 -d 2>/dev/null || true)"
   secret_pw="$(kubectl -n "$NAMESPACE" get secret geoserver-geoserver -o jsonpath='{.data.geoserver-password}' 2>/dev/null | base64 -d 2>/dev/null || true)"
+  # Quelle festhalten, bevor die Defaults greifen (für aussagekräftige Fehlermeldung).
+  [[ -n "${GS_ADMIN_PW+x}" ]] && pw_src="Umgebung" || pw_src="Secret"
   GS_ADMIN_USER="${GS_ADMIN_USER:-$secret_user}"
   GS_ADMIN_PW="${GS_ADMIN_PW:-$secret_pw}"
   [[ -n "$GS_ADMIN_USER" && -n "$GS_ADMIN_PW" ]] \
@@ -267,7 +278,7 @@ preflight() {
   local code
   code="$(_gs_http_code GET 'security/roles.json')"
   if [[ "$code" != "200" ]]; then
-    log_error "GeoServer nicht erreichbar (GET security/roles.json -> $code): $GS_REST"
+    log_error "GeoServer nicht erreichbar (GET security/roles.json -> $code, Benutzer $GS_ADMIN_USER, Passwort aus $pw_src): $GS_REST"
     exit 2
   fi
   log_ok "Preflight ok (Namespace ${NAMESPACE}, GeoServer ${GS_BASE})"
@@ -412,10 +423,13 @@ do_install() {
       log "  Rolle vorhanden: $role"
     else
       log "  Rolle anlegen: $role"
-      howto "POST security/roles/role/$role (erwartet 200) — idempotent"
-      [[ "$DRY_RUN" -eq 1 ]] && continue
+      if [[ "$DRY_RUN" -eq 1 ]]; then
+        howto_step "POST security/roles/role/$role" "200/201" "-" "idempotent"
+        continue
+      fi
       local code
       code="$(_gs_http_code POST "security/roles/role/$role")"
+      howto_step "POST security/roles/role/$role" "200/201" "$code" "idempotent"
       [[ "$code" == "200" || "$code" == "201" ]] || { log_error "Rolle $role anlegen fehlgeschlagen (HTTP $code)"; return 1; }
       log_ok "  Rolle $role angelegt"
     fi
@@ -447,40 +461,44 @@ do_install() {
     uexists="nein"; _has "$user" "${existing_users[@]}" && uexists="ja"
 
     if [[ "$uexists" == "nein" ]]; then
-      howto "POST security/usergroup/users (XML <user><userName>$user</userName><password><PASSWORD></password><enabled>true</enabled></user>, Content-Type text/xml, erwartet 201)"
       if [[ "$DRY_RUN" -eq 0 ]]; then
         f="$(mktemp)"; chmod 600 "$f"
         printf '<?xml version="1.0" encoding="UTF-8"?>\n<user><userName>%s</userName><password>%s</password><enabled>true</enabled></user>\n' "$user" "$password" > "$f"
         local code
         code="$(_gs_http_code POST 'security/usergroup/users' "$f" 'text/xml')"
         rm -f "$f"
+        howto_step "POST security/usergroup/users" "200/201" "$code" "XML <user><userName>$user</userName><password><PASSWORD></password><enabled>true</enabled></user>, Content-Type text/xml"
         [[ "$code" == "200" || "$code" == "201" ]] || { log_error "Benutzer $user anlegen fehlgeschlagen (HTTP $code)"; return 1; }
         log_ok "  Benutzer $user angelegt"
       else
+        howto_step "POST security/usergroup/users" "200/201" "-" "XML <user><userName>$user</userName><password><PASSWORD></password><enabled>true</enabled></user>, Content-Type text/xml (geplant)"
         log "  Benutzer $user würde angelegt (dry-run)"
       fi
     else
-      howto "POST security/usergroup/user/$user (XML <user><password><PASSWORD></password><enabled>true</enabled></user>, Content-Type text/xml, erwartet 200) — Passwort setzen, Benutzer aktivieren"
       if [[ "$DRY_RUN" -eq 0 ]]; then
         f="$(mktemp)"; chmod 600 "$f"
         printf '<?xml version="1.0" encoding="UTF-8"?>\n<user><password>%s</password><enabled>true</enabled></user>\n' "$password" > "$f"
         local code
         code="$(_gs_http_code POST "security/usergroup/user/$user" "$f" 'text/xml')"
         rm -f "$f"
+        howto_step "POST security/usergroup/user/$user" "200" "$code" "XML <user><password><PASSWORD></password><enabled>true</enabled></user>, Content-Type text/xml — Passwort setzen, Benutzer aktivieren"
         [[ "$code" == "200" ]] || { log_error "Passwort für $user setzen fehlgeschlagen (HTTP $code)"; return 1; }
         log_ok "  Passwort für $user gesetzt"
       else
+        howto_step "POST security/usergroup/user/$user" "200" "-" "XML <user><password><PASSWORD></password><enabled>true</enabled></user>, Content-Type text/xml — Passwort setzen, Benutzer aktivieren (geplant)"
         log "  Passwort für $user würde gesetzt (dry-run)"
       fi
     fi
 
     # Rollen zuordnen (idempotent, POST)
     for role in ${roles//,/ }; do
-      howto "POST security/roles/role/$role/user/$user (erwartet 200) — idempotent"
       if [[ "$DRY_RUN" -eq 0 ]]; then
         local code
         code="$(_gs_http_code POST "security/roles/role/$role/user/$user")"
+        howto_step "POST security/roles/role/$role/user/$user" "200" "$code" "idempotent"
         [[ "$code" == "200" ]] || { log_error "Zuordnung $role -> $user fehlgeschlagen (HTTP $code)"; return 1; }
+      else
+        howto_step "POST security/roles/role/$role/user/$user" "200" "-" "idempotent (geplant)"
       fi
     done
   done <<< "$SOL_TABLE"
@@ -557,9 +575,12 @@ do_uninstall() {
         log "  Zuordnung $role/$user nicht vorhanden — übersprungen"
         continue
       fi
-      howto "DELETE security/roles/role/$role/user/$user (erwartet 200, 404 = schon weg)"
-      [[ "$DRY_RUN" -eq 1 ]] && continue
+      if [[ "$DRY_RUN" -eq 1 ]]; then
+        howto_step "DELETE security/roles/role/$role/user/$user" "200" "-" "404 = schon weg"
+        continue
+      fi
       code="$(_gs_http_code DELETE "security/roles/role/$role/user/$user")"
+      howto_step "DELETE security/roles/role/$role/user/$user" "200" "$code" "404 = schon weg"
       case "$code" in
         200|201) log_ok "  Zuordnung $role/$user gelöst" ;;
         404)     log "  Zuordnung $role/$user schon weg" ;;
@@ -575,9 +596,12 @@ do_uninstall() {
       log "  Benutzer $user nicht vorhanden — übersprungen"
       continue
     fi
-    howto "DELETE security/usergroup/user/$user (erwartet 200, 404 = schon weg)"
-    [[ "$DRY_RUN" -eq 1 ]] && continue
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      howto_step "DELETE security/usergroup/user/$user" "200" "-" "404 = schon weg"
+      continue
+    fi
     code="$(_gs_http_code DELETE "security/usergroup/user/$user")"
+    howto_step "DELETE security/usergroup/user/$user" "200" "$code" "404 = schon weg"
     case "$code" in
       200|201) log_ok "  Benutzer $user gelöscht" ;;
       404)     log "  Benutzer $user schon weg" ;;
@@ -593,9 +617,12 @@ do_uninstall() {
         log "  Rolle $role nicht vorhanden — übersprungen"
         continue
       fi
-      howto "DELETE security/roles/role/$role (erwartet 200, 404 = schon weg)"
-      [[ "$DRY_RUN" -eq 1 ]] && continue
+      if [[ "$DRY_RUN" -eq 1 ]]; then
+        howto_step "DELETE security/roles/role/$role" "200" "-" "404 = schon weg"
+        continue
+      fi
       code="$(_gs_http_code DELETE "security/roles/role/$role")"
+      howto_step "DELETE security/roles/role/$role" "200" "$code" "404 = schon weg"
       case "$code" in
         200|201) log_ok "  Rolle $role gelöscht" ;;
         404)     log "  Rolle $role schon weg" ;;
@@ -660,8 +687,48 @@ main() {
   # How-To-Datei vorbereiten
   HOWTO_FILE="p2d2-geoserver-config_v1_$(date +%Y%m%d-%H%M).howto.md"
   exec 3> "$HOWTO_FILE"
+
+  local git_hash mode
+  git_hash="$(git rev-parse --short HEAD 2>/dev/null || true)"
+  [[ -n "$git_hash" ]] || git_hash="unbekannt"
+  mode="$([[ "$DRY_RUN" -eq 1 ]] && echo 'dry-run (geplant)' || echo 'ausgeführt')"
+
   howto "# How-To: GeoServer-Benutzer/Rollen/Secrets (${SCRIPT_NAME})"
-  howto "Mode: $([[ "$DRY_RUN" -eq 1 ]] && echo 'dry-run (geplant)' || echo 'ausgeführt')"
+  howto "Git-Hash: ${git_hash}"
+  howto "Zeitpunkt: $(date -Is)"
+  howto "Modus: ${mode}"
+  howto "GeoServer: ${GS_BASE}"
+  howto "Namespace: ${NAMESPACE}"
+  howto ""
+  howto "## Konventionen"
+  howto '- Authentifizierung: curl -K - mit `user = "<user>:<password>"` über stdin (Anführungszeichen und Backslash im Wert escapen).'
+  howto '- Request-Bodies: mktemp-Datei (Mode 0600), `--data-binary @datei`.'
+  howto '- Passwort: `openssl rand -hex 24`, mind. 16 Zeichen, Zeichensatz A-Za-z0-9._~@%+=:,/- .'
+  howto '- Secret: Typ Opaque, Key `password`, Merge-Manifest per `kubectl apply`, Wert base64.'
+  howto '- Admin-Zugang: Secret `geoserver-geoserver`, Keys `geoserver-user`/`geoserver-password`.'
+  howto ""
+  howto "## Lesende Schritte"
+  howto 'GET security/roles.json             -> {"roles":["ADMIN",...]}'
+  howto 'GET security/usergroup/users.json   -> {"users":[{"userName":...,"enabled":true},...]}'
+  howto 'GET security/roles/user/<user>.json -> {"roles":[...]}  (404 = leer)'
+  howto ""
+  howto "## Secret-Schritte"
+  howto "Lesen:   kubectl -n ${NAMESPACE} get secret <name> -o jsonpath='{.data.password}' (Wert nie ausgeben)"
+  howto "Anlegen: kubectl apply -f <manifest> mit"
+  howto '  {"apiVersion":"v1","kind":"Secret","metadata":{"name":"<name>","namespace":"<ns>"},"type":"Opaque","data":{"password":"<BASE64>"}}'
+  howto "Löschen: kubectl -n ${NAMESPACE} delete secret <name> --ignore-not-found"
+  howto ""
+  howto "## Verifikation"
+  howto "Positiv: GET ${GS_BASE}/ows?service=WFS&version=2.0.0&request=GetCapabilities (Basic <user>) -> 200"
+  howto "Negativ: gleiches mit falschem Passwort -> 401"
+  howto "Rollen:  GET security/roles/user/<user>.json; Soll-Rollen müssen enthalten sein."
+  howto ""
+  howto "## Entscheidungslogik"
+  howto "- Secret: wiederverwenden, wenn ein gültiger Wert vorhanden ist, sonst neu erzeugen."
+  howto "- Benutzer: anlegen (POST usergroup/users) oder Passwort setzen (POST usergroup/user/<name>)."
+  howto "- Uninstall: nur Vorhandenes löschen; 404 gilt als 'schon weg'."
+  howto "- Reihenfolge Install: Rollen -> je Benutzer Secret -> Benutzer -> Zuordnungen -> Verifikation."
+  howto "- Reihenfolge Uninstall: Zuordnungen -> Benutzer -> Rollen -> Secrets -> Verifikation."
   howto ""
 
   if [[ "$UNINSTALL" -eq 1 ]]; then
