@@ -247,7 +247,8 @@ preflight() {
 # Bestand lesen (Benutzer + Rollen), nie Passwörter
 # ═══════════════════════════════════════════════════════════════════════════
 read_users()  { _gs_curl GET 'security/usergroup/users.json' | jq -r '.users[]?.userName // empty' 2>/dev/null | sort; }
-read_roles()  { _gs_curl GET 'security/roles.json' | jq -r '.roles[]?.name // .roles.role[]?.name // empty' 2>/dev/null | sort; }
+read_roles()  { _gs_curl GET 'security/roles.json' | jq -r '.roles[]? // empty' 2>/dev/null | sort; }
+read_user_roles() { _gs_curl GET "security/roles/user/$1.json" | jq -r '.roles[]? // empty' 2>/dev/null | sort; }
 
 # _has <needle> <items...> — 0 wenn needle enthalten.
 _has() {
@@ -385,6 +386,7 @@ do_install() {
 
 verify_install() {
   local line key _ user roles secret password code neg
+  local -a actual_roles
   log "== Verifikation =="
   while IFS='|' read -r key _ user roles secret; do
     [[ -n "$key" ]] || continue
@@ -408,6 +410,12 @@ verify_install() {
     else
       log_ok "  $key: 200 (positiv), 401 (negativ) — Anmeldung wird ausgewertet"
     fi
+
+    # Rollenliste je Benutzer (Soll ⊆ Ist)
+    mapfile -t actual_roles < <(read_user_roles "$user")
+    for role in ${roles//,/ }; do
+      _has "$role" "${actual_roles[@]}" || { log_error "Verifikation $key: Rolle $role fehlt bei $user"; return 1; }
+    done
   done <<< "$SOL_TABLE"
   return 0
 }
