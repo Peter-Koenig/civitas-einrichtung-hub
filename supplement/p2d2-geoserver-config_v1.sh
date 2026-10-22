@@ -837,14 +837,14 @@ verify_workspaces() {
       howto_step "GET workspaces/$ws.json" "200" "$code" "name prüfen"
       log_error "Verifikation $ws: GET workspaces/$ws.json -> $code (erwartet 200)"; rc=1
     fi
-    # Virtuelle Dienste (informativ)
+    # Virtuelle Dienste (hart, R7)
     code="$(_http_code_url "$GS_BASE/$ws/wms?service=WMS&version=1.3.0&request=GetCapabilities")"
-    howto_step "GET $ws/wms GetCapabilities" "200" "$code" "informativ"
-    if [[ "$code" == "200" ]]; then log_ok "  $ws: WMS GetCapabilities 200"; else log_warn "Verifikation $ws: WMS GetCapabilities -> $code (erwartet 200)"; fi
+    howto_step "GET $ws/wms GetCapabilities" "200" "$code" "Dienstprüfung"
+    if [[ "$code" == "200" ]]; then log_ok "  $ws: WMS GetCapabilities 200"; else log_error "Verifikation $ws: WMS GetCapabilities -> $code (erwartet 200)"; rc=1; fi
     if [[ "$ws" != "friedhofsplaene" ]]; then
       code="$(_http_code_url "$GS_BASE/$ws/wfs?service=WFS&version=2.0.0&request=GetCapabilities")"
-      howto_step "GET $ws/wfs GetCapabilities" "200" "$code" "informativ"
-      if [[ "$code" == "200" ]]; then log_ok "  $ws: WFS GetCapabilities 200"; else log_warn "Verifikation $ws: WFS GetCapabilities -> $code (erwartet 200)"; fi
+      howto_step "GET $ws/wfs GetCapabilities" "200" "$code" "Dienstprüfung"
+      if [[ "$code" == "200" ]]; then log_ok "  $ws: WFS GetCapabilities 200"; else log_error "Verifikation $ws: WFS GetCapabilities -> $code (erwartet 200)"; rc=1; fi
     fi
   done <<< "$WS_TABLE"
   return "$rc"
@@ -983,7 +983,7 @@ install_datastores() {
 }
 
 verify_datastores() {
-  local key ws ds schema uservar secret uri user code rc=0 cnt
+  local key ws ds schema uservar secret uri user code rc=0 cnt diag
   local en get_schema get_user get_db get_host get_ns
   log "== Verifikation Datastores =="
   while IFS='|' read -r key ws ds schema uservar secret; do
@@ -1004,7 +1004,14 @@ verify_datastores() {
       if [[ "$en" == "true" && "$get_schema" == "$schema" && "$get_user" == "$user" && "$get_db" == "$_DB_NAME" && "$get_host" == "$_DB_HOST" && "$get_ns" == "$uri" ]]; then
         log_ok "  $ds: Parameter ok"
       else
-        log_error "Verifikation $ds: Parameter weichen ab"; rc=1
+        diag=""
+        [[ "$en" == "true" ]] || diag+=" enabled(erwartet true, vorhanden $en)"
+        [[ "$get_schema" == "$schema" ]] || diag+=" schema(erwartet $schema, vorhanden $get_schema)"
+        [[ "$get_user" == "$user" ]] || diag+=" user(erwartet $user, vorhanden $get_user)"
+        [[ "$get_db" == "$_DB_NAME" ]] || diag+=" database(erwartet $_DB_NAME, vorhanden $get_db)"
+        [[ "$get_host" == "$_DB_HOST" ]] || diag+=" host(erwartet $_DB_HOST, vorhanden $get_host)"
+        [[ "$get_ns" == "$uri" ]] || diag+=" namespace(erwartet $uri, vorhanden $get_ns)"
+        log_error "Verifikation $ds: Parameter weichen ab:$diag"; rc=1
       fi
     else
       rm -f "$_GS_BODY_FILE"
@@ -1022,7 +1029,7 @@ verify_datastores() {
     else
       rm -f "$_GS_BODY_FILE"
       howto_step "GET workspaces/$ws/datastores/$ds/featuretypes.json?list=available" "200" "$code" "DB-Verbindungstest"
-      log_warn "Verifikation $ds: list=available -> $code (erwartet 200)"; rc=1
+      log_error "Verifikation $ds: list=available -> $code (erwartet 200)"; rc=1
     fi
   done <<< "$DS_TABLE"
   return "$rc"
@@ -1232,16 +1239,21 @@ main() {
   preflight
   _load_inventory || exit 2
 
-  # How-To-Datei vorbereiten
-  HOWTO_FILE="p2d2-geoserver-config_v1_$(date +%Y%m%d-%H%M).howto.md"
+  # How-To-Datei vorbereiten (R3: Modus im Namen, damit Install/Uninstall nicht kollidieren)
+  local howto_mode git_hash mode
+  if [[ "$UNINSTALL" -eq 1 ]]; then
+    [[ "$DRY_RUN" -eq 1 ]] && howto_mode="uninstall-dry-run" || howto_mode="uninstall"
+  else
+    [[ "$DRY_RUN" -eq 1 ]] && howto_mode="install-dry-run" || howto_mode="install"
+  fi
+  HOWTO_FILE="p2d2-geoserver-config_v1_${howto_mode}_$(date +%Y%m%d-%H%M%S).howto.md"
   exec 3> "$HOWTO_FILE"
 
-  local git_hash mode
   git_hash="$(git rev-parse --short HEAD 2>/dev/null || true)"
   [[ -n "$git_hash" ]] || git_hash="unbekannt"
   mode="$([[ "$DRY_RUN" -eq 1 ]] && echo 'dry-run (geplant)' || echo 'ausgeführt')"
 
-  howto "# How-To: GeoServer-Benutzer/Rollen/Secrets (${SCRIPT_NAME})"
+  howto "# How-To: GeoServer-Konfiguration: Benutzer/Rollen/Secrets/Workspaces/Datastores/FeatureTypes (${SCRIPT_NAME})"
   howto "Git-Hash: ${git_hash}"
   howto "Zeitpunkt: $(date -Is)"
   howto "Modus: ${mode}"
@@ -1286,7 +1298,7 @@ main() {
   howto 'DELETE workspaces/<ws>    -> 200 = gelöscht, 404 = schon weg, ohne recurse'
   howto '- Anlegen: Workspace fehlt -> POST namespaces (legt Workspace und Namespace an).'
   howto '- Vorhanden: GET namespaces/<ws>.json; URI gleich -> ok, abweichend/fehlt -> Fehler, keine Änderung.'
-  howto '- Verifikation: namespaces/<ws>.json URI, workspaces/<ws>.json name, WMS/WFS GetCapabilities (informativ).'
+  howto '- Verifikation: namespaces/<ws>.json URI, workspaces/<ws>.json name, WMS/WFS GetCapabilities.'
   howto ""
   howto "## Datastores"
   howto 'GET workspaces/<ws>/datastores.json            -> {"dataStores":{"dataStore":[{"name":...,"href":...}]}}  ("" = leer)'
