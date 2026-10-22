@@ -58,6 +58,18 @@ log_ok()   { printf 'OK   %s\n' "$*"; }
 log_warn() { printf 'WARN %s\n' "$*" >&2; }
 log_error(){ printf 'FEHLER %s\n' "$*" >&2; }
 
+# Legacy-Umgebungsvariablen: nur Namen melden, nie Werte (K6).
+warn_legacy_vars() {
+  local var
+  while IFS= read -r var; do
+    case "$var" in
+      P2D2_*_WFST_PASSWORD|WFST_PW_*|WFS_RO_PW|WFS_PW)
+        log_warn "Legacy-Variable $var gesetzt — wird ignoriert (Secret ist Single Source of Truth)"
+        ;;
+    esac
+  done < <(compgen -v | sort)
+}
+
 # ═══════════════════════════════════════════════════════════════════════════
 # How-To-Ausgabe (A5): pro Schritt Methode/Pfad/Payload/HTTP-Code, ohne Werte.
 # ═══════════════════════════════════════════════════════════════════════════
@@ -70,10 +82,25 @@ howto() {
 # Argumente
 # ═══════════════════════════════════════════════════════════════════════════
 usage() {
-  cat >&2 <<EOF
-Usage: bash ./${SCRIPT_NAME} [--dry-run] [--uninstall] [--url BASE] [--ns NAMESPACE] [--help|-h]
-EOF
+  printf 'Usage: bash ./%s [--dry-run] [--uninstall] [--url BASE] [--ns NAMESPACE] [--help|-h]\n' "$SCRIPT_NAME" >&2
   exit 2
+}
+
+print_help() {
+  cat <<EOF
+${SCRIPT_NAME} — GeoServer-Konfiguration, Schritt 1: WFS-T-/WFS-Benutzer, Rollen und Kubernetes-Secrets.
+
+Usage: bash ./${SCRIPT_NAME} [--dry-run] [--uninstall] [--url BASE] [--ns NAMESPACE] [--help|-h]
+
+Optionen:
+  --dry-run      Nur planen: keine Änderung an GeoServer oder Kubernetes.
+  --uninstall    Genau die angelegten Benutzer/Rollen/Secrets wieder entfernen.
+  --url BASE     GeoServer-Basis-URL (z. B. https://geoportal.<domain>/geoserver).
+  --ns NAMESPACE Kubernetes-Namespace (Standard: ADDON_NS bzw. cc-prd-geodata-stack).
+  --help, -h     Diese Hilfe.
+
+Exit-Codes: 0 = ok, 1 = Fehler, 2 = Aufruf-/Voraussetzungsfehler.
+EOF
 }
 
 while [[ $# -gt 0 ]]; do
@@ -86,7 +113,7 @@ while [[ $# -gt 0 ]]; do
     --ns)
       [[ $# -ge 2 ]] || usage
       NAMESPACE="$2"; shift 2 ;;
-    --help|-h) usage ;;
+    --help|-h) print_help; exit 0 ;;
     *) log_error "Unbekanntes Argument: $1"; usage ;;
   esac
 done
@@ -112,7 +139,7 @@ _env_resolve() {
   val="${!key:-}"
   [[ -n "$val" ]] && { printf '%s' "$val"; return 0; }
   local f
-  for f in "./.env.p2d2-addon" "../.env.p2d2-addon"; do
+  for f in "./.env.p2d2-addon" "../.env.p2d2-addon" "../../.env.p2d2-addon"; do
     if val="$(_env_get "$f" "$key")" && [[ -n "$val" ]]; then
       printf '%s' "$val"; return 0
     fi
@@ -219,6 +246,9 @@ preflight() {
     command -v "$cmd" >/dev/null 2>&1 || { log_error "Voraussetzung fehlt: $cmd"; rc=2; }
   done
   [[ "$rc" -eq 0 ]] || exit "$rc"
+
+  # GS_BASE muss gesetzt sein (K4): --url oder ADDON_DOMAIN/DOMAIN_NAME (.env.p2d2-addon)
+  [[ -n "$GS_BASE" ]] || { log_error "GS_BASE leer — bitte --url BASE oder ADDON_DOMAIN (bzw. DOMAIN_NAME) setzen"; exit 2; }
 
   kubectl -n "$NAMESPACE" get namespace "$NAMESPACE" >/dev/null 2>&1 \
     || { log_error "Namespace existiert nicht: $NAMESPACE"; exit 2; }
@@ -333,7 +363,12 @@ do_install() {
       password="$(_pw_gen)"
       log "  ${key}: neues Passwort erzeugt"
       howto "kubectl -n $NAMESPACE apply secret $secret (Key password) — Wert nicht ausgegeben"
-      [[ "$DRY_RUN" -eq 1 ]] || _secret_apply "$NAMESPACE" "$secret" "password=$password"
+      if [[ "$DRY_RUN" -eq 0 ]]; then
+        if ! _secret_apply "$NAMESPACE" "$secret" "password=$password"; then
+          log_error "Secret $secret konnte nicht gespeichert werden — Abbruch vor GeoServer-Änderung"
+          return 1
+        fi
+      fi
     fi
 
     # GeoServer: Benutzer anlegen oder Passwort setzen.
@@ -354,10 +389,10 @@ do_install() {
         log "  Benutzer $user würde angelegt (dry-run)"
       fi
     else
-      howto "POST security/usergroup/user/$user (XML <user><password><PASSWORD></password></user>, Content-Type text/xml, erwartet 200) — nur Passwort setzen"
+      howto "POST security/usergroup/user/$user (XML <user><password><PASSWORD></password><enabled>true</enabled></user>, Content-Type text/xml, erwartet 200) — Passwort setzen, Benutzer aktivieren"
       if [[ "$DRY_RUN" -eq 0 ]]; then
         f="$(mktemp)"; chmod 600 "$f"
-        printf '<?xml version="1.0" encoding="UTF-8"?>\n<user><password>%s</password></user>\n' "$password" > "$f"
+        printf '<?xml version="1.0" encoding="UTF-8"?>\n<user><password>%s</password><enabled>true</enabled></user>\n' "$password" > "$f"
         local code
         code="$(_gs_http_code POST "security/usergroup/user/$user" "$f" 'text/xml')"
         rm -f "$f"
@@ -379,8 +414,12 @@ do_install() {
     done
   done <<< "$SOL_TABLE"
 
-  # Verifikation
-  verify_install || return 1
+  # Verifikation (im Dry-run übersprungen, K1)
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "  Verifikation wird im Dry-run übersprungen"
+  else
+    verify_install || return 1
+  fi
   return 0
 }
 
@@ -424,38 +463,69 @@ verify_install() {
 # Uninstall (nur exakt benannte Objekte)
 # ═══════════════════════════════════════════════════════════════════════════
 do_uninstall() {
-  local line key _ user roles secret code rc=0
+  local line key _ user roles secret code rc=0 role
+  local -a existing_users existing_roles user_roles
   log "== Uninstall =="
 
-  # 1) Rollenzuordnungen lösen
+  # Bestand einmal lesen (Idempotenz, K3). GeoServer-Erreichbarkeit und Admin-Zugang
+  # hat bereits preflight() geprüft und bricht dort bei Fehlern mit Exit 2 ab,
+  # bevor hier irgendetwas gelöscht wird.
+  mapfile -t existing_users < <(read_users)
+  mapfile -t existing_roles < <(read_roles)
+
+  # 1) Rollenzuordnungen lösen (nur vorhandene)
   while IFS='|' read -r key _ user roles secret; do
     [[ -n "$key" ]] || continue
+    mapfile -t user_roles < <(read_user_roles "$user")
     for role in ${roles//,/ }; do
-      howto "DELETE security/roles/role/$role/user/$user (erwartet 200)"
+      if ! _has "$role" "${user_roles[@]}"; then
+        log "  Zuordnung $role/$user nicht vorhanden — übersprungen"
+        continue
+      fi
+      howto "DELETE security/roles/role/$role/user/$user (erwartet 200, 404 = schon weg)"
       [[ "$DRY_RUN" -eq 1 ]] && continue
       code="$(_gs_http_code DELETE "security/roles/role/$role/user/$user")"
-      [[ "$code" == "200" ]] || { log_error "Zuordnung $role/$user lösen fehlgeschlagen (HTTP $code)"; rc=1; }
+      case "$code" in
+        200|201) log_ok "  Zuordnung $role/$user gelöst" ;;
+        404)     log "  Zuordnung $role/$user schon weg" ;;
+        *)       log_error "Zuordnung $role/$user lösen fehlgeschlagen (HTTP $code)"; rc=1 ;;
+      esac
     done
   done <<< "$SOL_TABLE"
 
-  # 2) Benutzer löschen
+  # 2) Benutzer löschen (nur vorhandene)
   while IFS='|' read -r key _ user roles secret; do
     [[ -n "$key" ]] || continue
-    howto "DELETE security/usergroup/user/$user (erwartet 200)"
+    if ! _has "$user" "${existing_users[@]}"; then
+      log "  Benutzer $user nicht vorhanden — übersprungen"
+      continue
+    fi
+    howto "DELETE security/usergroup/user/$user (erwartet 200, 404 = schon weg)"
     [[ "$DRY_RUN" -eq 1 ]] && continue
     code="$(_gs_http_code DELETE "security/usergroup/user/$user")"
-    [[ "$code" == "200" ]] || { log_error "Benutzer $user löschen fehlgeschlagen (HTTP $code)"; rc=1; }
+    case "$code" in
+      200|201) log_ok "  Benutzer $user gelöscht" ;;
+      404)     log "  Benutzer $user schon weg" ;;
+      *)       log_error "Benutzer $user löschen fehlgeschlagen (HTTP $code)"; rc=1 ;;
+    esac
   done <<< "$SOL_TABLE"
 
-  # 3) Rollen löschen
-  local role
+  # 3) Rollen löschen (nur vorhandene)
   while IFS='|' read -r key _ user roles secret; do
     [[ -n "$key" ]] || continue
     for role in ${roles//,/ }; do
-      howto "DELETE security/roles/role/$role (erwartet 200)"
+      if ! _has "$role" "${existing_roles[@]}"; then
+        log "  Rolle $role nicht vorhanden — übersprungen"
+        continue
+      fi
+      howto "DELETE security/roles/role/$role (erwartet 200, 404 = schon weg)"
       [[ "$DRY_RUN" -eq 1 ]] && continue
       code="$(_gs_http_code DELETE "security/roles/role/$role")"
-      [[ "$code" == "200" ]] || { log_error "Rolle $role löschen fehlgeschlagen (HTTP $code)"; rc=1; }
+      case "$code" in
+        200|201) log_ok "  Rolle $role gelöscht" ;;
+        404)     log "  Rolle $role schon weg" ;;
+        *)       log_error "Rolle $role löschen fehlgeschlagen (HTTP $code)"; rc=1 ;;
+      esac
     done
   done <<< "$SOL_TABLE"
 
@@ -473,7 +543,12 @@ do_uninstall() {
 
   [[ "$rc" -eq 0 ]] || return 1
 
-  # Verifikation: Benutzer/Rollen/Secrets nicht mehr vorhanden
+  # Verifikation (im Dry-run übersprungen, K2)
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "  Verifikation wird im Dry-run übersprungen"
+    return 0
+  fi
+
   local -a after_users after_roles
   mapfile -t after_users < <(read_users)
   mapfile -t after_roles < <(read_roles)
@@ -494,6 +569,7 @@ do_uninstall() {
 # Haupt
 # ═══════════════════════════════════════════════════════════════════════════
 main() {
+  warn_legacy_vars
   preflight
 
   # How-To-Datei vorbereiten
