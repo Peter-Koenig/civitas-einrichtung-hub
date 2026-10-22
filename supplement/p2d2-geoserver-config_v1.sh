@@ -303,9 +303,9 @@ _gs_get() {
 # read_users — Benutzernamen (sortiert) auf stdout; 0 ok, 1 Lesefehler.
 read_users() {
   _gs_get 'security/usergroup/users.json'
-  [[ "$_GS_CODE" == "200" ]] || { log_error "Lesen security/usergroup/users.json fehlgeschlagen (HTTP $_GS_CODE)"; return 1; }
+  [[ "$_GS_CODE" == "200" ]] || { rm -f "$_GS_BODY_FILE"; log_error "Lesen security/usergroup/users.json fehlgeschlagen (HTTP $_GS_CODE)"; return 1; }
   jq -e '.users | type == "array"' "$_GS_BODY_FILE" >/dev/null 2>&1 \
-    || { log_error "security/usergroup/users.json: unerwartete JSON-Form"; return 1; }
+    || { rm -f "$_GS_BODY_FILE"; log_error "security/usergroup/users.json: unerwartete JSON-Form"; return 1; }
   jq -r '.users[]?.userName // empty' "$_GS_BODY_FILE" 2>/dev/null | sort
   rm -f "$_GS_BODY_FILE"
 }
@@ -313,9 +313,9 @@ read_users() {
 # read_roles — Rollen (sortiert) auf stdout; 0 ok, 1 Lesefehler.
 read_roles() {
   _gs_get 'security/roles.json'
-  [[ "$_GS_CODE" == "200" ]] || { log_error "Lesen security/roles.json fehlgeschlagen (HTTP $_GS_CODE)"; return 1; }
+  [[ "$_GS_CODE" == "200" ]] || { rm -f "$_GS_BODY_FILE"; log_error "Lesen security/roles.json fehlgeschlagen (HTTP $_GS_CODE)"; return 1; }
   jq -e '.roles | type == "array"' "$_GS_BODY_FILE" >/dev/null 2>&1 \
-    || { log_error "security/roles.json: unerwartete JSON-Form"; return 1; }
+    || { rm -f "$_GS_BODY_FILE"; log_error "security/roles.json: unerwartete JSON-Form"; return 1; }
   jq -r '.roles[]? // empty' "$_GS_BODY_FILE" 2>/dev/null | sort
   rm -f "$_GS_BODY_FILE"
 }
@@ -359,8 +359,7 @@ _load_inventory() {
   if read_roles > "$tmp"; then mapfile -t _INV_ROLES < "$tmp"; else rc=2; fi
   rm -f "$tmp"
   [[ "$rc" -eq 0 ]] || return 2
-  _has "$GS_ADMIN_USER" "${_INV_USERS[@]}" || { log_error "Benutzerliste enthält nicht den Admin-Benutzer $GS_ADMIN_USER — Abbruch vor Änderungen"; return 2; }
-  _has "ADMIN" "${_INV_ROLES[@]}" || { log_error "Rollenliste enthält nicht die Rolle ADMIN — Abbruch vor Änderungen"; return 2; }
+  _inventory_plausible _INV_USERS _INV_ROLES || return 2
   return 0
 }
 
@@ -372,6 +371,15 @@ _has() {
     [[ "$item" == "$needle" ]] && return 0
   done
   return 1
+}
+
+# _inventory_plausible <users_array_name> <roles_array_name> — 0 wenn Admin-Benutzer
+# und ADMIN-Rolle vorhanden, sonst 1 (Meldung ohne Werte). Namerefs, bash >= 4.3.
+_inventory_plausible() {
+  local -n users="$1" roles="$2"
+  _has "$GS_ADMIN_USER" "${users[@]}" || { log_error "Benutzerliste enthält nicht den Admin-Benutzer $GS_ADMIN_USER"; return 1; }
+  _has "ADMIN" "${roles[@]}" || { log_error "Rollenliste enthält nicht die Rolle ADMIN"; return 1; }
+  return 0
 }
 
 # Sicherheitsnetz: Soll-Tabelle darf nie admin/p2d2_wfst_user enthalten.
@@ -665,6 +673,7 @@ do_uninstall() {
   fi
   mapfile -t after_roles < "$ftmp"
   rm -f "$ftmp"
+  _inventory_plausible after_users after_roles || { log_error "Schlussverifikation: Bestand unplausibel"; return 1; }
   while IFS='|' read -r key _ user roles secret; do
     [[ -n "$key" ]] || continue
     _has "$user" "${after_users[@]}" && { log_error "Benutzer $user noch vorhanden"; rc=1; }
