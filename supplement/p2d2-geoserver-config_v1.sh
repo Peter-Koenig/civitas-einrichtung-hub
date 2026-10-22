@@ -222,26 +222,23 @@ _pw_is_valid() {
 # ═══════════════════════════════════════════════════════════════════════════
 # GeoServer-REST (Credentials via curl -K - stdin, Body via mktemp 0600)
 # ═══════════════════════════════════════════════════════════════════════════
-# _gs_curl <method> <path> [<payload-file>] [<content-type>]
-#   GET:  keine Payload
-#   POST: --data-binary @<payload-file>
-_gs_curl() {
-  local method="$1" path="$2" payload="${3:-}" ctype="${4:-application/json}" out
-  if [[ -n "$payload" ]]; then
-    out="$(printf 'user = "%s:%s"\n' "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - -X "$method" -H "Content-Type: $ctype" --data-binary "@$payload" "$GS_REST/$path" 2>/dev/null)" || out=""
-  else
-    out="$(printf 'user = "%s:%s"\n' "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - -X "$method" -H "Content-Type: $ctype" "$GS_REST/$path" 2>/dev/null)" || out=""
-  fi
-  printf '%s' "$out"
+# _curl_user_cfg <user> <pw> — gibt die Zeile `user = "..."` (escaped) auf stdout.
+# Escaping gemäß curl -K: innerhalb der Anführungszeichen werden \" und \\ zu " bzw. \.
+# Ein CR/LF im Wert würde eine weitere Konfigurationszeile einschleusen -> Fehler.
+_curl_user_cfg() {
+  local s="${1}:${2}"
+  case "$s" in *$'\n'*|*$'\r'*) log_error "Zugangsdaten enthalten Zeilenumbruch"; return 1 ;; esac
+  s="${s//\\/\\\\}"; s="${s//\"/\\\"}"
+  printf 'user = "%s"\n' "$s"
 }
 
 # _gs_http_code <method> <path> [<payload-file>] [<content-type>]
 _gs_http_code() {
   local method="$1" path="$2" payload="${3:-}" ctype="${4:-application/json}" code
   if [[ -n "$payload" ]]; then
-    code="$(printf 'user = "%s:%s"\n' "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - -X "$method" -H "Content-Type: $ctype" --data-binary "@$payload" -o /dev/null -w '%{http_code}' "$GS_REST/$path" 2>/dev/null)" || code="000"
+    code="$( _curl_user_cfg "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - -X "$method" -H "Content-Type: $ctype" --data-binary "@$payload" -o /dev/null -w '%{http_code}' "$GS_REST/$path" 2>/dev/null )" || code="000"
   else
-    code="$(printf 'user = "%s:%s"\n' "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - -X "$method" -H "Content-Type: $ctype" -o /dev/null -w '%{http_code}' "$GS_REST/$path" 2>/dev/null)" || code="000"
+    code="$( _curl_user_cfg "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - -X "$method" -H "Content-Type: $ctype" -o /dev/null -w '%{http_code}' "$GS_REST/$path" 2>/dev/null )" || code="000"
   fi
   printf '%s' "$code"
 }
@@ -297,7 +294,7 @@ _GS_BODY_FILE=""  # global: Temp-Datei mit dem Body des letzten _gs_get
 _gs_get() {
   local path="$1"
   _GS_BODY_FILE="$(mktemp)"; chmod 600 "$_GS_BODY_FILE"
-  _GS_CODE="$(printf 'user = "%s:%s"\n' "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - -X GET -H "Content-Type: application/json" -o "$_GS_BODY_FILE" -w '%{http_code}' "$GS_REST/$path" 2>/dev/null)" || _GS_CODE="000"
+  _GS_CODE="$( _curl_user_cfg "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - -X GET -H "Content-Type: application/json" -o "$_GS_BODY_FILE" -w '%{http_code}' "$GS_REST/$path" 2>/dev/null )" || _GS_CODE="000"
 }
 
 # read_users — Benutzernamen (sortiert) auf stdout; 0 ok, 1 Lesefehler.
@@ -531,10 +528,10 @@ verify_install() {
     [[ -n "$password" ]] || { log_error "Verifikation $key: kein Passwort im Secret"; return 1; }
 
     # Positivtest (authentifizierter GetCapabilities) — Credentials via curl -K - (stdin)
-    code="$(printf 'user = "%s:%s"\n' "$user" "$password" | curl -sS -K - -o /dev/null -w '%{http_code}' "$GS_BASE/ows?service=WFS&version=2.0.0&request=GetCapabilities" 2>/dev/null)" || code="000"
+    code="$( _curl_user_cfg "$user" "$password" | curl -sS -K - -o /dev/null -w '%{http_code}' "$GS_BASE/ows?service=WFS&version=2.0.0&request=GetCapabilities" 2>/dev/null )" || code="000"
 
     # Negativtest (falsches Passwort muss 401 liefern)
-    neg="$(printf 'user = "%s:%s"\n' "$user" "falsch_${password}" | curl -sS -K - -o /dev/null -w '%{http_code}' "$GS_BASE/ows?service=WFS&version=2.0.0&request=GetCapabilities" 2>/dev/null)" || neg="000"
+    neg="$( _curl_user_cfg "$user" "falsch_${password}" | curl -sS -K - -o /dev/null -w '%{http_code}' "$GS_BASE/ows?service=WFS&version=2.0.0&request=GetCapabilities" 2>/dev/null )" || neg="000"
 
     if [[ "$code" != "200" ]]; then
       log_error "Verifikation $key: GetCapabilities HTTP $code (erwartet 200)"
