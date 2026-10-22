@@ -191,32 +191,22 @@ _pw_is_valid() {
 #   POST: --data-binary @<payload-file>
 _gs_curl() {
   local method="$1" path="$2" payload="${3:-}" ctype="${4:-application/json}" out
-  local cfg
-  cfg="$(mktemp)"
-  printf 'user = "%s:%s"\n' "$GS_ADMIN_USER" "$GS_ADMIN_PW" > "$cfg"
-  chmod 600 "$cfg"
   if [[ -n "$payload" ]]; then
-    out="$(curl -sS -K "$cfg" -X "$method" -H "Content-Type: $ctype" --data-binary "@$payload" "$GS_REST/$path" 2>/dev/null)" || out=""
+    out="$(printf 'user = "%s:%s"\n' "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - -X "$method" -H "Content-Type: $ctype" --data-binary "@$payload" "$GS_REST/$path" 2>/dev/null)" || out=""
   else
-    out="$(curl -sS -K "$cfg" -X "$method" -H "Content-Type: $ctype" "$GS_REST/$path" 2>/dev/null)" || out=""
+    out="$(printf 'user = "%s:%s"\n' "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - -X "$method" -H "Content-Type: $ctype" "$GS_REST/$path" 2>/dev/null)" || out=""
   fi
-  rm -f "$cfg"
   printf '%s' "$out"
 }
 
 # _gs_http_code <method> <path> [<payload-file>] [<content-type>]
 _gs_http_code() {
   local method="$1" path="$2" payload="${3:-}" ctype="${4:-application/json}" code
-  local cfg
-  cfg="$(mktemp)"
-  printf 'user = "%s:%s"\n' "$GS_ADMIN_USER" "$GS_ADMIN_PW" > "$cfg"
-  chmod 600 "$cfg"
   if [[ -n "$payload" ]]; then
-    code="$(curl -sS -K "$cfg" -X "$method" -H "Content-Type: $ctype" --data-binary "@$payload" -o /dev/null -w '%{http_code}' "$GS_REST/$path" 2>/dev/null)" || code="000"
+    code="$(printf 'user = "%s:%s"\n' "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - -X "$method" -H "Content-Type: $ctype" --data-binary "@$payload" -o /dev/null -w '%{http_code}' "$GS_REST/$path" 2>/dev/null)" || code="000"
   else
-    code="$(curl -sS -K "$cfg" -X "$method" -H "Content-Type: $ctype" -o /dev/null -w '%{http_code}' "$GS_REST/$path" 2>/dev/null)" || code="000"
+    code="$(printf 'user = "%s:%s"\n' "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - -X "$method" -H "Content-Type: $ctype" -o /dev/null -w '%{http_code}' "$GS_REST/$path" 2>/dev/null)" || code="000"
   fi
-  rm -f "$cfg"
   printf '%s' "$code"
 }
 
@@ -401,18 +391,11 @@ verify_install() {
     password="$(_secret_get "$NAMESPACE" "$secret" "password")"
     [[ -n "$password" ]] || { log_error "Verifikation $key: kein Passwort im Secret"; return 1; }
 
-    # Positivtest (authentifizierter GetCapabilities)
-    local cfg f
-    cfg="$(mktemp)"; chmod 600 "$cfg"
-    printf 'user = "%s:%s"\n' "$user" "$password" > "$cfg"
-    code="$(curl -sS -K "$cfg" -o /dev/null -w '%{http_code}' "$GS_BASE/ows?service=WFS&version=2.0.0&request=GetCapabilities" 2>/dev/null)" || code="000"
-    rm -f "$cfg"
+    # Positivtest (authentifizierter GetCapabilities) — Credentials via curl -K - (stdin)
+    code="$(printf 'user = "%s:%s"\n' "$user" "$password" | curl -sS -K - -o /dev/null -w '%{http_code}' "$GS_BASE/ows?service=WFS&version=2.0.0&request=GetCapabilities" 2>/dev/null)" || code="000"
 
     # Negativtest (falsches Passwort muss 401 liefern)
-    cfg="$(mktemp)"; chmod 600 "$cfg"
-    printf 'user = "%s:%s"\n' "$user" "falsch_${password}" > "$cfg"
-    neg="$(curl -sS -K "$cfg" -o /dev/null -w '%{http_code}' "$GS_BASE/ows?service=WFS&version=2.0.0&request=GetCapabilities" 2>/dev/null)" || neg="000"
-    rm -f "$cfg"
+    neg="$(printf 'user = "%s:%s"\n' "$user" "falsch_${password}" | curl -sS -K - -o /dev/null -w '%{http_code}' "$GS_BASE/ows?service=WFS&version=2.0.0&request=GetCapabilities" 2>/dev/null)" || neg="000"
 
     if [[ "$code" != "200" ]]; then
       log_error "Verifikation $key: GetCapabilities HTTP $code (erwartet 200)"
