@@ -57,6 +57,14 @@ DE1|de1|de1_pg|p2d2_de1|P2D2_DE1_DB_USER|p2d2-f-de1-secret
 DE2|de2|de2_pg|p2d2_de2|P2D2_DE2_DB_USER|p2d2-f-de2-secret
 FV|fv|fv_pg|p2d2_fv|P2D2_FV_DB_USER|p2d2-f-fv-secret'
 
+# FeatureType-Soll-Tabelle (Schritt 4): Name | Native-Name | Titel (%ws% = Workspace) | cachingEnabled (-/false) | Default-Style.
+# Die Titel werden durch Ersetzen von %ws% durch den Workspace-Namen gebildet.
+FT_TABLE='geo-containers|p2d2_containers|Geo-Containers (%ws%)|-|polygon
+grabflure|v_grabflure_aktuell|grabflure_aktuell|false|polygon
+grabflure_versionen|p2d2_grabflure_versionen|grabflure_versionen|false|polygon
+graeber|v_graeber_aktuell|Gräber (%ws%)|-|generic
+graeber_versionen|p2d2_graeber_versionen|Gräber Versionen (%ws%)|-|polygon'
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Globals
 # ═══════════════════════════════════════════════════════════════════════════
@@ -353,6 +361,7 @@ preflight() {
   check_ws_table || exit 2
   check_ds_table || exit 2
   load_ds_config || exit 2
+  check_styles || exit 2
 
   local code
   code="$(_gs_http_code GET 'security/roles.json')"
@@ -443,6 +452,35 @@ read_namespace_uri() {
   rm -f "$_GS_BODY_FILE"
 }
 
+# read_available_natives <ws> <ds> — verfügbare Native-Namen (list=available); 0 ok, 1 Fehler.
+read_available_natives() {
+  local ws="$1" ds="$2"
+  _gs_get "workspaces/${ws}/datastores/${ds}/featuretypes.json?list=available"
+  [[ "$_GS_CODE" == "200" ]] || { rm -f "$_GS_BODY_FILE"; log_error "list=available für ${ws}/${ds} fehlgeschlagen (HTTP $_GS_CODE)"; return 1; }
+  jq -r '.list.string[]? // empty' "$_GS_BODY_FILE" 2>/dev/null
+  rm -f "$_GS_BODY_FILE"
+}
+
+# read_featuretypes <ws> <ds> — publizierte FeatureType-Namen; 0 ok, 1 Fehler.
+# Akzeptiert .featureTypes.featureType als Array, .featureTypes als ""/null (leer) und 404 (leer).
+read_featuretypes() {
+  local ws="$1" ds="$2"
+  _gs_get "workspaces/${ws}/datastores/${ds}/featuretypes.json"
+  case "$_GS_CODE" in
+    200) ;;
+    404) rm -f "$_GS_BODY_FILE"; return 0 ;;
+    *) rm -f "$_GS_BODY_FILE"; log_error "Lesen workspaces/${ws}/datastores/${ds}/featuretypes.json fehlgeschlagen (HTTP $_GS_CODE)"; return 1 ;;
+  esac
+  if jq -e '.featureTypes.featureType | type == "array"' "$_GS_BODY_FILE" >/dev/null 2>&1; then
+    jq -r '.featureTypes.featureType[]?.name // empty' "$_GS_BODY_FILE" 2>/dev/null | sort
+  elif jq -e '(.featureTypes == "" or .featureTypes == null)' "$_GS_BODY_FILE" >/dev/null 2>&1; then
+    :
+  else
+    rm -f "$_GS_BODY_FILE"; log_error "workspaces/${ws}/datastores/${ds}/featuretypes.json: unerwartete JSON-Form"; return 1
+  fi
+  rm -f "$_GS_BODY_FILE"
+}
+
 # read_datastores <ws> — Datastore-Namen (sortiert) für einen Workspace; 0 ok, 1 Fehler.
 # Akzeptiert .dataStores.dataStore als Array, .dataStores als ""/null (leer) und 404 (leer).
 read_datastores() {
@@ -468,6 +506,14 @@ _http_code_url() {
   local url="$1" code
   code="$( _curl_user_cfg "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - -o /dev/null -w '%{http_code}' "$url" 2>/dev/null )" || code="000"
   printf '%s' "$code"
+}
+
+# _gs_get_url <url> — authentifizierter GET auf eine beliebige URL (z. B. WFS-Dienst);
+# setzt _GS_CODE und _GS_BODY_FILE. Wird direkt aufgerufen (nicht in einer Subshell).
+_gs_get_url() {
+  local url="$1"
+  _GS_BODY_FILE="$(mktemp)"; chmod 600 "$_GS_BODY_FILE"
+  _GS_CODE="$( _curl_user_cfg "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - -X GET -o "$_GS_BODY_FILE" -w '%{http_code}' "$url" 2>/dev/null )" || _GS_CODE="000"
 }
 
 # Globaler Bestand (K8), nach dem Preflight einmal gelesen.
@@ -570,6 +616,16 @@ check_ds_table() {
     done <<< "$WS_TABLE"
     [[ "$want" -eq 1 ]] || { log_error "Datastore-Workspace $ws fehlt in WS_TABLE"; return 1; }
   done <<< "$DS_TABLE"
+  return 0
+}
+
+# Startprüfung (D1): die eingebauten Default-Styles polygon/generic müssen existieren.
+check_styles() {
+  local style code
+  for style in polygon generic; do
+    code="$(_gs_http_code GET "styles/${style}.json")"
+    [[ "$code" == "200" ]] || { log_error "Stil $style nicht vorhanden (GET styles/$style.json -> $code)"; return 1; }
+  done
   return 0
 }
 
@@ -698,6 +754,9 @@ do_install() {
   # Datastores anlegen (Schritt 3)
   install_datastores || return 1
 
+  # FeatureTypes anlegen (Schritt 4)
+  install_featuretypes || return 1
+
   # Verifikation (im Dry-run übersprungen, K1)
   if [[ "$DRY_RUN" -eq 1 ]]; then
     log "  Verifikation wird im Dry-run übersprungen"
@@ -705,6 +764,7 @@ do_install() {
     verify_install || return 1
     verify_workspaces || return 1
     verify_datastores || return 1
+    verify_featuretypes || return 1
   fi
   return 0
 }
@@ -1068,6 +1128,293 @@ uninstall_datastores() {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
+# FeatureTypes + Default-Styles (Schritt 4): anlegen / verifizieren / löschen
+# ═══════════════════════════════════════════════════════════════════════════
+# _ft_title <template> <ws> — ersetzt %ws% im Titelmuster durch den Workspace-Namen.
+_ft_title() {
+  local t="$1" ws="$2"
+  printf '%s' "${t//%ws%/$ws}"
+}
+
+# _ft_body <name> <native> <ws> <title> <cache> <outfile> — FeatureType-Body (kein Passwort).
+_ft_body() {
+  local name="$1" native="$2" ws="$3" title="$4" cache="$5" out="$6"
+  if [[ "$cache" == "false" ]]; then
+    jq -n --arg ws "$ws" --arg name "$name" --arg native "$native" --arg title "$title" \
+      '{featureType:{name:$name,nativeName:$native,namespace:{name:$ws},title:$title,
+        keywords:{string:["features",$native]},srs:"EPSG:4326",projectionPolicy:"FORCE_DECLARED",
+        enabled:true,advertised:true,
+        nativeBoundingBox:{minx:-10,maxx:40,miny:35,maxy:71,crs:"EPSG:4326"},
+        latLonBoundingBox:{minx:-10,maxx:40,miny:35,maxy:71,crs:"EPSG:4326"},
+        metadata:{entry:{"@key":"cachingEnabled","$":"false"}}}}' > "$out"
+  else
+    jq -n --arg ws "$ws" --arg name "$name" --arg native "$native" --arg title "$title" \
+      '{featureType:{name:$name,nativeName:$native,namespace:{name:$ws},title:$title,
+        keywords:{string:["features",$native]},srs:"EPSG:4326",projectionPolicy:"FORCE_DECLARED",
+        enabled:true,advertised:true,
+        nativeBoundingBox:{minx:-10,maxx:40,miny:35,maxy:71,crs:"EPSG:4326"},
+        latLonBoundingBox:{minx:-10,maxx:40,miny:35,maxy:71,crs:"EPSG:4326"}}}' > "$out"
+  fi
+}
+
+# _ft_cmp <body-file> <name> <native> <title> <cache> — 0 wenn alle nicht generierten
+# Felder stimmen, sonst 1 (logt die Abweichung; kein Passwort beteiligt).
+_ft_cmp() {
+  local f="$1" name="$2" native="$3" title="$4" cache="$5" dev=0 v nx xx ny xy
+  v="$(jq -r '.featureType.nativeName // empty' "$f" 2>/dev/null)"
+  [[ "$v" == "$native" ]] || { log_error "FeatureType $name: nativeName weicht ab (erwartet $native, vorhanden $v)"; dev=1; }
+  v="$(jq -r '.featureType.title // empty' "$f" 2>/dev/null)"
+  [[ "$v" == "$title" ]] || { log_error "FeatureType $name: title weicht ab (erwartet $title, vorhanden $v)"; dev=1; }
+  v="$(jq -r '.featureType.srs // empty' "$f" 2>/dev/null)"
+  [[ "$v" == "EPSG:4326" ]] || { log_error "FeatureType $name: srs weicht ab (erwartet EPSG:4326, vorhanden $v)"; dev=1; }
+  v="$(jq -r '.featureType.projectionPolicy // empty' "$f" 2>/dev/null)"
+  [[ "$v" == "FORCE_DECLARED" ]] || { log_error "FeatureType $name: projectionPolicy weicht ab (erwartet FORCE_DECLARED, vorhanden $v)"; dev=1; }
+  v="$(jq -r '.featureType.enabled // empty' "$f" 2>/dev/null)"
+  [[ "$v" == "true" ]] || { log_error "FeatureType $name: enabled weicht ab (erwartet true, vorhanden $v)"; dev=1; }
+  v="$(jq -r '.featureType.advertised // empty' "$f" 2>/dev/null)"
+  [[ "$v" == "true" ]] || { log_error "FeatureType $name: advertised weicht ab (erwartet true, vorhanden $v)"; dev=1; }
+  nx="$(jq -r '.featureType.nativeBoundingBox.minx // empty' "$f" 2>/dev/null)"
+  xx="$(jq -r '.featureType.nativeBoundingBox.maxx // empty' "$f" 2>/dev/null)"
+  ny="$(jq -r '.featureType.nativeBoundingBox.miny // empty' "$f" 2>/dev/null)"
+  xy="$(jq -r '.featureType.nativeBoundingBox.maxy // empty' "$f" 2>/dev/null)"
+  [[ "$nx" == "-10" && "$xx" == "40" && "$ny" == "35" && "$xy" == "71" ]] || { log_error "FeatureType $name: nativeBoundingBox weicht ab"; dev=1; }
+  nx="$(jq -r '.featureType.latLonBoundingBox.minx // empty' "$f" 2>/dev/null)"
+  xx="$(jq -r '.featureType.latLonBoundingBox.maxx // empty' "$f" 2>/dev/null)"
+  ny="$(jq -r '.featureType.latLonBoundingBox.miny // empty' "$f" 2>/dev/null)"
+  xy="$(jq -r '.featureType.latLonBoundingBox.maxy // empty' "$f" 2>/dev/null)"
+  [[ "$nx" == "-10" && "$xx" == "40" && "$ny" == "35" && "$xy" == "71" ]] || { log_error "FeatureType $name: latLonBoundingBox weicht ab"; dev=1; }
+  if [[ "$cache" == "false" ]]; then
+    v="$(jq -r '.featureType.metadata.entry["$"] // empty' "$f" 2>/dev/null)"
+    [[ "$v" == "false" ]] || { log_error "FeatureType $name: cachingEnabled weicht ab (erwartet false, vorhanden $v)"; dev=1; }
+  fi
+  return "$dev"
+}
+
+# _ensure_default_style <ws> <name> <style> — setzt bei Abweichung den Layer-Default-Style.
+_ensure_default_style() {
+  local ws="$1" name="$2" style="$3" code cur f
+  _gs_get "workspaces/${ws}/layers/${name}.json"
+  code="$_GS_CODE"
+  if [[ "$code" == "200" ]]; then
+    cur="$(jq -r '.layer.defaultStyle.name // empty' "$_GS_BODY_FILE" 2>/dev/null)"
+    rm -f "$_GS_BODY_FILE"
+    howto_step "GET workspaces/$ws/layers/$name.json" "200" "200" "defaultStyle prüfen"
+    if [[ "$cur" == "$style" ]]; then
+      log "  Layer $name: Default-Style ok ($style)"
+      return 0
+    fi
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      log "  [dry-run] Layer $name: Default-Style $style würde gesetzt (vorhanden $cur)"
+      howto_step "PUT workspaces/$ws/layers/$name" "200" "-" "defaultStyle=$style"
+      return 0
+    fi
+    f="$(mktemp)"; chmod 600 "$f"
+    jq -nc --arg s "$style" '{layer:{defaultStyle:{name:$s}}}' > "$f"
+    _gs_write_body PUT "workspaces/${ws}/layers/${name}" "$f" 'application/json'
+    code="$_GS_CODE"; rm -f "$f"
+    howto_step "PUT workspaces/$ws/layers/$name" "200" "$code" "defaultStyle=$style"
+    [[ "$code" == "200" ]] || { log_gs_error "Layer $name Default-Style setzen fehlgeschlagen (HTTP $code)"; return 1; }
+    log_ok "  Layer $name: Default-Style $style gesetzt"
+  elif [[ "$code" == "404" ]]; then
+    rm -f "$_GS_BODY_FILE"
+    howto_step "GET workspaces/$ws/layers/$name.json" "200" "404" "defaultStyle prüfen"
+    log "  Layer $name nicht vorhanden (wird mit dem FeatureType angelegt)"
+  else
+    rm -f "$_GS_BODY_FILE"
+    log_error "Layer $name lesen fehlgeschlagen (HTTP $code)"; return 1
+  fi
+  return 0
+}
+
+install_featuretypes() {
+  local -a existing avail
+  local key ws ds schema uservar secret name native tpl cache style title code rc=0 f tmp
+  log "== FeatureTypes =="
+  while IFS='|' read -r key ws ds schema uservar secret; do
+    [[ -n "$key" ]] || continue
+    tmp="$(mktemp)"; chmod 600 "$tmp"
+    if ! read_available_natives "$ws" "$ds" > "$tmp"; then
+      rm -f "$tmp"; log_error "list=available für $ws/$ds nicht lesbar"; rc=1; continue
+    fi
+    mapfile -t avail < "$tmp"; rm -f "$tmp"
+    tmp="$(mktemp)"; chmod 600 "$tmp"
+    if ! read_featuretypes "$ws" "$ds" > "$tmp"; then
+      rm -f "$tmp"; log_error "FeatureType-Liste für $ws/$ds nicht lesbar"; rc=1; continue
+    fi
+    mapfile -t existing < "$tmp"; rm -f "$tmp"
+    while IFS='|' read -r name native tpl cache style; do
+      [[ -n "$name" ]] || continue
+      title="$(_ft_title "$tpl" "$ws")"
+      if ! _has "$native" "${avail[@]}" && ! _has "$name" "${existing[@]}"; then
+        log_error "FeatureType $name: Native-Name $native nicht in list=available"
+        rc=1
+        continue
+      fi
+      if ! _has "$name" "${existing[@]}"; then
+        if [[ "$DRY_RUN" -eq 1 ]]; then
+          log "  [dry-run] FeatureType $name würde angelegt (title=$title)"
+          howto_step "POST workspaces/$ws/datastores/$ds/featuretypes" "201" "-" "FeatureType $name (native=$native)"
+        else
+          f="$(mktemp)"; chmod 600 "$f"
+          _ft_body "$name" "$native" "$ws" "$title" "$cache" "$f"
+          _gs_write_body POST "workspaces/${ws}/datastores/${ds}/featuretypes" "$f" 'application/json'
+          code="$_GS_CODE"; rm -f "$f"
+          howto_step "POST workspaces/$ws/datastores/$ds/featuretypes" "201" "$code" "FeatureType $name"
+          if [[ "$code" == "200" || "$code" == "201" ]]; then
+            log_ok "  FeatureType $name angelegt"
+          else
+            log_gs_error "FeatureType $name anlegen fehlgeschlagen (HTTP $code)"; rc=1
+          fi
+        fi
+      else
+        if [[ "$DRY_RUN" -eq 1 ]]; then
+          howto_step "GET workspaces/$ws/datastores/$ds/featuretypes/$name.json" "200" "-" "Vergleich"
+        else
+          _gs_get "workspaces/${ws}/datastores/${ds}/featuretypes/${name}.json"
+          if [[ "$_GS_CODE" == "200" ]]; then
+            if _ft_cmp "$_GS_BODY_FILE" "$name" "$native" "$title" "$cache"; then
+              rm -f "$_GS_BODY_FILE"
+              log "  FeatureType $name vorhanden, unverändert"
+            else
+              rm -f "$_GS_BODY_FILE"
+              f="$(mktemp)"; chmod 600 "$f"
+              _ft_body "$name" "$native" "$ws" "$title" "$cache" "$f"
+              _gs_write_body PUT "workspaces/${ws}/datastores/${ds}/featuretypes/${name}" "$f" 'application/json'
+              code="$_GS_CODE"; rm -f "$f"
+              howto_step "PUT workspaces/$ws/datastores/$ds/featuretypes/$name" "200" "$code" "FeatureType $name"
+              [[ "$code" == "200" ]] || { log_gs_error "FeatureType $name aktualisieren fehlgeschlagen (HTTP $code)"; rc=1; }
+            fi
+          else
+            rm -f "$_GS_BODY_FILE"
+            log_error "FeatureType $name: GET -> $_GS_CODE (erwartet 200)"; rc=1
+          fi
+        fi
+      fi
+      _ensure_default_style "$ws" "$name" "$style" || rc=1
+    done <<< "$FT_TABLE"
+  done <<< "$DS_TABLE"
+  return "$rc"
+}
+
+verify_featuretypes() {
+  local key ws ds schema uservar secret name native tpl cache style title code rc=0
+  log "== Verifikation FeatureTypes =="
+  while IFS='|' read -r key ws ds schema uservar secret; do
+    [[ -n "$key" ]] || continue
+    while IFS='|' read -r name native tpl cache style; do
+      [[ -n "$name" ]] || continue
+      title="$(_ft_title "$tpl" "$ws")"
+      _gs_get "workspaces/${ws}/datastores/${ds}/featuretypes/${name}.json"
+      code="$_GS_CODE"
+      if [[ "$code" == "200" ]]; then
+        local en adv nn tt ss
+        en="$(jq -r '.featureType.enabled // empty' "$_GS_BODY_FILE" 2>/dev/null)"
+        adv="$(jq -r '.featureType.advertised // empty' "$_GS_BODY_FILE" 2>/dev/null)"
+        nn="$(jq -r '.featureType.nativeName // empty' "$_GS_BODY_FILE" 2>/dev/null)"
+        tt="$(jq -r '.featureType.title // empty' "$_GS_BODY_FILE" 2>/dev/null)"
+        ss="$(jq -r '.featureType.srs // empty' "$_GS_BODY_FILE" 2>/dev/null)"
+        rm -f "$_GS_BODY_FILE"
+        howto_step "GET workspaces/$ws/datastores/$ds/featuretypes/$name.json" "200" "200" "verifizieren"
+        if [[ "$en" == "true" && "$adv" == "true" && "$nn" == "$native" && "$tt" == "$title" && "$ss" == "EPSG:4326" ]]; then
+          log_ok "  $name: FeatureType ok"
+        else
+          log_error "Verifikation $name: FeatureType weicht ab"; rc=1
+        fi
+      else
+        rm -f "$_GS_BODY_FILE"
+        howto_step "GET workspaces/$ws/datastores/$ds/featuretypes/$name.json" "200" "$code" "verifizieren"
+        log_error "Verifikation $name: FeatureType GET -> $code (erwartet 200)"; rc=1
+      fi
+      _gs_get "workspaces/${ws}/layers/${name}.json"
+      code="$_GS_CODE"
+      if [[ "$code" == "200" ]]; then
+        local dstyle
+        dstyle="$(jq -r '.layer.defaultStyle.name // empty' "$_GS_BODY_FILE" 2>/dev/null)"
+        rm -f "$_GS_BODY_FILE"
+        howto_step "GET workspaces/$ws/layers/$name.json" "200" "200" "defaultStyle verifizieren"
+        if [[ "$dstyle" == "$style" ]]; then
+          log_ok "  $name: defaultStyle $style ok"
+        else
+          log_error "Verifikation $name: defaultStyle weicht ab (erwartet $style, vorhanden $dstyle)"; rc=1
+        fi
+      else
+        rm -f "$_GS_BODY_FILE"
+        howto_step "GET workspaces/$ws/layers/$name.json" "200" "$code" "defaultStyle verifizieren"
+        log_error "Verifikation $name: Layer GET -> $code (erwartet 200)"; rc=1
+      fi
+      _gs_get_url "$GS_BASE/$ws/wfs?service=WFS&version=2.0.0&request=DescribeFeatureType&typeNames=${ws}:${name}"
+      code="$_GS_CODE"
+      if [[ "$code" == "200" ]] && ! grep -q 'ExceptionReport' "$_GS_BODY_FILE" 2>/dev/null; then
+        rm -f "$_GS_BODY_FILE"
+        howto_step "GET $ws/wfs DescribeFeatureType" "200" "200" "kein ExceptionReport"
+        log_ok "  $name: DescribeFeatureType ok"
+      else
+        rm -f "$_GS_BODY_FILE"
+        howto_step "GET $ws/wfs DescribeFeatureType" "200" "$code" "kein ExceptionReport"
+        log_error "Verifikation $name: DescribeFeatureType -> $code (erwartet 200, kein ExceptionReport)"; rc=1
+      fi
+      _gs_get_url "$GS_BASE/$ws/wfs?service=WFS&version=2.0.0&request=GetFeature&typeNames=${ws}:${name}&resultType=hits"
+      code="$_GS_CODE"
+      if [[ "$code" == "200" ]] && ! grep -q 'ExceptionReport' "$_GS_BODY_FILE" 2>/dev/null; then
+        local nm
+        nm="$(grep -o 'numberMatched="[0-9]*"' "$_GS_BODY_FILE" 2>/dev/null | head -1)"
+        rm -f "$_GS_BODY_FILE"
+        howto_step "GET $ws/wfs GetFeature hits" "200" "200" "kein ExceptionReport"
+        log_ok "  $name: GetFeature hits ok${nm:+ ($nm)}"
+      else
+        rm -f "$_GS_BODY_FILE"
+        howto_step "GET $ws/wfs GetFeature hits" "200" "$code" "kein ExceptionReport"
+        log_error "Verifikation $name: GetFeature hits -> $code (erwartet 200, kein ExceptionReport)"; rc=1
+      fi
+    done <<< "$FT_TABLE"
+  done <<< "$DS_TABLE"
+  return "$rc"
+}
+
+uninstall_featuretypes() {
+  local -a existing
+  local key ws ds schema uservar secret name native tpl cache style code rc=0 tmp
+  log "== FeatureTypes entfernen =="
+  while IFS='|' read -r key ws ds schema uservar secret; do
+    [[ -n "$key" ]] || continue
+    tmp="$(mktemp)"; chmod 600 "$tmp"
+    if ! read_featuretypes "$ws" "$ds" > "$tmp"; then
+      rm -f "$tmp"; log_error "FeatureType-Liste für $ws/$ds nicht lesbar"; rc=1; continue
+    fi
+    mapfile -t existing < "$tmp"; rm -f "$tmp"
+    while IFS='|' read -r name native tpl cache style; do
+      [[ -n "$name" ]] || continue
+      if ! _has "$name" "${existing[@]}"; then
+        log "  FeatureType $name nicht vorhanden — übersprungen"
+        continue
+      fi
+      if [[ "$DRY_RUN" -eq 1 ]]; then
+        howto_step "DELETE workspaces/$ws/layers/$name" "200" "-" "404 = schon weg, ohne recurse"
+        howto_step "DELETE workspaces/$ws/datastores/$ds/featuretypes/$name" "200" "-" "404 = schon weg, ohne recurse"
+        continue
+      fi
+      _gs_write_body DELETE "workspaces/${ws}/layers/${name}"
+      code="$_GS_CODE"
+      howto_step "DELETE workspaces/$ws/layers/$name" "200" "$code" "404 = schon weg, ohne recurse"
+      case "$code" in
+        200|201) log_ok "  Layer $name gelöscht" ;;
+        404)     log "  Layer $name schon weg" ;;
+        *)       log_gs_error "Layer $name löschen fehlgeschlagen (HTTP $code)"; rc=1 ;;
+      esac
+      _gs_write_body DELETE "workspaces/${ws}/datastores/${ds}/featuretypes/${name}"
+      code="$_GS_CODE"
+      howto_step "DELETE workspaces/$ws/datastores/$ds/featuretypes/$name" "200" "$code" "404 = schon weg, ohne recurse"
+      case "$code" in
+        200|201) log_ok "  FeatureType $name gelöscht" ;;
+        404)     log "  FeatureType $name schon weg" ;;
+        *)       log_gs_error "FeatureType $name löschen fehlgeschlagen (HTTP $code)"; rc=1 ;;
+      esac
+    done <<< "$FT_TABLE"
+  done <<< "$DS_TABLE"
+  return "$rc"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Uninstall (nur exakt benannte Objekte)
 # ═══════════════════════════════════════════════════════════════════════════
 do_uninstall() {
@@ -1079,7 +1426,10 @@ do_uninstall() {
   existing_users=("${_INV_USERS[@]}")
   existing_roles=("${_INV_ROLES[@]}")
 
-  # 0) Datastores entfernen (Reihenfolge umgekehrt zum Install; vor Workspaces)
+  # 0) FeatureTypes/Layer entfernen (Reihenfolge umgekehrt zum Install; vor Datastores)
+  uninstall_featuretypes || rc=1
+
+  # 0b) Datastores entfernen (vor Workspaces)
   uninstall_datastores || rc=1
 
   # 0b) Workspaces entfernen (vor Benutzern/Rollen/Secrets)
@@ -1227,6 +1577,23 @@ do_uninstall() {
   done <<< "$DS_TABLE"
   rm -f "$dtmp"
 
+  # FeatureTypes: nicht mehr gelistet (Schritt 4)
+  local -a after_ft
+  local ftmp fkey fws fds fname
+  ftmp="$(mktemp)"; chmod 600 "$ftmp"
+  while IFS='|' read -r fkey fws fds _ _ _; do
+    [[ -n "$fkey" ]] || continue
+    if ! read_featuretypes "$fws" "$fds" > "$ftmp"; then
+      rm -f "$ftmp"; log_error "Schlussverifikation: FeatureType-Liste für $fws/$fds nicht lesbar"; return 1
+    fi
+    mapfile -t after_ft < "$ftmp"
+    while IFS='|' read -r fname _ _ _ _; do
+      [[ -n "$fname" ]] || continue
+      _has "$fname" "${after_ft[@]}" && { log_error "FeatureType $fname noch vorhanden"; rc=1; }
+    done <<< "$FT_TABLE"
+  done <<< "$DS_TABLE"
+  rm -f "$ftmp"
+
   [[ "$rc" -eq 0 ]] && log_ok "Uninstall verifiziert (alle Soll-Objekte entfernt)"
   return "$rc"
 }
@@ -1287,8 +1654,8 @@ main() {
   howto "- Secret: wiederverwenden, wenn ein gültiger Wert vorhanden ist, sonst neu erzeugen."
   howto "- Benutzer: anlegen (POST usergroup/users) oder Passwort setzen (POST usergroup/user/<name>)."
   howto "- Uninstall: nur Vorhandenes löschen; 404 gilt als 'schon weg'."
-  howto "- Reihenfolge Install: Rollen -> je Benutzer Secret -> Benutzer -> Zuordnungen -> Workspaces -> Datastores -> Verifikation."
-  howto "- Reihenfolge Uninstall: Datastores -> Workspaces -> Zuordnungen -> Benutzer -> Rollen -> Secrets -> Verifikation."
+  howto "- Reihenfolge Install: Rollen -> je Benutzer Secret -> Benutzer -> Zuordnungen -> Workspaces -> Datastores -> FeatureTypes -> Default-Styles -> Verifikation."
+  howto "- Reihenfolge Uninstall: Layer -> FeatureTypes -> Datastores -> Workspaces -> Zuordnungen -> Benutzer -> Rollen -> Secrets -> Verifikation."
   howto ""
   howto "## Workspaces"
   howto 'GET workspaces.json        -> {"workspaces":{"workspace":[{"name":...,"href":...}]}}'
@@ -1311,6 +1678,20 @@ main() {
   howto '- passwd: aus Secret <name> (Key DB_PASSWORD), nur lesend, nie in einer Argumentliste.'
   howto '- Wertequellen: host/port/database aus P2D2_BASE_DB_HOST/PORT/NAME, user aus P2D2_<KEY>_DB_USER, schema aus DS_TABLE, namespace aus WS_TABLE.'
   howto '- Anlegen (fehlt): POST; Vorhanden: PUT (vollständiger Body).'
+  howto ""
+  howto "## FeatureTypes/Layer"
+  howto 'GET workspaces/<ws>/datastores/<ds>/featuretypes.json            -> {"featureTypes":{"featureType":[{"name":...}]}}  ("" = leer)'
+  howto 'GET workspaces/<ws>/datastores/<ds>/featuretypes/<name>.json    -> {"featureType":{"name":...,"nativeName":...}}'
+  howto 'POST workspaces/<ws>/datastores/<ds>/featuretypes               -> 201 (200/201 = ok)'
+  howto 'PUT  workspaces/<ws>/datastores/<ds>/featuretypes/<name>        -> 200 (nur bei Abweichung)'
+  howto 'GET workspaces/<ws>/layers/<name>.json                          -> {"layer":{"defaultStyle":{"name":...}}}'
+  howto 'PUT  workspaces/<ws>/layers/<name>                              -> 200 (defaultStyle setzen)'
+  howto 'DELETE workspaces/<ws>/layers/<name>                            -> 200 = gelöscht, 404 = schon weg, ohne recurse'
+  howto 'DELETE workspaces/<ws>/datastores/<ds>/featuretypes/<name>      -> 200 = gelöscht, 404 = schon weg, ohne recurse'
+  howto '- Body: name, nativeName, namespace, title, keywords, srs=EPSG:4326, projectionPolicy=FORCE_DECLARED, enabled/advertised=true, beide BoundingBoxes; cachingEnabled nur bei grabflure* = false.'
+  howto '- Default-Styles: polygon/generic (eingebaute GeoServer-Stile).'
+  howto '- Verifikation: FeatureType (enabled/advertised/nativeName/title/srs), Layer defaultStyle, DescribeFeatureType/GetFeature hits (kein ExceptionReport).'
+  howto '- Wertequellen: FT_TABLE (Name/Native/Titel/Default-Style), Workspace aus DS_TABLE.'
   howto ""
 
   if [[ "$UNINSTALL" -eq 1 ]]; then
