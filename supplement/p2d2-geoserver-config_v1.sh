@@ -5,12 +5,14 @@
 # p2d2-geoserver-config_v1.sh — GeoServer-Konfiguration (CIVITAS/CORE-AddOn).
 # Schritt 1: WFS-T-/WFS-Benutzer, Rollen und Kubernetes-Secrets.
 # Schritt 2: Workspaces (Name + Namespace-URI) analog zum Standalone.
+# Schritt 3: Datastores (PostGIS-Verbindung) analog zum Standalone.
 #
 # Läuft in der CIVITAS/CORE-VM (root, kubectl vorhanden). Legt die fünf
 # WFS-T-Benutzer und den WFS-Lese-Benutzer samt Rollen an bzw. setzt deren
 # Passwort, erzeugt die Passwörter und speichert sie als Kubernetes-Secrets
 # (das Secret ist Single Source of Truth). Legt außerdem die sechs Workspaces
-# an. --uninstall entfernt genau diese Objekte wieder.
+# und die fünf PostGIS-Datastores an. --uninstall entfernt genau diese Objekte
+# wieder.
 #
 # Bewusst klein und flach: keine Statusbericht-/-Authz-/k8s-Diagnose.
 #
@@ -46,6 +48,15 @@ de2|urn:data-dna:govdata:de2
 fv|urn:data-dna:govdata:fv
 friedhofsplaene|urn:data-dna:tiffdata'
 
+# Datastore-Soll-Tabelle (Schritt 3): KEY | Workspace | Datastore | Schema | DB-User-Variable | Secret.
+# Die DB-User-Variable ist der Name des .env-Schlüssels (P2D2_<KEY>_DB_USER); ihr Wert (z. B. P2D2-MAIN)
+# kommt als Datastore-Parameter `user`. Das Secret (Key DB_PASSWORD) gehört addon_00 und wird nur gelesen.
+DS_TABLE='MAIN|main|main_pg|p2d2_main|P2D2_MAIN_DB_USER|p2d2-main-secret
+DEVELOP|dev|dev_pg|p2d2_develop|P2D2_DEVELOP_DB_USER|p2d2-dev-secret
+DE1|de1|de1_pg|p2d2_de1|P2D2_DE1_DB_USER|p2d2-f-de1-secret
+DE2|de2|de2_pg|p2d2_de2|P2D2_DE2_DB_USER|p2d2-f-de2-secret
+FV|fv|fv_pg|p2d2_fv|P2D2_FV_DB_USER|p2d2-f-fv-secret'
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Globals
 # ═══════════════════════════════════════════════════════════════════════════
@@ -67,6 +78,15 @@ log()      { printf '%s\n' "$*"; }
 log_ok()   { printf 'OK   %s\n' "$*"; }
 log_warn() { printf 'WARN %s\n' "$*" >&2; }
 log_error(){ printf 'FEHLER %s\n' "$*" >&2; }
+
+# log_gs_error <msg> — Fehler mit optionalem Antworttext (R2).
+log_gs_error() {
+  if [[ -n "${_GS_ERR_BODY:-}" ]]; then
+    log_error "$1 — ${_GS_ERR_BODY}"
+  else
+    log_error "$1"
+  fi
+}
 
 # Legacy-Umgebungsvariablen: nur Namen melden, nie Werte (K6).
 warn_legacy_vars() {
@@ -103,13 +123,13 @@ usage() {
 
 print_help() {
   cat <<EOF
-${SCRIPT_NAME} — GeoServer-Konfiguration: WFS-T-/WFS-Benutzer, Rollen, Kubernetes-Secrets und Workspaces.
+${SCRIPT_NAME} — GeoServer-Konfiguration: WFS-T-/WFS-Benutzer, Rollen, Kubernetes-Secrets, Workspaces und Datastores.
 
 Usage: bash ./${SCRIPT_NAME} [--dry-run] [--uninstall] [--url BASE] [--ns NAMESPACE] [--help|-h]
 
 Optionen:
   --dry-run      Nur planen: keine Änderung an GeoServer oder Kubernetes.
-  --uninstall    Genau die angelegten Benutzer/Rollen/Secrets/Workspaces wieder entfernen.
+  --uninstall    Genau die angelegten Benutzer/Rollen/Secrets/Workspaces/Datastores wieder entfernen.
   --url BASE     GeoServer-Basis-URL (z. B. https://geoportal.<domain>/geoserver).
   --ns NAMESPACE Kubernetes-Namespace (Standard: ADDON_NS bzw. cc-prd-geodata-stack).
   --help, -h     Diese Hilfe.
@@ -164,6 +184,37 @@ _env_resolve() {
     fi
   done
   return 1
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Datastore-Konfiguration (C2): nur diese Schlüssel, keine Defaults im Skript.
+# ═══════════════════════════════════════════════════════════════════════════
+_DB_HOST=""
+_DB_PORT=""
+_DB_NAME=""
+
+# _cfg_ok <wert> — 0 wenn gesetzt, nicht leer und nicht CHANGEME.
+_cfg_ok() {
+  local v="$1"
+  [[ -n "$v" && "$v" != "CHANGEME" && "$v" != "changeme" ]]
+}
+
+# load_ds_config — löst die Datastore-Konfiguration auf (nur die benannten Schlüssel).
+# Rückgabe 0 ok; 2 bei fehlendem/leerem/CHANGEME-Wert (vor jeder Mutation).
+load_ds_config() {
+  local key ws ds schema uservar secret u rc=0
+  _DB_HOST="$(_env_resolve P2D2_BASE_DB_HOST || true)"
+  _DB_PORT="$(_env_resolve P2D2_BASE_DB_PORT || true)"
+  _DB_NAME="$(_env_resolve P2D2_BASE_DB_NAME || true)"
+  _cfg_ok "$_DB_HOST" || { log_error "P2D2_BASE_DB_HOST fehlt oder ist CHANGEME"; rc=2; }
+  _cfg_ok "$_DB_PORT" || { log_error "P2D2_BASE_DB_PORT fehlt oder ist CHANGEME"; rc=2; }
+  _cfg_ok "$_DB_NAME" || { log_error "P2D2_BASE_DB_NAME fehlt oder ist CHANGEME"; rc=2; }
+  while IFS='|' read -r key ws ds schema uservar secret; do
+    [[ -n "$key" ]] || continue
+    u="$(_env_resolve "$uservar" || true)"
+    _cfg_ok "$u" || { log_error "$uservar fehlt oder ist CHANGEME"; rc=2; }
+  done <<< "$DS_TABLE"
+  return "$rc"
 }
 
 # ADDON_NS
@@ -253,6 +304,24 @@ _gs_http_code() {
   printf '%s' "$code"
 }
 
+# _gs_write_body <method> <path> [<payload-file>] [<content-type>] — Schreibaufruf
+# (POST/PUT/DELETE) ohne usergroup. Setzt _GS_CODE und _GS_ERR_BODY (erste Antwortzeile,
+# max. 200 Zeichen, R2). Wird DIREKT aufgerufen (nicht in einer Subshell), damit die
+# globalen Variablen in der aufrufenden Shell ankommen.
+_GS_ERR_BODY=""
+_gs_write_body() {
+  local method="$1" path="$2" payload="${3:-}" ctype="${4:-application/json}" tmp
+  _GS_ERR_BODY=""
+  tmp="$(mktemp)"; chmod 600 "$tmp"
+  if [[ -n "$payload" ]]; then
+    _GS_CODE="$( _curl_user_cfg "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - -X "$method" -H "Content-Type: $ctype" --data-binary "@$payload" -o "$tmp" -w '%{http_code}' "$GS_REST/$path" 2>/dev/null )" || _GS_CODE="000"
+  else
+    _GS_CODE="$( _curl_user_cfg "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - -X "$method" -H "Content-Type: $ctype" -o "$tmp" -w '%{http_code}' "$GS_REST/$path" 2>/dev/null )" || _GS_CODE="000"
+  fi
+  _GS_ERR_BODY="$(head -1 "$tmp" 2>/dev/null | cut -c1-200)"
+  rm -f "$tmp"
+}
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Preflight
 # ═══════════════════════════════════════════════════════════════════════════
@@ -282,6 +351,8 @@ preflight() {
     || { log_error "Admin-Zugang (Secret geoserver-geoserver) nicht lesbar"; exit 2; }
   check_never_touch || exit 2
   check_ws_table || exit 2
+  check_ds_table || exit 2
+  load_ds_config || exit 2
 
   local code
   code="$(_gs_http_code GET 'security/roles.json')"
@@ -372,6 +443,26 @@ read_namespace_uri() {
   rm -f "$_GS_BODY_FILE"
 }
 
+# read_datastores <ws> — Datastore-Namen (sortiert) für einen Workspace; 0 ok, 1 Fehler.
+# Akzeptiert .dataStores.dataStore als Array, .dataStores als ""/null (leer) und 404 (leer).
+read_datastores() {
+  local ws="$1"
+  _gs_get "workspaces/${ws}/datastores.json"
+  case "$_GS_CODE" in
+    200) ;;
+    404) rm -f "$_GS_BODY_FILE"; return 0 ;;
+    *) rm -f "$_GS_BODY_FILE"; log_error "Lesen workspaces/${ws}/datastores.json fehlgeschlagen (HTTP $_GS_CODE)"; return 1 ;;
+  esac
+  if jq -e '.dataStores.dataStore | type == "array"' "$_GS_BODY_FILE" >/dev/null 2>&1; then
+    jq -r '.dataStores.dataStore[]?.name // empty' "$_GS_BODY_FILE" 2>/dev/null | sort
+  elif jq -e '(.dataStores == "" or .dataStores == null)' "$_GS_BODY_FILE" >/dev/null 2>&1; then
+    :
+  else
+    rm -f "$_GS_BODY_FILE"; log_error "workspaces/${ws}/datastores.json: unerwartete JSON-Form"; return 1
+  fi
+  rm -f "$_GS_BODY_FILE"
+}
+
 # _http_code_url <url> — authentifizierter GET auf eine beliebige URL; gibt HTTP-Code.
 _http_code_url() {
   local url="$1" code
@@ -450,6 +541,35 @@ check_ws_table() {
     done <<< "$WS_TABLE"
     [[ "$want" -eq 1 ]] || { log_error "Soll-Workspace $ws fehlt in WS_TABLE"; return 1; }
   done <<< "$SOL_TABLE"
+  return 0
+}
+
+# _ws_uri <ws> — Namespace-URI aus WS_TABLE; 0 ok, 1 nicht gefunden.
+_ws_uri() {
+  local want="$1" w uri
+  while IFS='|' read -r w uri; do
+    [[ -n "$w" ]] || continue
+    [[ "$w" == "$want" ]] && { printf '%s' "$uri"; return 0; }
+  done <<< "$WS_TABLE"
+  return 1
+}
+
+# Startprüfung (C1): jeder DS_TABLE-KEY steht in SOL_TABLE, jeder Workspace in WS_TABLE.
+check_ds_table() {
+  local key ws ds schema uservar secret w want
+  while IFS='|' read -r key ws ds schema uservar secret; do
+    [[ -n "$key" ]] || continue
+    want=0
+    while IFS='|' read -r k _; do
+      [[ "$k" == "$key" ]] && { want=1; break; }
+    done <<< "$SOL_TABLE"
+    [[ "$want" -eq 1 ]] || { log_error "Datastore-KEY $key fehlt in SOL_TABLE"; return 1; }
+    want=0
+    while IFS='|' read -r w _; do
+      [[ "$w" == "$ws" ]] && { want=1; break; }
+    done <<< "$WS_TABLE"
+    [[ "$want" -eq 1 ]] || { log_error "Datastore-Workspace $ws fehlt in WS_TABLE"; return 1; }
+  done <<< "$DS_TABLE"
   return 0
 }
 
@@ -575,12 +695,16 @@ do_install() {
   # Workspaces anlegen (Schritt 2, nach Benutzern/Rollen/Zuordnungen)
   install_workspaces || return 1
 
+  # Datastores anlegen (Schritt 3)
+  install_datastores || return 1
+
   # Verifikation (im Dry-run übersprungen, K1)
   if [[ "$DRY_RUN" -eq 1 ]]; then
     log "  Verifikation wird im Dry-run übersprungen"
   else
     verify_install || return 1
     verify_workspaces || return 1
+    verify_datastores || return 1
   fi
   return 0
 }
@@ -648,13 +772,14 @@ install_workspaces() {
       fi
       f="$(mktemp)"; chmod 600 "$f"
       jq -nc --arg p "$ws" --arg u "$uri" '{namespace:{prefix:$p,uri:$u}}' > "$f"
-      code="$(_gs_http_code POST 'namespaces' "$f" 'application/json')"
+      _gs_write_body POST 'namespaces' "$f" 'application/json'
+      code="$_GS_CODE"
       rm -f "$f"
       howto_step "POST namespaces" "201" "$code" "JSON {\"namespace\":{\"prefix\":\"$ws\",\"uri\":\"$uri\"}}"
       if [[ "$code" == "200" || "$code" == "201" ]]; then
         log_ok "  Workspace $ws angelegt"
       else
-        log_error "Workspace $ws anlegen fehlgeschlagen (HTTP $code)"; rc=1
+        log_gs_error "Workspace $ws anlegen fehlgeschlagen (HTTP $code)"; rc=1
       fi
     else
       if ! cur="$(read_namespace_uri "$ws")"; then
@@ -679,27 +804,47 @@ verify_workspaces() {
   while IFS='|' read -r ws uri; do
     [[ -n "$ws" ]] || continue
     # Namespace-URI
-    if ! cur="$(read_namespace_uri "$ws")"; then
-      log_error "Verifikation $ws: Namespace nicht lesbar"; rc=1
-    elif [[ "$cur" != "$uri" ]]; then
-      log_error "Verifikation $ws: Namespace-URI weicht ab (erwartet $uri, vorhanden $cur)"; rc=1
+    _gs_get "namespaces/${ws}.json"
+    code="$_GS_CODE"
+    if [[ "$code" == "200" ]]; then
+      cur="$(jq -r '.namespace.uri // empty' "$_GS_BODY_FILE" 2>/dev/null)"
+      rm -f "$_GS_BODY_FILE"
+      howto_step "GET namespaces/$ws.json" "200" "200" "URI prüfen"
+      if [[ "$cur" == "$uri" ]]; then
+        log_ok "  $ws: Namespace-URI ok"
+      else
+        log_error "Verifikation $ws: Namespace-URI weicht ab (erwartet $uri, vorhanden $cur)"; rc=1
+      fi
+    else
+      rm -f "$_GS_BODY_FILE"
+      howto_step "GET namespaces/$ws.json" "200" "$code" "URI prüfen"
+      log_error "Verifikation $ws: GET namespaces/$ws.json -> $code (erwartet 200)"; rc=1
     fi
     # Workspace vorhanden und name stimmt
     _gs_get "workspaces/${ws}.json"
-    if [[ "$_GS_CODE" == "200" ]]; then
+    code="$_GS_CODE"
+    if [[ "$code" == "200" ]]; then
       name="$(jq -r '.workspace.name // empty' "$_GS_BODY_FILE" 2>/dev/null)"
       rm -f "$_GS_BODY_FILE"
-      [[ "$name" == "$ws" ]] || { log_error "Verifikation $ws: workspaces/$ws.json name weicht ab (erwartet $ws, erhalten $name)"; rc=1; }
+      howto_step "GET workspaces/$ws.json" "200" "200" "name prüfen"
+      if [[ "$name" == "$ws" ]]; then
+        log_ok "  $ws: Workspace-name ok"
+      else
+        log_error "Verifikation $ws: workspaces/$ws.json name weicht ab (erwartet $ws, erhalten $name)"; rc=1
+      fi
     else
       rm -f "$_GS_BODY_FILE"
-      log_error "Verifikation $ws: GET workspaces/$ws.json -> $_GS_CODE (erwartet 200)"; rc=1
+      howto_step "GET workspaces/$ws.json" "200" "$code" "name prüfen"
+      log_error "Verifikation $ws: GET workspaces/$ws.json -> $code (erwartet 200)"; rc=1
     fi
-    # Virtuelle Dienste (informativ; ob ein leerer Workspace 200 liefert, ist offen)
+    # Virtuelle Dienste (informativ)
     code="$(_http_code_url "$GS_BASE/$ws/wms?service=WMS&version=1.3.0&request=GetCapabilities")"
-    [[ "$code" == "200" ]] || log_warn "Verifikation $ws: WMS GetCapabilities -> $code (erwartet 200)"
+    howto_step "GET $ws/wms GetCapabilities" "200" "$code" "informativ"
+    if [[ "$code" == "200" ]]; then log_ok "  $ws: WMS GetCapabilities 200"; else log_warn "Verifikation $ws: WMS GetCapabilities -> $code (erwartet 200)"; fi
     if [[ "$ws" != "friedhofsplaene" ]]; then
       code="$(_http_code_url "$GS_BASE/$ws/wfs?service=WFS&version=2.0.0&request=GetCapabilities")"
-      [[ "$code" == "200" ]] || log_warn "Verifikation $ws: WFS GetCapabilities -> $code (erwartet 200)"
+      howto_step "GET $ws/wfs GetCapabilities" "200" "$code" "informativ"
+      if [[ "$code" == "200" ]]; then log_ok "  $ws: WFS GetCapabilities 200"; else log_warn "Verifikation $ws: WFS GetCapabilities -> $code (erwartet 200)"; fi
     fi
   done <<< "$WS_TABLE"
   return "$rc"
@@ -727,14 +872,191 @@ uninstall_workspaces() {
       howto_step "DELETE workspaces/$ws" "200" "-" "404 = schon weg, ohne recurse"
       continue
     fi
-    code="$(_gs_http_code DELETE "workspaces/${ws}")"
+    _gs_write_body DELETE "workspaces/${ws}"
+    code="$_GS_CODE"
     howto_step "DELETE workspaces/$ws" "200" "$code" "404 = schon weg, ohne recurse"
     case "$code" in
       200|201) log_ok "  Workspace $ws gelöscht" ;;
       404)     log "  Workspace $ws schon weg" ;;
-      *)       log_error "Workspace $ws löschen fehlgeschlagen (HTTP $code)"; rc=1 ;;
+      *)       log_gs_error "Workspace $ws löschen fehlgeschlagen (HTTP $code)"; rc=1 ;;
     esac
   done <<< "$WS_TABLE"
+  return "$rc"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Datastores (Schritt 3): anlegen / aktualisieren / verifizieren / löschen
+# ═══════════════════════════════════════════════════════════════════════════
+# _ds_body <name> <schema> <host> <port> <db> <user> <ns> <password> <outfile>
+# Baut den vollständigen PostGIS-Datastore-Body (20 Parameter). Das Passwort wird
+# nur per --rawfile über Prozesssubstitution eingelesen (printf ist Builtin), damit
+# es in keiner Argumentliste von jq auftaucht (C3).
+_ds_body() {
+  local name="$1" schema="$2" host="$3" port="$4" db="$5" user="$6" ns="$7" pw="$8" out="$9"
+  jq -n \
+    --rawfile pw <(printf '%s' "$pw") \
+    --arg name "$name" --arg schema "$schema" --arg host "$host" --arg port "$port" \
+    --arg db "$db" --arg user "$user" --arg ns "$ns" \
+    '{dataStore:{name:$name,type:"PostGIS",enabled:true,disableOnConnFailure:false,
+      connectionParameters:{entry:[
+        {"@key":"schema","$":$schema},
+        {"@key":"Estimated extends","$":"false"},
+        {"@key":"fetch size","$":"1000"},
+        {"@key":"encode functions","$":"false"},
+        {"@key":"Expose primary keys","$":"true"},
+        {"@key":"validate connections","$":"true"},
+        {"@key":"Support on the fly geometry simplification","$":"false"},
+        {"@key":"Connection timeout","$":"20"},
+        {"@key":"create database","$":"false"},
+        {"@key":"preparedStatements","$":"false"},
+        {"@key":"database","$":$db},
+        {"@key":"reWriteBatchedInserts","$":"false"},
+        {"@key":"port","$":$port},
+        {"@key":"passwd","$":$pw},
+        {"@key":"dbtype","$":"postgis"},
+        {"@key":"host","$":$host},
+        {"@key":"namespace","$":$ns},
+        {"@key":"Loose bbox","$":"false"},
+        {"@key":"Test while idle","$":"false"},
+        {"@key":"user","$":$user}
+      ]}}}' > "$out"
+}
+
+install_datastores() {
+  local -a existing
+  local key ws ds schema uservar secret uri user password code rc=0 f tmp
+  log "== Datastores =="
+  log "  Basis: host=${_DB_HOST} port=${_DB_PORT} db=${_DB_NAME}"
+  while IFS='|' read -r key ws ds schema uservar secret; do
+    [[ -n "$key" ]] || continue
+    uri="$(_ws_uri "$ws")"
+    user="$(_env_resolve "$uservar")"
+    password="$(_secret_get "$NAMESPACE" "$secret" "DB_PASSWORD")"
+    if ! _pw_is_valid "$password"; then
+      log_error "Datastore $ds: kein gültiges DB_PASSWORD im Secret $secret"
+      rc=1
+      continue
+    fi
+    tmp="$(mktemp)"; chmod 600 "$tmp"
+    if ! read_datastores "$ws" > "$tmp"; then
+      rm -f "$tmp"; log_error "Datastore-Liste für $ws nicht lesbar"; rc=1; continue
+    fi
+    mapfile -t existing < "$tmp"
+    rm -f "$tmp"
+    if ! _has "$ds" "${existing[@]}"; then
+      if [[ "$DRY_RUN" -eq 1 ]]; then
+        log "  [dry-run] $ds würde angelegt (schema=$schema, user=$user)"
+        howto_step "POST workspaces/$ws/datastores" "201" "-" "JSON (20 Parameter, passwd=<PASSWORD>); schema=$schema user=$user host=${_DB_HOST} port=${_DB_PORT} db=${_DB_NAME}"
+        continue
+      fi
+      f="$(mktemp)"; chmod 600 "$f"
+      _ds_body "$ds" "$schema" "$_DB_HOST" "$_DB_PORT" "$_DB_NAME" "$user" "$uri" "$password" "$f"
+      _gs_write_body POST "workspaces/${ws}/datastores" "$f" 'application/json'
+      code="$_GS_CODE"
+      rm -f "$f"
+      howto_step "POST workspaces/$ws/datastores" "201" "$code" "JSON (20 Parameter, passwd=<PASSWORD>)"
+      if [[ "$code" == "200" || "$code" == "201" ]]; then
+        log_ok "  Datastore $ds angelegt"
+      else
+        log_gs_error "Datastore $ds anlegen fehlgeschlagen (HTTP $code)"; rc=1
+      fi
+    else
+      if [[ "$DRY_RUN" -eq 1 ]]; then
+        log "  [dry-run] $ds würde aktualisiert (schema=$schema, user=$user)"
+        howto_step "PUT workspaces/$ws/datastores/$ds" "200" "-" "JSON (20 Parameter, passwd=<PASSWORD>)"
+        continue
+      fi
+      f="$(mktemp)"; chmod 600 "$f"
+      _ds_body "$ds" "$schema" "$_DB_HOST" "$_DB_PORT" "$_DB_NAME" "$user" "$uri" "$password" "$f"
+      _gs_write_body PUT "workspaces/${ws}/datastores/${ds}" "$f" 'application/json'
+      code="$_GS_CODE"
+      rm -f "$f"
+      howto_step "PUT workspaces/$ws/datastores/$ds" "200" "$code" "JSON (20 Parameter, passwd=<PASSWORD>)"
+      if [[ "$code" == "200" ]]; then
+        log_ok "  Datastore $ds aktualisiert"
+      else
+        log_gs_error "Datastore $ds aktualisieren fehlgeschlagen (HTTP $code)"; rc=1
+      fi
+    fi
+  done <<< "$DS_TABLE"
+  return "$rc"
+}
+
+verify_datastores() {
+  local key ws ds schema uservar secret uri user code rc=0 cnt
+  local en get_schema get_user get_db get_host get_ns
+  log "== Verifikation Datastores =="
+  while IFS='|' read -r key ws ds schema uservar secret; do
+    [[ -n "$key" ]] || continue
+    uri="$(_ws_uri "$ws")"
+    user="$(_env_resolve "$uservar")"
+    _gs_get "workspaces/${ws}/datastores/${ds}.json"
+    code="$_GS_CODE"
+    if [[ "$code" == "200" ]]; then
+      en="$(jq -r '.dataStore.enabled // empty' "$_GS_BODY_FILE" 2>/dev/null)"
+      get_schema="$(jq -r '.dataStore.connectionParameters.entry[]? | select(."@key"=="schema") | ."$"' "$_GS_BODY_FILE" 2>/dev/null)"
+      get_user="$(jq -r '.dataStore.connectionParameters.entry[]? | select(."@key"=="user") | ."$"' "$_GS_BODY_FILE" 2>/dev/null)"
+      get_db="$(jq -r '.dataStore.connectionParameters.entry[]? | select(."@key"=="database") | ."$"' "$_GS_BODY_FILE" 2>/dev/null)"
+      get_host="$(jq -r '.dataStore.connectionParameters.entry[]? | select(."@key"=="host") | ."$"' "$_GS_BODY_FILE" 2>/dev/null)"
+      get_ns="$(jq -r '.dataStore.connectionParameters.entry[]? | select(."@key"=="namespace") | ."$"' "$_GS_BODY_FILE" 2>/dev/null)"
+      rm -f "$_GS_BODY_FILE"
+      howto_step "GET workspaces/$ws/datastores/$ds.json" "200" "200" "Parameter prüfen"
+      if [[ "$en" == "true" && "$get_schema" == "$schema" && "$get_user" == "$user" && "$get_db" == "$_DB_NAME" && "$get_host" == "$_DB_HOST" && "$get_ns" == "$uri" ]]; then
+        log_ok "  $ds: Parameter ok"
+      else
+        log_error "Verifikation $ds: Parameter weichen ab"; rc=1
+      fi
+    else
+      rm -f "$_GS_BODY_FILE"
+      howto_step "GET workspaces/$ws/datastores/$ds.json" "200" "$code" "Parameter prüfen"
+      log_error "Verifikation $ds: GET workspaces/$ws/datastores/$ds.json -> $code (erwartet 200)"; rc=1
+    fi
+    # Verbindungstest: list=available erzwingt DB-Verbindung (Statuscode hart, Form tolerant).
+    _gs_get "workspaces/${ws}/datastores/${ds}/featuretypes.json?list=available"
+    code="$_GS_CODE"
+    if [[ "$code" == "200" ]]; then
+      cnt="$(jq -r '.list.string[]? // empty' "$_GS_BODY_FILE" 2>/dev/null | awk 'END{print NR}')"
+      rm -f "$_GS_BODY_FILE"
+      howto_step "GET workspaces/$ws/datastores/$ds/featuretypes.json?list=available" "200" "200" "DB-Verbindungstest"
+      log_ok "  $ds: list=available 200 ($cnt Namen)"
+    else
+      rm -f "$_GS_BODY_FILE"
+      howto_step "GET workspaces/$ws/datastores/$ds/featuretypes.json?list=available" "200" "$code" "DB-Verbindungstest"
+      log_warn "Verifikation $ds: list=available -> $code (erwartet 200)"; rc=1
+    fi
+  done <<< "$DS_TABLE"
+  return "$rc"
+}
+
+uninstall_datastores() {
+  local -a existing
+  local key ws ds schema uservar secret code rc=0 tmp
+  log "== Datastores entfernen =="
+  while IFS='|' read -r key ws ds schema uservar secret; do
+    [[ -n "$key" ]] || continue
+    tmp="$(mktemp)"; chmod 600 "$tmp"
+    if ! read_datastores "$ws" > "$tmp"; then
+      rm -f "$tmp"; log_error "Datastore-Liste für $ws nicht lesbar"; rc=1; continue
+    fi
+    mapfile -t existing < "$tmp"
+    rm -f "$tmp"
+    if ! _has "$ds" "${existing[@]}"; then
+      log "  Datastore $ds nicht vorhanden — übersprungen"
+      continue
+    fi
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      howto_step "DELETE workspaces/$ws/datastores/$ds" "200" "-" "404 = schon weg, ohne recurse"
+      continue
+    fi
+    _gs_write_body DELETE "workspaces/${ws}/datastores/${ds}"
+    code="$_GS_CODE"
+    howto_step "DELETE workspaces/$ws/datastores/$ds" "200" "$code" "404 = schon weg, ohne recurse"
+    case "$code" in
+      200|201) log_ok "  Datastore $ds gelöscht" ;;
+      404)     log "  Datastore $ds schon weg" ;;
+      *)       log_gs_error "Datastore $ds löschen fehlgeschlagen (HTTP $code)"; rc=1 ;;
+    esac
+  done <<< "$DS_TABLE"
   return "$rc"
 }
 
@@ -750,7 +1072,10 @@ do_uninstall() {
   existing_users=("${_INV_USERS[@]}")
   existing_roles=("${_INV_ROLES[@]}")
 
-  # 0) Workspaces entfernen (Reihenfolge umgekehrt zum Install; vor Benutzern/Rollen/Secrets)
+  # 0) Datastores entfernen (Reihenfolge umgekehrt zum Install; vor Workspaces)
+  uninstall_datastores || rc=1
+
+  # 0b) Workspaces entfernen (vor Benutzern/Rollen/Secrets)
   uninstall_workspaces || rc=1
 
   # 1) Rollenzuordnungen lösen (nur vorhandene)
@@ -770,12 +1095,13 @@ do_uninstall() {
         howto_step "DELETE security/roles/role/$role/user/$user" "200" "-" "404 = schon weg"
         continue
       fi
-      code="$(_gs_http_code DELETE "security/roles/role/$role/user/$user")"
+      _gs_write_body DELETE "security/roles/role/$role/user/$user"
+      code="$_GS_CODE"
       howto_step "DELETE security/roles/role/$role/user/$user" "200" "$code" "404 = schon weg"
       case "$code" in
         200|201) log_ok "  Zuordnung $role/$user gelöst" ;;
         404)     log "  Zuordnung $role/$user schon weg" ;;
-        *)       log_error "Zuordnung $role/$user lösen fehlgeschlagen (HTTP $code)"; rc=1 ;;
+        *)       log_gs_error "Zuordnung $role/$user lösen fehlgeschlagen (HTTP $code)"; rc=1 ;;
       esac
     done
   done <<< "$SOL_TABLE"
@@ -791,12 +1117,13 @@ do_uninstall() {
       howto_step "DELETE security/usergroup/user/$user" "200" "-" "404 = schon weg"
       continue
     fi
-    code="$(_gs_http_code DELETE "security/usergroup/user/$user")"
+    _gs_write_body DELETE "security/usergroup/user/$user"
+    code="$_GS_CODE"
     howto_step "DELETE security/usergroup/user/$user" "200" "$code" "404 = schon weg"
     case "$code" in
       200|201) log_ok "  Benutzer $user gelöscht" ;;
       404)     log "  Benutzer $user schon weg" ;;
-      *)       log_error "Benutzer $user löschen fehlgeschlagen (HTTP $code)"; rc=1 ;;
+      *)       log_gs_error "Benutzer $user löschen fehlgeschlagen (HTTP $code)"; rc=1 ;;
     esac
   done <<< "$SOL_TABLE"
 
@@ -812,12 +1139,13 @@ do_uninstall() {
         howto_step "DELETE security/roles/role/$role" "200" "-" "404 = schon weg"
         continue
       fi
-      code="$(_gs_http_code DELETE "security/roles/role/$role")"
+      _gs_write_body DELETE "security/roles/role/$role"
+      code="$_GS_CODE"
       howto_step "DELETE security/roles/role/$role" "200" "$code" "404 = schon weg"
       case "$code" in
         200|201) log_ok "  Rolle $role gelöscht" ;;
         404)     log "  Rolle $role schon weg" ;;
-        *)       log_error "Rolle $role löschen fehlgeschlagen (HTTP $code)"; rc=1 ;;
+        *)       log_gs_error "Rolle $role löschen fehlgeschlagen (HTTP $code)"; rc=1 ;;
       esac
     done
   done <<< "$SOL_TABLE"
@@ -878,6 +1206,20 @@ do_uninstall() {
     _has "$ws" "${after_ws[@]}" && { log_error "Workspace $ws noch vorhanden"; rc=1; }
   done <<< "$WS_TABLE"
 
+  # Datastores: nicht mehr gelistet (Schritt 3)
+  local -a after_ds
+  local dtmp dkey dws dname
+  dtmp="$(mktemp)"; chmod 600 "$dtmp"
+  while IFS='|' read -r dkey dws dname _ _ _; do
+    [[ -n "$dkey" ]] || continue
+    if ! read_datastores "$dws" > "$dtmp"; then
+      rm -f "$dtmp"; log_error "Schlussverifikation: Datastore-Liste für $dws nicht lesbar"; return 1
+    fi
+    mapfile -t after_ds < "$dtmp"
+    _has "$dname" "${after_ds[@]}" && { log_error "Datastore $dname noch vorhanden"; rc=1; }
+  done <<< "$DS_TABLE"
+  rm -f "$dtmp"
+
   [[ "$rc" -eq 0 ]] && log_ok "Uninstall verifiziert (alle Soll-Objekte entfernt)"
   return "$rc"
 }
@@ -933,8 +1275,8 @@ main() {
   howto "- Secret: wiederverwenden, wenn ein gültiger Wert vorhanden ist, sonst neu erzeugen."
   howto "- Benutzer: anlegen (POST usergroup/users) oder Passwort setzen (POST usergroup/user/<name>)."
   howto "- Uninstall: nur Vorhandenes löschen; 404 gilt als 'schon weg'."
-  howto "- Reihenfolge Install: Rollen -> je Benutzer Secret -> Benutzer -> Zuordnungen -> Workspaces -> Verifikation."
-  howto "- Reihenfolge Uninstall: Workspaces -> Zuordnungen -> Benutzer -> Rollen -> Secrets -> Verifikation."
+  howto "- Reihenfolge Install: Rollen -> je Benutzer Secret -> Benutzer -> Zuordnungen -> Workspaces -> Datastores -> Verifikation."
+  howto "- Reihenfolge Uninstall: Datastores -> Workspaces -> Zuordnungen -> Benutzer -> Rollen -> Secrets -> Verifikation."
   howto ""
   howto "## Workspaces"
   howto 'GET workspaces.json        -> {"workspaces":{"workspace":[{"name":...,"href":...}]}}'
@@ -945,6 +1287,18 @@ main() {
   howto '- Anlegen: Workspace fehlt -> POST namespaces (legt Workspace und Namespace an).'
   howto '- Vorhanden: GET namespaces/<ws>.json; URI gleich -> ok, abweichend/fehlt -> Fehler, keine Änderung.'
   howto '- Verifikation: namespaces/<ws>.json URI, workspaces/<ws>.json name, WMS/WFS GetCapabilities (informativ).'
+  howto ""
+  howto "## Datastores"
+  howto 'GET workspaces/<ws>/datastores.json            -> {"dataStores":{"dataStore":[{"name":...,"href":...}]}}  ("" = leer)'
+  howto 'GET workspaces/<ws>/datastores/<ds>.json      -> {"dataStore":{"name":...,"connectionParameters":{"entry":[{"@key":...,"$":...}]}}}'
+  howto 'GET workspaces/<ws>/datastores/<ds>/featuretypes.json?list=available -> {"list":{"string":[...]}} (DB-Verbindungstest)'
+  howto 'POST workspaces/<ws>/datastores               -> 201 (200/201 = ok); Body: 20 connectionParameters'
+  howto 'PUT  workspaces/<ws>/datastores/<ds>          -> 200; Body: 20 connectionParameters (vollständig)'
+  howto 'DELETE workspaces/<ws>/datastores/<ds>        -> 200 = gelöscht, 404 = schon weg, ohne recurse'
+  howto '- 20 Parameter: schema, user, namespace, passwd, host, port, database variabel; dbtype=postgis, Estimated extends=false, fetch size=1000, encode functions=false, Expose primary keys=true, validate connections=true, Support on the fly geometry simplification=false, Connection timeout=20, create database=false, preparedStatements=false, reWriteBatchedInserts=false, Loose bbox=false, Test while idle=false fest.'
+  howto '- passwd: aus Secret <name> (Key DB_PASSWORD), nur lesend, nie in einer Argumentliste.'
+  howto '- Wertequellen: host/port/database aus P2D2_BASE_DB_HOST/PORT/NAME, user aus P2D2_<KEY>_DB_USER, schema aus DS_TABLE, namespace aus WS_TABLE.'
+  howto '- Anlegen (fehlt): POST; Vorhanden: PUT (vollständiger Body).'
   howto ""
 
   if [[ "$UNINSTALL" -eq 1 ]]; then
