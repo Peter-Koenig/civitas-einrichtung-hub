@@ -274,11 +274,82 @@ preflight() {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Bestand lesen (Benutzer + Rollen), nie Passwörter
+# Bestand lesen (Benutzer + Rollen), nie Passwörter. Statusbewusst (K8):
+# ein HTTP-Fehler ist ein Fehler, keine leere Liste.
 # ═══════════════════════════════════════════════════════════════════════════
-read_users()  { _gs_curl GET 'security/usergroup/users.json' | jq -r '.users[]?.userName // empty' 2>/dev/null | sort; }
-read_roles()  { _gs_curl GET 'security/roles.json' | jq -r '.roles[]? // empty' 2>/dev/null | sort; }
-read_user_roles() { _gs_curl GET "security/roles/user/$1.json" | jq -r '.roles[]? // empty' 2>/dev/null | sort; }
+_GS_CODE=""   # global: HTTP-Code des letzten _gs_get
+
+# _gs_get <path> — GET; setzt _GS_CODE, gibt den Body auf stdout aus.
+_gs_get() {
+  local path="$1" tmp
+  tmp="$(mktemp)"; chmod 600 "$tmp"
+  _GS_CODE="$(printf 'user = "%s:%s"\n' "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - -X GET -H "Content-Type: application/json" -o "$tmp" -w '%{http_code}' "$GS_REST/$path" 2>/dev/null)" || _GS_CODE="000"
+  cat "$tmp" 2>/dev/null || true
+  rm -f "$tmp"
+}
+
+# read_users — Benutzernamen (sortiert); 0 ok, 1 Lesefehler.
+read_users() {
+  local body
+  body="$(_gs_get 'security/usergroup/users.json')"
+  [[ "$_GS_CODE" == "200" ]] || { log_error "Lesen security/usergroup/users.json fehlgeschlagen (HTTP $_GS_CODE)"; return 1; }
+  printf '%s' "$body" | jq -e '.users | type == "array"' >/dev/null 2>&1 \
+    || { log_error "security/usergroup/users.json: unerwartete JSON-Form"; return 1; }
+  printf '%s' "$body" | jq -r '.users[]?.userName // empty' 2>/dev/null | sort
+}
+
+# read_roles — Rollen (sortiert); 0 ok, 1 Lesefehler.
+read_roles() {
+  local body
+  body="$(_gs_get 'security/roles.json')"
+  [[ "$_GS_CODE" == "200" ]] || { log_error "Lesen security/roles.json fehlgeschlagen (HTTP $_GS_CODE)"; return 1; }
+  printf '%s' "$body" | jq -e '.roles | type == "array"' >/dev/null 2>&1 \
+    || { log_error "security/roles.json: unerwartete JSON-Form"; return 1; }
+  printf '%s' "$body" | jq -r '.roles[]? // empty' 2>/dev/null | sort
+}
+
+# read_user_roles <user> — Rollen eines Benutzers; 200/404 = ok (404 => leer).
+read_user_roles() {
+  local user="$1" body
+  body="$(_gs_get "security/roles/user/${user}.json")"
+  case "$_GS_CODE" in
+    200) ;;
+    404) return 0 ;;
+    *) log_error "Lesen security/roles/user/${user}.json fehlgeschlagen (HTTP $_GS_CODE)"; return 1 ;;
+  esac
+  printf '%s' "$body" | jq -e '.roles | type == "array"' >/dev/null 2>&1 \
+    || { log_error "security/roles/user/${user}.json: unerwartete JSON-Form"; return 1; }
+  printf '%s' "$body" | jq -r '.roles[]? // empty' 2>/dev/null | sort
+}
+
+# Globaler Bestand (K8), nach dem Preflight einmal gelesen.
+_INV_USERS=()
+_INV_ROLES=()
+_USER_ROLES=()
+
+# _read_user_roles_into <user> — liest Rollen in das globale Array _USER_ROLES; 0 ok, 1 Fehler.
+_read_user_roles_into() {
+  local user="$1" tmp
+  tmp="$(mktemp)"; chmod 600 "$tmp"
+  if ! read_user_roles "$user" > "$tmp"; then rm -f "$tmp"; return 1; fi
+  mapfile -t _USER_ROLES < "$tmp"
+  rm -f "$tmp"
+  return 0
+}
+
+# _load_inventory — liest Benutzer+Rollen, prüft Plausibilität (admin/ADMIN).
+# Rückgabe 0 ok; 2 bei Lesefehler oder Plausibilitätsfehler (vor jeder Mutation).
+_load_inventory() {
+  local tmp rc=0
+  tmp="$(mktemp)"; chmod 600 "$tmp"
+  if read_users > "$tmp"; then mapfile -t _INV_USERS < "$tmp"; else rc=2; fi
+  if read_roles > "$tmp"; then mapfile -t _INV_ROLES < "$tmp"; else rc=2; fi
+  rm -f "$tmp"
+  [[ "$rc" -eq 0 ]] || return 2
+  _has "$GS_ADMIN_USER" "${_INV_USERS[@]}" || { log_error "Benutzerliste enthält nicht den Admin-Benutzer $GS_ADMIN_USER — Abbruch vor Änderungen"; return 2; }
+  _has "ADMIN" "${_INV_ROLES[@]}" || { log_error "Rollenliste enthält nicht die Rolle ADMIN — Abbruch vor Änderungen"; return 2; }
+  return 0
+}
 
 # _has <needle> <items...> — 0 wenn needle enthalten.
 _has() {
@@ -310,8 +381,8 @@ do_install() {
   local line key _ user roles secret role password
   local f
 
-  mapfile -t existing_users < <(read_users)
-  mapfile -t existing_roles < <(read_roles)
+  existing_users=("${_INV_USERS[@]}")
+  existing_roles=("${_INV_ROLES[@]}")
 
   log "== Soll/Ist: Benutzer und Rollen =="
   while IFS='|' read -r key _ user roles secret; do
@@ -425,7 +496,6 @@ do_install() {
 
 verify_install() {
   local line key _ user roles secret password code neg
-  local -a actual_roles
   log "== Verifikation =="
   while IFS='|' read -r key _ user roles secret; do
     [[ -n "$key" ]] || continue
@@ -451,9 +521,12 @@ verify_install() {
     fi
 
     # Rollenliste je Benutzer (Soll ⊆ Ist)
-    mapfile -t actual_roles < <(read_user_roles "$user")
+    if ! _read_user_roles_into "$user"; then
+      log_error "Verifikation $key: Rollen für $user nicht lesbar"
+      return 1
+    fi
     for role in ${roles//,/ }; do
-      _has "$role" "${actual_roles[@]}" || { log_error "Verifikation $key: Rolle $role fehlt bei $user"; return 1; }
+      _has "$role" "${_USER_ROLES[@]}" || { log_error "Verifikation $key: Rolle $role fehlt bei $user"; return 1; }
     done
   done <<< "$SOL_TABLE"
   return 0
@@ -464,21 +537,23 @@ verify_install() {
 # ═══════════════════════════════════════════════════════════════════════════
 do_uninstall() {
   local line key _ user roles secret code rc=0 role
-  local -a existing_users existing_roles user_roles
+  local -a existing_users existing_roles
   log "== Uninstall =="
 
-  # Bestand einmal lesen (Idempotenz, K3). GeoServer-Erreichbarkeit und Admin-Zugang
-  # hat bereits preflight() geprüft und bricht dort bei Fehlern mit Exit 2 ab,
-  # bevor hier irgendetwas gelöscht wird.
-  mapfile -t existing_users < <(read_users)
-  mapfile -t existing_roles < <(read_roles)
+  # Bestand aus _load_inventory (in main gelesen + plausibel geprüft, K8).
+  existing_users=("${_INV_USERS[@]}")
+  existing_roles=("${_INV_ROLES[@]}")
 
   # 1) Rollenzuordnungen lösen (nur vorhandene)
   while IFS='|' read -r key _ user roles secret; do
     [[ -n "$key" ]] || continue
-    mapfile -t user_roles < <(read_user_roles "$user")
+    if ! _read_user_roles_into "$user"; then
+      log_error "Rollen für $user nicht lesbar — Zuordnungen übersprungen"
+      rc=1
+      continue
+    fi
     for role in ${roles//,/ }; do
-      if ! _has "$role" "${user_roles[@]}"; then
+      if ! _has "$role" "${_USER_ROLES[@]}"; then
         log "  Zuordnung $role/$user nicht vorhanden — übersprungen"
         continue
       fi
@@ -550,8 +625,17 @@ do_uninstall() {
   fi
 
   local -a after_users after_roles
-  mapfile -t after_users < <(read_users)
-  mapfile -t after_roles < <(read_roles)
+  local ftmp
+  ftmp="$(mktemp)"; chmod 600 "$ftmp"
+  if ! read_users > "$ftmp"; then
+    rm -f "$ftmp"; log_error "Schlussverifikation: Benutzerliste nicht lesbar"; return 1
+  fi
+  mapfile -t after_users < "$ftmp"
+  if ! read_roles > "$ftmp"; then
+    rm -f "$ftmp"; log_error "Schlussverifikation: Rollenliste nicht lesbar"; return 1
+  fi
+  mapfile -t after_roles < "$ftmp"
+  rm -f "$ftmp"
   while IFS='|' read -r key _ user roles secret; do
     [[ -n "$key" ]] || continue
     _has "$user" "${after_users[@]}" && { log_error "Benutzer $user noch vorhanden"; rc=1; }
@@ -571,6 +655,7 @@ do_uninstall() {
 main() {
   warn_legacy_vars
   preflight
+  _load_inventory || exit 2
 
   # How-To-Datei vorbereiten
   HOWTO_FILE="p2d2-geoserver-config_v1_$(date +%Y%m%d-%H%M).howto.md"
