@@ -139,7 +139,7 @@ async function createBuilderJob(config) {
           containers: [
             {
               name: "builder",
-              image: "node:20",
+              image: "node:24.22.1",
               imagePullPolicy: "IfNotPresent",
               workingDir: "/build",
               env: [
