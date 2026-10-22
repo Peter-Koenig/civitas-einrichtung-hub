@@ -288,49 +288,51 @@ preflight() {
 # Bestand lesen (Benutzer + Rollen), nie Passwörter. Statusbewusst (K8):
 # ein HTTP-Fehler ist ein Fehler, keine leere Liste.
 # ═══════════════════════════════════════════════════════════════════════════
-_GS_CODE=""   # global: HTTP-Code des letzten _gs_get
+_GS_CODE=""      # global: HTTP-Code des letzten _gs_get
+_GS_BODY_FILE=""  # global: Temp-Datei mit dem Body des letzten _gs_get
 
-# _gs_get <path> — GET; setzt _GS_CODE, gibt den Body auf stdout aus.
+# _gs_get <path> — GET; setzt _GS_CODE und _GS_BODY_FILE (Body in Datei).
+# Wird direkt (nicht in einer Kommando-Substitution) aufgerufen, damit die
+# globalen Variablen in der aufrufenden Shell ankommen.
 _gs_get() {
-  local path="$1" tmp
-  tmp="$(mktemp)"; chmod 600 "$tmp"
-  _GS_CODE="$(printf 'user = "%s:%s"\n' "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - -X GET -H "Content-Type: application/json" -o "$tmp" -w '%{http_code}' "$GS_REST/$path" 2>/dev/null)" || _GS_CODE="000"
-  cat "$tmp" 2>/dev/null || true
-  rm -f "$tmp"
+  local path="$1"
+  _GS_BODY_FILE="$(mktemp)"; chmod 600 "$_GS_BODY_FILE"
+  _GS_CODE="$(printf 'user = "%s:%s"\n' "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - -X GET -H "Content-Type: application/json" -o "$_GS_BODY_FILE" -w '%{http_code}' "$GS_REST/$path" 2>/dev/null)" || _GS_CODE="000"
 }
 
-# read_users — Benutzernamen (sortiert); 0 ok, 1 Lesefehler.
+# read_users — Benutzernamen (sortiert) auf stdout; 0 ok, 1 Lesefehler.
 read_users() {
-  local body
-  body="$(_gs_get 'security/usergroup/users.json')"
+  _gs_get 'security/usergroup/users.json'
   [[ "$_GS_CODE" == "200" ]] || { log_error "Lesen security/usergroup/users.json fehlgeschlagen (HTTP $_GS_CODE)"; return 1; }
-  printf '%s' "$body" | jq -e '.users | type == "array"' >/dev/null 2>&1 \
+  jq -e '.users | type == "array"' "$_GS_BODY_FILE" >/dev/null 2>&1 \
     || { log_error "security/usergroup/users.json: unerwartete JSON-Form"; return 1; }
-  printf '%s' "$body" | jq -r '.users[]?.userName // empty' 2>/dev/null | sort
+  jq -r '.users[]?.userName // empty' "$_GS_BODY_FILE" 2>/dev/null | sort
+  rm -f "$_GS_BODY_FILE"
 }
 
-# read_roles — Rollen (sortiert); 0 ok, 1 Lesefehler.
+# read_roles — Rollen (sortiert) auf stdout; 0 ok, 1 Lesefehler.
 read_roles() {
-  local body
-  body="$(_gs_get 'security/roles.json')"
+  _gs_get 'security/roles.json'
   [[ "$_GS_CODE" == "200" ]] || { log_error "Lesen security/roles.json fehlgeschlagen (HTTP $_GS_CODE)"; return 1; }
-  printf '%s' "$body" | jq -e '.roles | type == "array"' >/dev/null 2>&1 \
+  jq -e '.roles | type == "array"' "$_GS_BODY_FILE" >/dev/null 2>&1 \
     || { log_error "security/roles.json: unerwartete JSON-Form"; return 1; }
-  printf '%s' "$body" | jq -r '.roles[]? // empty' 2>/dev/null | sort
+  jq -r '.roles[]? // empty' "$_GS_BODY_FILE" 2>/dev/null | sort
+  rm -f "$_GS_BODY_FILE"
 }
 
 # read_user_roles <user> — Rollen eines Benutzers; 200/404 = ok (404 => leer).
 read_user_roles() {
-  local user="$1" body
-  body="$(_gs_get "security/roles/user/${user}.json")"
+  local user="$1"
+  _gs_get "security/roles/user/${user}.json"
   case "$_GS_CODE" in
     200) ;;
-    404) return 0 ;;
-    *) log_error "Lesen security/roles/user/${user}.json fehlgeschlagen (HTTP $_GS_CODE)"; return 1 ;;
+    404) rm -f "$_GS_BODY_FILE"; return 0 ;;
+    *) log_error "Lesen security/roles/user/${user}.json fehlgeschlagen (HTTP $_GS_CODE)"; rm -f "$_GS_BODY_FILE"; return 1 ;;
   esac
-  printf '%s' "$body" | jq -e '.roles | type == "array"' >/dev/null 2>&1 \
-    || { log_error "security/roles/user/${user}.json: unerwartete JSON-Form"; return 1; }
-  printf '%s' "$body" | jq -r '.roles[]? // empty' 2>/dev/null | sort
+  jq -e '.roles | type == "array"' "$_GS_BODY_FILE" >/dev/null 2>&1 \
+    || { log_error "security/roles/user/${user}.json: unerwartete JSON-Form"; rm -f "$_GS_BODY_FILE"; return 1; }
+  jq -r '.roles[]? // empty' "$_GS_BODY_FILE" 2>/dev/null | sort
+  rm -f "$_GS_BODY_FILE"
 }
 
 # Globaler Bestand (K8), nach dem Preflight einmal gelesen.
