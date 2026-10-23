@@ -247,15 +247,19 @@ case "$url" in
     body="$(workspaces_json)" ;;
   *"/rest/workspaces/"*"/datastores.json")
     ws="${url#*/rest/workspaces/}"; ws="${ws%%/*}"
-    body="$(datastores_json "$ws")" ;;
+    if has_ws "$ws"; then body="$(datastores_json "$ws")"; else code=404; fi ;;
   *"list=available"*)
-    if [ "${GS_LIST_AVAILABLE_FAIL:-0}" = "1" ]; then code=500
+    ws="${url#*/rest/workspaces/}"; ws="${ws%%/*}"
+    if ! has_ws "$ws"; then code=404
+    elif [ "${GS_LIST_AVAILABLE_FAIL:-0}" = "1" ]; then code=500
     elif [ "${GS_LIST_AVAILABLE_MISSING_NATIVE:-0}" = "1" ]; then body='{"list":{"string":["p2d2_containers","v_grabflure_aktuell","p2d2_grabflure_versionen","p2d2_graeber_versionen"]}}'; code=200
     else body='{"list":{"string":["p2d2_containers","v_grabflure_aktuell","p2d2_grabflure_versionen","v_graeber_aktuell","p2d2_graeber_versionen"]}}'; code=200; fi ;;
   *"/rest/workspaces/"*"/datastores/"*"/featuretypes.json")
     ws="${url#*/rest/workspaces/}"; ws="${ws%%/*}"
     ds="${url#*/datastores/}"; ds="${ds%%/*}"
-    body="$(featuretypes_json "$ws" "$ds")" ;;
+    if [ "${GS_FT_LIST_FAIL:-0}" = "1" ]; then code=500
+    elif [ -f "$S/ds/$ws/$ds.json" ]; then body="$(featuretypes_json "$ws" "$ds")"
+    else code=500; fi ;;
   *"/rest/workspaces/"*"/datastores/"*"/featuretypes/"*".json")
     ws="${url#*/rest/workspaces/}"; ws="${ws%%/*}"
     ds="${url#*/datastores/}"; ds="${ds%%/*}"
@@ -567,7 +571,7 @@ reset_state() {
     seed_db_secret "$n" "$DB_PW_B64"
   done
   clear_logs
-  unset GS_OFF GS_NEG200 GS_PREFLIGHT_FAIL GS_DELETE_FAIL GS_USERS_500 GS_USERS_EMPTY GS_USERS_FAIL_ON GS_USERS_EMPTY_ON GS_ROLES_EMPTY_ON GS_WS_NONEMPTY GS_WS_DELETE_404 GS_WS_EMPTY_FORM GS_WS_VERIFY_BAD GS_DS_NONEMPTY GS_DS_BAD_PARAM GS_403_BODY GS_LIST_AVAILABLE_FAIL GS_LIST_AVAILABLE_MISSING_NATIVE GS_STYLE_POLYGON_MISSING GS_STYLE_GENERIC_MISSING GS_WFS_EXCEPTION GS_WMS_FAIL GS_DEFAULT_STYLE KUBECTL_NO_NS KUBECTL_APPLY_FAIL 2>/dev/null || true
+  unset GS_OFF GS_NEG200 GS_PREFLIGHT_FAIL GS_DELETE_FAIL GS_USERS_500 GS_USERS_EMPTY GS_USERS_FAIL_ON GS_USERS_EMPTY_ON GS_ROLES_EMPTY_ON GS_WS_NONEMPTY GS_WS_DELETE_404 GS_WS_EMPTY_FORM GS_WS_VERIFY_BAD GS_DS_NONEMPTY GS_DS_BAD_PARAM GS_403_BODY GS_LIST_AVAILABLE_FAIL GS_LIST_AVAILABLE_MISSING_NATIVE GS_FT_LIST_FAIL GS_STYLE_POLYGON_MISSING GS_STYLE_GENERIC_MISSING GS_WFS_EXCEPTION GS_WMS_FAIL GS_DEFAULT_STYLE KUBECTL_NO_NS KUBECTL_APPLY_FAIL 2>/dev/null || true
 }
 
 run_script() { run_script_in "$WORK" "$@"; }
@@ -1315,5 +1319,117 @@ rc="$(run_script --url "$URL" --ns "$NS")"
 check "D WFS-Exception Exit 1"        "1" "$rc"
 check "D WFS-Exception Meldung"       "yes" "$(grep -q 'DescribeFeatureType' "$T/err.log" && echo yes || echo no)"
 unset GS_WFS_EXCEPTION
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (63) B1: Uninstall nach Install — kein 500, „Uninstall verifiziert"
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+clear_logs
+rc="$(run_script --uninstall --url "$URL" --ns "$NS")"
+check "B1 Uninstall Exit 0"                 "0" "$rc"
+check "B1 kein featuretypes.json 500"       "0" "$(grep -c 'featuretypes.json fehlgeschlagen (HTTP 500)' "$T/err.log" || true)"
+check "B1 Uninstall verifiziert"            "yes" "$(grep -q 'Uninstall verifiziert' "$T/out.log" && echo yes || echo no)"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (64) B2: zweiter Uninstall idempotent
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+run_script --uninstall --url "$URL" --ns "$NS" >/dev/null 2>&1
+clear_logs
+rc="$(run_script --uninstall --url "$URL" --ns "$NS")"
+check "B2 zweiter Uninstall Exit 0"      "0" "$rc"
+check "B2 zweiter Uninstall verifiziert" "yes" "$(grep -q 'Uninstall verifiziert' "$T/out.log" && echo yes || echo no)"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (65) B3: Dry-run Install auf leerem System
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+clear_logs
+rc="$(run_script --dry-run --url "$URL" --ns "$NS")"
+check "B3 Dry-Run leer Install Exit 0"       "0" "$rc"
+check "B3 Dry-Run leer Install keine FEHLER" "0" "$(grep -c 'FEHLER' "$T/err.log" || true)"
+check "B3 Dry-Run leer würde angelegt"       "yes" "$(grep -q 'main/geo-containers würde angelegt' "$T/out.log" && echo yes || echo no)"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (66) B3: Dry-run Uninstall auf leerem System
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+clear_logs
+rc="$(run_script --dry-run --uninstall --url "$URL" --ns "$NS")"
+check "B3 Dry-Run leer Uninstall Exit 0"       "0" "$rc"
+check "B3 Dry-Run leer Uninstall keine FEHLER" "0" "$(grep -c 'FEHLER' "$T/err.log" || true)"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (67) B1: echter Lesefehler (500 für vorhandenen Datastore) bleibt Fehler
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+export GS_FT_LIST_FAIL=1
+clear_logs
+rc="$(run_script --uninstall --url "$URL" --ns "$NS")"
+check "B1 500 vorhandener Datastore Exit 1" "1" "$rc"
+check "B1 500 nicht als leer gewertet"      "yes" "$(grep -q 'FeatureType-Liste für' "$T/err.log" && echo yes || echo no)"
+unset GS_FT_LIST_FAIL
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (68) B4: Meldungen mit <ws>/<name>-Präfix
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+check "B4 Präfix main/geo-containers angelegt"      "yes" "$(grep -q 'main/geo-containers angelegt' "$T/out.log" && echo yes || echo no)"
+check "B4 Präfix main/graeber DescribeFeatureType"  "yes" "$(grep -q 'main/graeber: DescribeFeatureType ok' "$T/out.log" && echo yes || echo no)"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (69) B5: numerische Bounding-Box (-10.0 == -10) → unverändert
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+sed 's/"minx":-10,/"minx":-10.0,/g' "$GS_STATE_DIR/ft/main/main_pg/geo-containers.json" > "$GS_STATE_DIR/ft/main/main_pg/geo-containers.json.tmp"
+mv "$GS_STATE_DIR/ft/main/main_pg/geo-containers.json.tmp" "$GS_STATE_DIR/ft/main/main_pg/geo-containers.json"
+clear_logs
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "B5 numerische BBox Exit 0"  "0" "$rc"
+check "B5 numerische BBox kein PUT" "0" "$(grep -c 'featuretypes/geo-containers METHOD=PUT' "$CURL_BODY_LOG")"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (70) B5: metadata.entry als Array → unverändert
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+jq '.featureType.metadata.entry = [.featureType.metadata.entry]' "$GS_STATE_DIR/ft/main/main_pg/grabflure.json" > "$GS_STATE_DIR/ft/main/main_pg/grabflure.json.tmp" 2>/dev/null
+mv "$GS_STATE_DIR/ft/main/main_pg/grabflure.json.tmp" "$GS_STATE_DIR/ft/main/main_pg/grabflure.json"
+clear_logs
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "B5 metadata-Array Exit 0"  "0" "$rc"
+check "B5 metadata-Array kein PUT" "0" "$(grep -c 'featuretypes/grabflure METHOD=PUT' "$CURL_BODY_LOG")"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (71) B5: Titel-Abweichung → PUT mit Info-Zeile statt FEHLER
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+jq '.featureType.title = "X-Titel"' "$GS_STATE_DIR/ft/main/main_pg/graeber.json" > "$GS_STATE_DIR/ft/main/main_pg/graeber.json.tmp" 2>/dev/null
+mv "$GS_STATE_DIR/ft/main/main_pg/graeber.json.tmp" "$GS_STATE_DIR/ft/main/main_pg/graeber.json"
+clear_logs
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "B5 Titel-Abweichung Exit 0"            "0" "$rc"
+check "B5 Titel-Abweichung 1 PUT"             "1" "$(grep -c 'featuretypes/graeber METHOD=PUT' "$CURL_BODY_LOG")"
+check "B5 Titel-Abweichung Info statt FEHLER" "yes" "$(grep -q 'title weicht ab' "$T/out.log" && echo yes || echo no)"
+check "B5 Titel-Abweichung kein FEHLER title" "0" "$(grep -c 'FEHLER.*title weicht ab' "$T/err.log" || true)"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (72) B6/B7: Hilfe und How-To
+# ═══════════════════════════════════════════════════════════════════════════
+rc="$(run_script --help)"
+check "B6 --help nennt FeatureTypes" "yes" "$(grep -q 'FeatureTypes' "$T/out.log" && echo yes || echo no)"
+
+reset_state
+run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+howto_file="$(latest_howto)"
+check "B7 How-To Ausgeführte Schritte" "yes" "$(grep -q '## Ausgeführte Schritte' "$howto_file" && echo yes || echo no)"
+check "B7 How-To Body-Skelett"         "yes" "$(grep -q 'nativeBoundingBox' "$howto_file" && echo yes || echo no)"
+check "B7 How-To FT_TABLE"             "yes" "$(grep -q 'geo-containers|p2d2_containers' "$howto_file" && echo yes || echo no)"
 
 rm -rf "$T"
