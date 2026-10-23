@@ -290,6 +290,11 @@ case "$url" in
     ws="${url#*/rest/workspaces/}"; ws="${ws%%/*}"
     if ! has_ws "$ws"; then code=404
     elif [ "${GS_LIST_AVAILABLE_FAIL:-0}" = "1" ]; then code=500
+    elif [ -n "${GS_LIST_AVAILABLE_FAIL_ON:-}" ]; then
+      c=0; [ -f "$S/list_avail_count" ] && c="$(cat "$S/list_avail_count")"
+      c=$((c+1)); printf '%s' "$c" > "$S/list_avail_count"
+      if [ "$c" -ge "$GS_LIST_AVAILABLE_FAIL_ON" ]; then code=500
+      else body='{"list":{"string":["p2d2_containers","v_grabflure_aktuell","p2d2_grabflure_versionen","v_graeber_aktuell","p2d2_graeber_versionen"]}}'; code=200; fi
     elif [ "${GS_LIST_AVAILABLE_MISSING_NATIVE:-0}" = "1" ]; then body='{"list":{"string":["p2d2_containers","v_grabflure_aktuell","p2d2_grabflure_versionen","p2d2_graeber_versionen"]}}'; code=200
     else body='{"list":{"string":["p2d2_containers","v_grabflure_aktuell","p2d2_grabflure_versionen","v_graeber_aktuell","p2d2_graeber_versionen"]}}'; code=200; fi ;;
   *"/rest/workspaces/"*"/datastores/"*"/featuretypes.json")
@@ -320,7 +325,14 @@ case "$url" in
               cp "$body_file" "$S/ft/$ws/$ds/$name.json"
             fi
             grep -qx "$name" "$S/ft/$ws/$ds.list" 2>/dev/null || printf '%s\n' "$name" >> "$S/ft/$ws/$ds.list"
-            printf '%s' "${GS_DEFAULT_STYLE:-point}" > "$S/layers/$ws/$name.style"
+            # Realistischer Default-Style (graeber=generic, sonst polygon); Override erzwingt Reparatur-PUT.
+            if [ -n "${GS_DEFAULT_STYLE:-}" ]; then
+              printf '%s' "${GS_DEFAULT_STYLE}" > "$S/layers/$ws/$name.style"
+            elif [ "$name" = "graeber" ]; then
+              printf 'generic' > "$S/layers/$ws/$name.style"
+            else
+              printf 'polygon' > "$S/layers/$ws/$name.style"
+            fi
             code=201
           else code=500; fi
         else code=500; fi ;;
@@ -346,7 +358,10 @@ case "$url" in
           rm -f "$S/ft/$ws/$ds/$name.json"
           grep -vx "$name" "$S/ft/$ws/$ds.list" > "$S/ft/$ws/$ds.list.tmp" 2>/dev/null || true
           mv "$S/ft/$ws/$ds.list.tmp" "$S/ft/$ws/$ds.list"
-          rm -f "$S/layers/$ws/$name.style"
+          # Bei verbleibendem Layer (nur Layer-DELETE scheiterte) den Layer-Style NICHT entfernen.
+          if [ "${GS_LAYER_DELETE_FAIL:-0}" != "1" ]; then
+            rm -f "$S/layers/$ws/$name.style"
+          fi
           code=200
         else code=404; fi ;;
       *) code=500 ;;
@@ -370,7 +385,7 @@ case "$url" in
           code=200
         else code=404; fi ;;
       DELETE)
-        if [ "${GS_DELETE_FAIL:-0}" = "1" ]; then
+        if [ "${GS_DELETE_FAIL:-0}" = "1" ] || [ "${GS_LAYER_DELETE_FAIL:-0}" = "1" ]; then
           [ -n "${GS_403_BODY:-}" ] && body="$GS_403_BODY"
           code=500
         elif [ -f "$S/layers/$ws/$name.style" ]; then
@@ -617,7 +632,7 @@ reset_state() {
     seed_db_secret "$n" "$DB_PW_B64"
   done
   clear_logs
-  unset GS_OFF GS_NEG200 GS_PREFLIGHT_FAIL GS_DELETE_FAIL GS_USERS_500 GS_USERS_EMPTY GS_USERS_FAIL_ON GS_USERS_EMPTY_ON GS_ROLES_EMPTY_ON GS_WS_NONEMPTY GS_WS_DELETE_404 GS_WS_EMPTY_FORM GS_WS_VERIFY_BAD GS_DS_NONEMPTY GS_DS_BAD_PARAM GS_403_BODY GS_LIST_AVAILABLE_FAIL GS_LIST_AVAILABLE_MISSING_NATIVE GS_FT_LIST_FAIL GS_STYLE_POLYGON_MISSING GS_STYLE_GENERIC_MISSING GS_WFS_EXCEPTION GS_WMS_FAIL GS_DEFAULT_STYLE GS_ACL_GET_FAIL GS_ACL_POST_FAIL GS_ACL_DELETE_FAIL KUBECTL_NO_NS KUBECTL_APPLY_FAIL 2>/dev/null || true
+  unset GS_OFF GS_NEG200 GS_PREFLIGHT_FAIL GS_DELETE_FAIL GS_LAYER_DELETE_FAIL GS_USERS_500 GS_USERS_EMPTY GS_USERS_FAIL_ON GS_USERS_EMPTY_ON GS_ROLES_EMPTY_ON GS_WS_NONEMPTY GS_WS_DELETE_404 GS_WS_EMPTY_FORM GS_WS_VERIFY_BAD GS_DS_NONEMPTY GS_DS_BAD_PARAM GS_403_BODY GS_LIST_AVAILABLE_FAIL GS_LIST_AVAILABLE_FAIL_ON GS_LIST_AVAILABLE_MISSING_NATIVE GS_FT_LIST_FAIL GS_STYLE_POLYGON_MISSING GS_STYLE_GENERIC_MISSING GS_WFS_EXCEPTION GS_WMS_FAIL GS_DEFAULT_STYLE GS_ACL_GET_FAIL GS_ACL_POST_FAIL GS_ACL_DELETE_FAIL KUBECTL_NO_NS KUBECTL_APPLY_FAIL 2>/dev/null || true
 }
 
 run_script() { run_script_in "$WORK" "$@"; }
@@ -1227,11 +1242,12 @@ unset GS_DS_NONEMPTY
 # (50) Datastores: Verifikationsfehler (list=available ungleich 200) -> Exit 1
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
-export GS_LIST_AVAILABLE_FAIL=1
+export GS_LIST_AVAILABLE_FAIL_ON=6
 rc="$(run_script --url "$URL" --ns "$NS")"
 check "DS Verifikation list=available Exit 1"  "1" "$rc"
 check "DS Verifikation list=available Meldung" "yes" "$(grep -q 'list=available' "$T/err.log" && echo yes || echo no)"
-unset GS_LIST_AVAILABLE_FAIL
+check "DS Verifikation erreicht (FeatureTypes angelegt)" "25" "$(find "$GS_STATE_DIR/ft" -name '*.json' -type f 2>/dev/null | awk 'END{print NR}')"
+unset GS_LIST_AVAILABLE_FAIL_ON
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (51) Datastores: kein DB-Passwort in Argumentlisten von curl/kubectl/jq
@@ -1283,7 +1299,17 @@ check "D Erstlauf 25 FeatureTypes"       "25" "$(find "$GS_STATE_DIR/ft" -name '
 check "D graeber Titel Umlaut"           "Gräber (main)" "$(jq -r '.featureType.title' "$GS_STATE_DIR/ft/main/main_pg/graeber.json" 2>/dev/null)"
 check "D graeber Default-Style generic"  "generic" "$(cat "$GS_STATE_DIR/layers/main/graeber.style" 2>/dev/null)"
 check "D geo-containers Style polygon"   "polygon" "$(cat "$GS_STATE_DIR/layers/main/geo-containers.style" 2>/dev/null)"
-check "D Erstlauf 25 Layer-PUT"          "25" "$(grep 'layers/' "$CURL_BODY_LOG" | grep -c 'METHOD=PUT')"
+check "D Erstlauf kein Layer-PUT"        "0" "$(grep 'layers/' "$CURL_BODY_LOG" | grep -c 'METHOD=PUT')"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (55a) D: abweichender Default-Style -> PUT-Reparatur
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+export GS_DEFAULT_STYLE=point
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "D Style-Reparatur Exit 0"        "0" "$rc"
+check "D Style-Reparatur 25 Layer-PUT"  "25" "$(grep 'layers/' "$CURL_BODY_LOG" | grep -c 'METHOD=PUT')"
+unset GS_DEFAULT_STYLE
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (56) D: Zweitlauf ohne Abweichung → kein POST/PUT auf FeatureTypes/Layer
@@ -1583,27 +1609,35 @@ check "B ACL Dry-Run kein POST"    "0" "$(grep -c 'security/acl/layers' "$CURL_B
 check "B ACL Dry-Run keine Regeln" "0" "$(jq 'length' "$GS_STATE_DIR/acl.map" 2>/dev/null)"
 
 # ═══════════════════════════════════════════════════════════════════════════
-# (83) B: Uninstall entfernt die 50 eigenen Regeln (vor Rollen)
+# (83) B: Uninstall entfernt eigene Regeln, fremde bleiben (nicht exakt 50 DELETEs)
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+# Fremde Regel nach dem Install dazulegen (bleibt bei Uninstall erhalten).
+printf '%s' '{"foreign.layer.r":"ROLE_X"}' > "$GS_STATE_DIR/acl.add"
+jq -s '.[0] * .[1]' "$GS_STATE_DIR/acl.map" "$GS_STATE_DIR/acl.add" > "$GS_STATE_DIR/acl.map.new" 2>/dev/null
+mv "$GS_STATE_DIR/acl.map.new" "$GS_STATE_DIR/acl.map"
+rm -f "$GS_STATE_DIR/acl.add"
 clear_logs
 rc="$(run_script --uninstall --url "$URL" --ns "$NS")"
-check "B ACL Uninstall Exit 0"       "0" "$rc"
-check "B ACL Uninstall 50 DELETEs"   "50" "$(grep -c 'security/acl/layers/' "$CURL_LOG")"
-check "B ACL Uninstall keine Regeln" "0" "$(jq 'length' "$GS_STATE_DIR/acl.map" 2>/dev/null)"
+check "B ACL Uninstall Exit 0"        "0" "$rc"
+check "B ACL Uninstall eigene weg"    "no" "$(jq -e 'has("main.geo-containers.r")' "$GS_STATE_DIR/acl.map" >/dev/null 2>&1 && echo yes || echo no)"
+check "B ACL Uninstall fremde bleibt" "ROLE_X" "$(jq -r '."foreign.layer.r"' "$GS_STATE_DIR/acl.map" 2>/dev/null)"
+check "B ACL Uninstall nur fremde"    "1" "$(jq 'length' "$GS_STATE_DIR/acl.map" 2>/dev/null)"
 
 # ═══════════════════════════════════════════════════════════════════════════
-# (84) B: Teilfehler — verbleibender Layer behält ACL und Rolle
+# (84) B: Teilfehler — nur ein Layer-DELETE scheitert; ACL/Rolle bleiben, Rest räumt auf
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
-export GS_DELETE_FAIL=1
+export GS_LAYER_DELETE_FAIL=1
 clear_logs
 rc="$(run_script --uninstall --url "$URL" --ns "$NS")"
-check "B ACL Layer bleibt Exit 1"        "1" "$rc"
-check "B ACL Layer bleibt Regel bleibt"  "yes" "$(jq -e 'has("main.geo-containers.r")' "$GS_STATE_DIR/acl.map" >/dev/null 2>&1 && echo yes || echo no)"
-check "B ACL Layer bleibt Rolle bleibt"  "yes" "$(grep -q 'P2D2_IMPORT_ROLE' "$GS_STATE_DIR/roles.list" && echo yes || echo no)"
-unset GS_DELETE_FAIL
+check "B ACL Layer bleibt Exit 1"           "1" "$rc"
+check "B ACL Layer bleibt Regel bleibt"     "yes" "$(jq -e 'has("main.geo-containers.r")' "$GS_STATE_DIR/acl.map" >/dev/null 2>&1 && echo yes || echo no)"
+check "B ACL Layer bleibt Rolle bleibt"     "yes" "$(grep -q 'P2D2_IMPORT_ROLE' "$GS_STATE_DIR/roles.list" && echo yes || echo no)"
+check "B ACL Layer bleibt FeatureType weg"  "0" "$(find "$GS_STATE_DIR/ft" -name '*.json' -type f 2>/dev/null | awk 'END{print NR}')"
+check "B ACL Layer bleibt WFS-USER weg"    "yes" "$(grep -qx 'WFS-USER' "$GS_STATE_DIR/roles.list" && echo no || echo yes)"
+unset GS_LAYER_DELETE_FAIL
 
 rm -rf "$T"
