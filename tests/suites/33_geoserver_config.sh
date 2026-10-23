@@ -152,6 +152,18 @@ featuretypes_json() {
   fi
 }
 
+# ── ACL-Zustand ({"<rule>":"<roles>"}) ───────────────────────────────────────
+acl_map_json() { cat "$S/acl.map" 2>/dev/null || printf '{}'; }
+acl_set() {
+  jq --arg rule "$1" --arg roles "$2" '.[$rule] = $roles' "$S/acl.map" > "$S/acl.map.tmp" 2>/dev/null
+  mv "$S/acl.map.tmp" "$S/acl.map"
+}
+acl_del() {
+  jq --arg rule "$1" 'del(.[$rule])' "$S/acl.map" > "$S/acl.map.tmp" 2>/dev/null
+  mv "$S/acl.map.tmp" "$S/acl.map"
+}
+acl_has() { jq -e --arg rule "$1" 'has($rule)' "$S/acl.map" >/dev/null 2>&1; }
+
 code="200"; body=""
 case "$url" in
   *"/ows"*)
@@ -243,6 +255,32 @@ case "$url" in
         else code=404; fi ;;
       *) code=500 ;;
     esac ;;
+  *"/security/acl/layers/"*)
+    rule="${url##*/security/acl/layers/}"
+    case "$method" in
+      DELETE)
+        if [ "${GS_ACL_DELETE_FAIL:-0}" = "1" ]; then code=500
+        elif acl_has "$rule"; then acl_del "$rule"; code=200
+        else code=404; fi ;;
+      *) code=500 ;;
+    esac ;;
+  *"/security/acl/layers")
+    case "$method" in
+      GET)
+        if [ "${GS_ACL_GET_FAIL:-0}" = "1" ]; then code=500
+        else body="$(acl_map_json)"; code=200; fi ;;
+      POST)
+        if [ "${GS_ACL_POST_FAIL:-0}" = "1" ]; then code=500
+        elif [ -n "$body_file" ] && [ -f "$body_file" ]; then
+          rule="$(jq -r 'keys[0] // empty' "$body_file" 2>/dev/null)"
+          roles="$(jq -r '.[keys[0]] // empty' "$body_file" 2>/dev/null)"
+          if [ -n "$rule" ]; then
+            if acl_has "$rule"; then acl_set "$rule" "$roles"; code=200
+            else acl_set "$rule" "$roles"; code=201; fi
+          else code=500; fi
+        else code=500; fi ;;
+      *) code=500 ;;
+    esac ;;
   *"/rest/workspaces.json")
     body="$(workspaces_json)" ;;
   *"/rest/workspaces/"*"/datastores.json")
@@ -275,7 +313,12 @@ case "$url" in
           name="$(jq -r '.featureType.name // empty' "$body_file" 2>/dev/null)"
           if [ -n "$name" ]; then
             mkdir -p "$S/ft/$ws/$ds" "$S/layers/$ws"
-            cp "$body_file" "$S/ft/$ws/$ds/$name.json"
+            if [ "$name" = "geo-containers" ]; then
+              # Simuliere GeoServer: generiert Attribute aus nativen Spalten (osm_name, kein name).
+              jq '.featureType.attributes = {"attribute":[{"name":"id","minOccurs":1,"maxOccurs":1,"nillable":false,"binding":"java.lang.Integer"},{"name":"category","minOccurs":0,"maxOccurs":1,"nillable":true,"binding":"java.lang.String"},{"name":"osm_name","minOccurs":0,"maxOccurs":1,"nillable":true,"binding":"java.lang.String"},{"name":"geometry","minOccurs":0,"maxOccurs":1,"nillable":true,"binding":"org.locationtech.jts.geom.MultiPolygon"}]}' "$body_file" > "$S/ft/$ws/$ds/$name.json"
+            else
+              cp "$body_file" "$S/ft/$ws/$ds/$name.json"
+            fi
             grep -qx "$name" "$S/ft/$ws/$ds.list" 2>/dev/null || printf '%s\n' "$name" >> "$S/ft/$ws/$ds.list"
             printf '%s' "${GS_DEFAULT_STYLE:-point}" > "$S/layers/$ws/$name.style"
             code=201
@@ -290,7 +333,9 @@ case "$url" in
     case "$method" in
       PUT)
         if [ -n "$body_file" ] && [ -f "$body_file" ] && [ -f "$S/ft/$ws/$ds/$name.json" ]; then
-          cp "$body_file" "$S/ft/$ws/$ds/$name.json"
+          # Merge statt Replace: ein Mapping-PUT trägt nur attributes, kein vollständiges FeatureType.
+          jq -s '.[0] * .[1]' "$S/ft/$ws/$ds/$name.json" "$body_file" > "$S/ft/$ws/$ds/$name.tmp" 2>/dev/null
+          mv "$S/ft/$ws/$ds/$name.tmp" "$S/ft/$ws/$ds/$name.json"
           code=200
         else code=404; fi ;;
       DELETE)
@@ -567,11 +612,12 @@ reset_state() {
   printf '%s\n' admin > "$GS_STATE_DIR/users.list"
   printf '%s\n' ADMIN > "$GS_STATE_DIR/roles.list"
   : > "$GS_STATE_DIR/workspaces.list"
+  printf '{}' > "$GS_STATE_DIR/acl.map"
   for n in p2d2-main-secret p2d2-dev-secret p2d2-f-de1-secret p2d2-f-de2-secret p2d2-f-fv-secret; do
     seed_db_secret "$n" "$DB_PW_B64"
   done
   clear_logs
-  unset GS_OFF GS_NEG200 GS_PREFLIGHT_FAIL GS_DELETE_FAIL GS_USERS_500 GS_USERS_EMPTY GS_USERS_FAIL_ON GS_USERS_EMPTY_ON GS_ROLES_EMPTY_ON GS_WS_NONEMPTY GS_WS_DELETE_404 GS_WS_EMPTY_FORM GS_WS_VERIFY_BAD GS_DS_NONEMPTY GS_DS_BAD_PARAM GS_403_BODY GS_LIST_AVAILABLE_FAIL GS_LIST_AVAILABLE_MISSING_NATIVE GS_FT_LIST_FAIL GS_STYLE_POLYGON_MISSING GS_STYLE_GENERIC_MISSING GS_WFS_EXCEPTION GS_WMS_FAIL GS_DEFAULT_STYLE KUBECTL_NO_NS KUBECTL_APPLY_FAIL 2>/dev/null || true
+  unset GS_OFF GS_NEG200 GS_PREFLIGHT_FAIL GS_DELETE_FAIL GS_USERS_500 GS_USERS_EMPTY GS_USERS_FAIL_ON GS_USERS_EMPTY_ON GS_ROLES_EMPTY_ON GS_WS_NONEMPTY GS_WS_DELETE_404 GS_WS_EMPTY_FORM GS_WS_VERIFY_BAD GS_DS_NONEMPTY GS_DS_BAD_PARAM GS_403_BODY GS_LIST_AVAILABLE_FAIL GS_LIST_AVAILABLE_MISSING_NATIVE GS_FT_LIST_FAIL GS_STYLE_POLYGON_MISSING GS_STYLE_GENERIC_MISSING GS_WFS_EXCEPTION GS_WMS_FAIL GS_DEFAULT_STYLE GS_ACL_GET_FAIL GS_ACL_POST_FAIL GS_ACL_DELETE_FAIL KUBECTL_NO_NS KUBECTL_APPLY_FAIL 2>/dev/null || true
 }
 
 run_script() { run_script_in "$WORK" "$@"; }
@@ -1431,5 +1477,133 @@ howto_file="$(latest_howto)"
 check "B7 How-To Ausgeführte Schritte" "yes" "$(grep -q '## Ausgeführte Schritte' "$howto_file" && echo yes || echo no)"
 check "B7 How-To Body-Skelett"         "yes" "$(grep -q 'nativeBoundingBox' "$howto_file" && echo yes || echo no)"
 check "B7 How-To FT_TABLE"             "yes" "$(grep -q 'geo-containers|p2d2_containers' "$howto_file" && echo yes || echo no)"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (73) A: Erstlauf Attribut-Mapping geo-containers (osm_name -> name)
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "A Mapping Erstlauf Exit 0"          "0" "$rc"
+check "A Mapping name mit source osm_name" "osm_name" "$(jq -r '.featureType.attributes.attribute[]? | select(.name=="name") | .source // empty' "$GS_STATE_DIR/ft/main/main_pg/geo-containers.json" 2>/dev/null)"
+check "A Mapping kein osm_name extra"       "" "$(jq -r '[.featureType.attributes.attribute[]?.name] | index("osm_name") // empty' "$GS_STATE_DIR/ft/main/main_pg/geo-containers.json" 2>/dev/null)"
+check "A Mapping 5 PUTs"                    "5" "$(grep -c 'featuretypes/geo-containers METHOD=PUT' "$CURL_BODY_LOG")"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (74) A: Zweitlauf ohne Mapping-PUT
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+clear_logs
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "A Mapping Zweitlauf Exit 0"   "0" "$rc"
+check "A Mapping Zweitlauf kein PUT" "0" "$(grep -c 'featuretypes/geo-containers METHOD=PUT' "$CURL_BODY_LOG")"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (75) A: Konflikt doppeltes Attribut (name und osm_name)
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+jq '.featureType.attributes.attribute = [{"name":"name","minOccurs":0,"maxOccurs":1,"nillable":true,"binding":"java.lang.String"},{"name":"osm_name","minOccurs":0,"maxOccurs":1,"nillable":true,"binding":"java.lang.String"}]' "$GS_STATE_DIR/ft/main/main_pg/geo-containers.json" > "$GS_STATE_DIR/ft/main/main_pg/geo-containers.json.tmp" 2>/dev/null
+mv "$GS_STATE_DIR/ft/main/main_pg/geo-containers.json.tmp" "$GS_STATE_DIR/ft/main/main_pg/geo-containers.json"
+clear_logs
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "A Mapping doppelt Exit 1"   "1" "$rc"
+check "A Mapping doppelt Meldung"  "yes" "$(grep -q 'doppeltes Attribut' "$T/err.log" && echo yes || echo no)"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (76) A: Konflikt fehlende Quelle (kein name und kein osm_name)
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+jq '.featureType.attributes.attribute = []' "$GS_STATE_DIR/ft/main/main_pg/geo-containers.json" > "$GS_STATE_DIR/ft/main/main_pg/geo-containers.json.tmp" 2>/dev/null
+mv "$GS_STATE_DIR/ft/main/main_pg/geo-containers.json.tmp" "$GS_STATE_DIR/ft/main/main_pg/geo-containers.json"
+clear_logs
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "A Mapping quelle fehlt Exit 1"  "1" "$rc"
+check "A Mapping quelle fehlt Meldung" "yes" "$(grep -q 'weder' "$T/err.log" && echo yes || echo no)"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (77) B: Erstlauf 50 Layer-ACLs mit Stage-Trennung
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "B ACL Erstlauf Exit 0"             "0" "$rc"
+check "B ACL 50 Regeln"                    "50" "$(jq 'length' "$GS_STATE_DIR/acl.map" 2>/dev/null)"
+check "B ACL 50 POSTs"                     "50" "$(grep -c 'security/acl/layers' "$CURL_BODY_LOG")"
+check "B ACL Stage-Trennung (de1)"         "P2D2_WFST_DE1,ADMIN" "$(jq -r '."de1.grabflure_versionen.w"' "$GS_STATE_DIR/acl.map" 2>/dev/null)"
+check "B ACL geo-containers write"         "P2D2_IMPORT_ROLE,ADMIN" "$(jq -r '."main.geo-containers.w"' "$GS_STATE_DIR/acl.map" 2>/dev/null)"
+check "B ACL grabflure write"              "ADMIN" "$(jq -r '."main.grabflure.w"' "$GS_STATE_DIR/acl.map" 2>/dev/null)"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (78) B: Zweitlauf ohne unnötige Mutation
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+clear_logs
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "B ACL Zweitlauf Exit 0"     "0" "$rc"
+check "B ACL Zweitlauf kein POST"  "0" "$(grep -c 'security/acl/layers' "$CURL_BODY_LOG" || true)"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (79) B: fremde Regeln bleiben unverändert
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+printf '%s' '{"foreign.layer.r":"ROLE_X"}' > "$GS_STATE_DIR/acl.map"
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "B ACL fremd Exit 0"      "0" "$rc"
+check "B ACL fremd bleibt"      "ROLE_X" "$(jq -r '."foreign.layer.r"' "$GS_STATE_DIR/acl.map" 2>/dev/null)"
+check "B ACL fremd + 50 eigene" "51" "$(jq 'length' "$GS_STATE_DIR/acl.map" 2>/dev/null)"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (80) B: Konflikt (gleiche Regel, andere Rollen) -> Exit 1, keine Änderung
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+printf '%s' '{"main.geo-containers.r":"SOMETHING_ELSE"}' > "$GS_STATE_DIR/acl.map"
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "B ACL Konflikt Exit 1"   "1" "$rc"
+check "B ACL Konflikt Meldung"  "yes" "$(grep -q 'Konflikt' "$T/err.log" && echo yes || echo no)"
+check "B ACL Konflikt unverändert" "SOMETHING_ELSE" "$(jq -r '."main.geo-containers.r"' "$GS_STATE_DIR/acl.map" 2>/dev/null)"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (81) B: Lesefehler (GET acl) -> Exit 1
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+export GS_ACL_GET_FAIL=1
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "B ACL Lesefehler Exit 1" "1" "$rc"
+unset GS_ACL_GET_FAIL
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (82) B: Dry-run ohne ACL-POST
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+rc="$(run_script --dry-run --url "$URL" --ns "$NS")"
+check "B ACL Dry-Run Exit 0"       "0" "$rc"
+check "B ACL Dry-Run kein POST"    "0" "$(grep -c 'security/acl/layers' "$CURL_BODY_LOG" || true)"
+check "B ACL Dry-Run keine Regeln" "0" "$(jq 'length' "$GS_STATE_DIR/acl.map" 2>/dev/null)"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (83) B: Uninstall entfernt die 50 eigenen Regeln (vor Rollen)
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+clear_logs
+rc="$(run_script --uninstall --url "$URL" --ns "$NS")"
+check "B ACL Uninstall Exit 0"       "0" "$rc"
+check "B ACL Uninstall 50 DELETEs"   "50" "$(grep -c 'security/acl/layers/' "$CURL_LOG")"
+check "B ACL Uninstall keine Regeln" "0" "$(jq 'length' "$GS_STATE_DIR/acl.map" 2>/dev/null)"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (84) B: Teilfehler — verbleibender Layer behält ACL und Rolle
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+export GS_DELETE_FAIL=1
+clear_logs
+rc="$(run_script --uninstall --url "$URL" --ns "$NS")"
+check "B ACL Layer bleibt Exit 1"        "1" "$rc"
+check "B ACL Layer bleibt Regel bleibt"  "yes" "$(jq -e 'has("main.geo-containers.r")' "$GS_STATE_DIR/acl.map" >/dev/null 2>&1 && echo yes || echo no)"
+check "B ACL Layer bleibt Rolle bleibt"  "yes" "$(grep -q 'P2D2_IMPORT_ROLE' "$GS_STATE_DIR/roles.list" && echo yes || echo no)"
+unset GS_DELETE_FAIL
 
 rm -rf "$T"
