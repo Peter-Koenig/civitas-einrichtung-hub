@@ -96,47 +96,37 @@ HOWTO_FD=3          # Datei-Deskriptor für die How-To-Ausgabe
 # Rollen, die wegen noch vorhandener Layer/ACL beim Uninstall NICHT gelöscht werden dürfen (B).
 _KEEP_ROLES=()
 
+GS_CONFIG_LIB_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/geoserver-config" && pwd -P)" || {
+  printf '%s\n' 'FEHLER: GeoServer-Konfigurationsdateien fehlen' >&2
+  exit 2
+}
+for part in core catalog security; do
+  [[ -r "$GS_CONFIG_LIB_DIR/$part.sh" ]] || {
+    printf "FEHLER: Konfigurationsdatei fehlt: %s\n" "$part.sh" >&2
+    exit 2
+  }
+done
+# shellcheck source=./geoserver-config/core.sh
+source "$GS_CONFIG_LIB_DIR/core.sh" || exit 2
+# shellcheck source=./geoserver-config/catalog.sh
+source "$GS_CONFIG_LIB_DIR/catalog.sh" || exit 2
+# shellcheck source=./geoserver-config/security.sh
+source "$GS_CONFIG_LIB_DIR/security.sh" || exit 2
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Logging (ohne Werte/Secrets)
 # ═══════════════════════════════════════════════════════════════════════════
-log()      { printf '%s\n' "$*"; }
-log_ok()   { printf 'OK   %s\n' "$*"; }
-log_warn() { printf 'WARN %s\n' "$*" >&2; }
-log_error(){ printf 'FEHLER %s\n' "$*" >&2; }
 
 # log_gs_error <msg> — Fehler mit optionalem Antworttext (R2).
-log_gs_error() {
-  if [[ -n "${_GS_ERR_BODY:-}" ]]; then
-    log_error "$1 — ${_GS_ERR_BODY}"
-  else
-    log_error "$1"
-  fi
-}
 
 # Legacy-Umgebungsvariablen: nur Namen melden, nie Werte (K6).
-warn_legacy_vars() {
-  local var
-  while IFS= read -r var; do
-    case "$var" in
-      P2D2_*_WFST_PASSWORD|WFST_PW_*|WFS_RO_PW|WFS_PW)
-        log_warn "Legacy-Variable $var gesetzt — wird ignoriert (Secret ist Single Source of Truth)"
-        ;;
-    esac
-  done < <(compgen -v | sort)
-}
 
 # ═══════════════════════════════════════════════════════════════════════════
 # How-To-Ausgabe (A5): pro Schritt Methode/Pfad/Payload/HTTP-Code, ohne Werte.
 # ═══════════════════════════════════════════════════════════════════════════
-howto() {
-  [[ -n "$HOWTO_FILE" ]] || return 0
-  printf '%s\n' "$*" >&"$HOWTO_FD"
-}
 
 # howto_step "<Methode Pfad>" "<erwartet>" "<erhalten>" "<Beschreibung>"
-howto_step() {
-  howto "$1 (erwartet $2, erhalten $3)${4:+ — $4}"
-}
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Argumente
@@ -185,31 +175,7 @@ done
 # ═══════════════════════════════════════════════════════════════════════════
 # Konfiguration auflösen (nur diese Schlüssel, nie Komplett-Export)
 # ═══════════════════════════════════════════════════════════════════════════
-_env_get() {
-  local file="$1" key="$2" line re
-  [[ -f "$file" ]] || return 1
-  re='^[[:space:]]*(export[[:space:]]+)?'"${key}"'=("[^"]*"|[^[:space:]#]*)'
-  while IFS= read -r line; do
-    if [[ "$line" =~ $re ]]; then
-      printf '%s' "${BASH_REMATCH[2]//\"/}"
-      return 0
-    fi
-  done < "$file"
-  return 1
-}
 
-_env_resolve() {
-  local key="$1" val=""
-  val="${!key:-}"
-  [[ -n "$val" ]] && { printf '%s' "$val"; return 0; }
-  local f
-  for f in "./.env.p2d2-addon" "../.env.p2d2-addon" "../../.env.p2d2-addon"; do
-    if val="$(_env_get "$f" "$key")" && [[ -n "$val" ]]; then
-      printf '%s' "$val"; return 0
-    fi
-  done
-  return 1
-}
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Datastore-Konfiguration (C2): nur diese Schlüssel, keine Defaults im Skript.
@@ -219,28 +185,9 @@ _DB_PORT=""
 _DB_NAME=""
 
 # _cfg_ok <wert> — 0 wenn gesetzt, nicht leer und nicht CHANGEME.
-_cfg_ok() {
-  local v="$1"
-  [[ -n "$v" && "$v" != "CHANGEME" && "$v" != "changeme" ]]
-}
 
 # load_ds_config — löst die Datastore-Konfiguration auf (nur die benannten Schlüssel).
 # Rückgabe 0 ok; 2 bei fehlendem/leerem/CHANGEME-Wert (vor jeder Mutation).
-load_ds_config() {
-  local key ws ds schema uservar secret u rc=0
-  _DB_HOST="$(_env_resolve P2D2_BASE_DB_HOST || true)"
-  _DB_PORT="$(_env_resolve P2D2_BASE_DB_PORT || true)"
-  _DB_NAME="$(_env_resolve P2D2_BASE_DB_NAME || true)"
-  _cfg_ok "$_DB_HOST" || { log_error "P2D2_BASE_DB_HOST fehlt oder ist CHANGEME"; rc=2; }
-  _cfg_ok "$_DB_PORT" || { log_error "P2D2_BASE_DB_PORT fehlt oder ist CHANGEME"; rc=2; }
-  _cfg_ok "$_DB_NAME" || { log_error "P2D2_BASE_DB_NAME fehlt oder ist CHANGEME"; rc=2; }
-  while IFS='|' read -r key ws ds schema uservar secret; do
-    [[ -n "$key" ]] || continue
-    u="$(_env_resolve "$uservar" || true)"
-    _cfg_ok "$u" || { log_error "$uservar fehlt oder ist CHANGEME"; rc=2; }
-  done <<< "$DS_TABLE"
-  return "$rc"
-}
 
 # ADDON_NS
 if [[ -z "$NAMESPACE" ]]; then
@@ -265,45 +212,12 @@ GS_REST="${GS_BASE}/rest"
 # ═══════════════════════════════════════════════════════════════════════════
 # Kubernetes-Secret-Helfer (selbsttragend; analog addon_03_secrets.sh)
 # ═══════════════════════════════════════════════════════════════════════════
-_secret_get() {
-  local ns="$1" name="$2" key="$3"
-  kubectl -n "$ns" get secret "$name" -o jsonpath="{.data.${key}}" 2>/dev/null | base64 -d 2>/dev/null || true
-}
 
-_secret_apply() {
-  local ns="$1" name="$2"; shift 2
-  local manifest json kv k v b64 err
-  manifest="$(mktemp)"
-  json="$(kubectl -n "$ns" get secret "$name" -o json 2>/dev/null || true)"
-  if [[ -n "$json" ]]; then
-    json="$(printf '%s' "$json" | jq -c --arg n "$name" --arg ns "$ns" \
-      '{apiVersion:"v1",kind:"Secret",metadata:{name:$n,namespace:$ns},type:(.type // "Opaque"),data:(.data // {})}' 2>/dev/null || true)"
-  fi
-  [[ -n "$json" ]] || json="{\"apiVersion\":\"v1\",\"kind\":\"Secret\",\"metadata\":{\"name\":\"$name\",\"namespace\":\"$ns\"},\"type\":\"Opaque\",\"data\":{}}"
-  for kv in "$@"; do
-    k="${kv%%=*}"; v="${kv#*=}"
-    b64="$(printf '%s' "$v" | base64 -w0)"
-    json="$(printf '%s' "$json" | jq -c --arg k "$k" --arg v "$b64" '.data[$k] = $v')"
-  done
-  printf '%s\n' "$json" > "$manifest"
-  if ! err="$(kubectl apply -f "$manifest" 2>&1 >/dev/null)"; then
-    log_error "Secret ${name}: $(printf '%s' "$err" | head -1 | cut -c1-200)"
-    rm -f "$manifest"
-    return 1
-  fi
-  rm -f "$manifest"
-  return 0
-}
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Passwort-Generator/Validierung (analog addon_03_secrets.sh)
 # ═══════════════════════════════════════════════════════════════════════════
-_pw_gen() { openssl rand -hex 24; }
 
-_pw_is_valid() {
-  local v="$1"
-  [[ "${#v}" -ge 16 && ! "$v" =~ [^A-Za-z0-9._~@%+=:,/-] ]]
-}
 
 # ═══════════════════════════════════════════════════════════════════════════
 # GeoServer-REST (Credentials via curl -K - stdin, Body via mktemp 0600)
@@ -311,83 +225,18 @@ _pw_is_valid() {
 # _curl_user_cfg <user> <pw> — gibt die Zeile `user = "..."` (escaped) auf stdout.
 # Escaping gemäß curl -K: innerhalb der Anführungszeichen werden \" und \\ zu " bzw. \.
 # Ein CR/LF im Wert würde eine weitere Konfigurationszeile einschleusen -> Fehler.
-_curl_user_cfg() {
-  local s="${1}:${2}"
-  case "$s" in *$'\n'*|*$'\r'*) log_error "Zugangsdaten enthalten Zeilenumbruch"; return 1 ;; esac
-  s="${s//\\/\\\\}"; s="${s//\"/\\\"}"
-  printf 'user = "%s"\n' "$s"
-}
 
 # _gs_http_code <method> <path> [<payload-file>] [<content-type>]
-_gs_http_code() {
-  local method="$1" path="$2" payload="${3:-}" ctype="${4:-application/json}" code
-  if [[ -n "$payload" ]]; then
-    code="$( _curl_user_cfg "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - -X "$method" -H "Content-Type: $ctype" --data-binary "@$payload" -o /dev/null -w '%{http_code}' "$GS_REST/$path" 2>/dev/null )" || code="000"
-  else
-    code="$( _curl_user_cfg "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - -X "$method" -H "Content-Type: $ctype" -o /dev/null -w '%{http_code}' "$GS_REST/$path" 2>/dev/null )" || code="000"
-  fi
-  printf '%s' "$code"
-}
 
 # _gs_write_body <method> <path> [<payload-file>] [<content-type>] — Schreibaufruf
 # (POST/PUT/DELETE) ohne usergroup. Setzt _GS_CODE und _GS_ERR_BODY (erste Antwortzeile,
 # max. 200 Zeichen, R2). Wird DIREKT aufgerufen (nicht in einer Subshell), damit die
 # globalen Variablen in der aufrufenden Shell ankommen.
 _GS_ERR_BODY=""
-_gs_write_body() {
-  local method="$1" path="$2" payload="${3:-}" ctype="${4:-application/json}" tmp
-  _GS_ERR_BODY=""
-  tmp="$(mktemp)"; chmod 600 "$tmp"
-  if [[ -n "$payload" ]]; then
-    _GS_CODE="$( _curl_user_cfg "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - -X "$method" -H "Content-Type: $ctype" --data-binary "@$payload" -o "$tmp" -w '%{http_code}' "$GS_REST/$path" 2>/dev/null )" || _GS_CODE="000"
-  else
-    _GS_CODE="$( _curl_user_cfg "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - -X "$method" -H "Content-Type: $ctype" -o "$tmp" -w '%{http_code}' "$GS_REST/$path" 2>/dev/null )" || _GS_CODE="000"
-  fi
-  _GS_ERR_BODY="$(head -1 "$tmp" 2>/dev/null | cut -c1-200)"
-  rm -f "$tmp"
-}
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Preflight
 # ═══════════════════════════════════════════════════════════════════════════
-preflight() {
-  local cmd rc=0
-  for cmd in kubectl jq curl openssl; do
-    command -v "$cmd" >/dev/null 2>&1 || { log_error "Voraussetzung fehlt: $cmd"; rc=2; }
-  done
-  [[ "$rc" -eq 0 ]] || exit "$rc"
-
-  # GS_BASE muss gesetzt sein (K4): --url oder ADDON_DOMAIN/DOMAIN_NAME (.env.p2d2-addon)
-  [[ -n "$GS_BASE" ]] || { log_error "GS_BASE leer — bitte --url BASE oder ADDON_DOMAIN (bzw. DOMAIN_NAME) setzen"; exit 2; }
-
-  kubectl -n "$NAMESPACE" get namespace "$NAMESPACE" >/dev/null 2>&1 \
-    || { log_error "Namespace existiert nicht: $NAMESPACE"; exit 2; }
-
-  # Admin-Zugang: Secret zuerst, Env-Override GS_ADMIN_USER/GS_ADMIN_PW gewinnt.
-  # Das Admin-Passwort wird nie ausgegeben.
-  local secret_user secret_pw pw_src
-  secret_user="$(kubectl -n "$NAMESPACE" get secret geoserver-geoserver -o jsonpath='{.data.geoserver-user}' 2>/dev/null | base64 -d 2>/dev/null || true)"
-  secret_pw="$(kubectl -n "$NAMESPACE" get secret geoserver-geoserver -o jsonpath='{.data.geoserver-password}' 2>/dev/null | base64 -d 2>/dev/null || true)"
-  # Quelle festhalten, bevor die Defaults greifen (für aussagekräftige Fehlermeldung).
-  [[ -n "${GS_ADMIN_PW+x}" ]] && pw_src="Umgebung" || pw_src="Secret"
-  GS_ADMIN_USER="${GS_ADMIN_USER:-$secret_user}"
-  GS_ADMIN_PW="${GS_ADMIN_PW:-$secret_pw}"
-  [[ -n "$GS_ADMIN_USER" && -n "$GS_ADMIN_PW" ]] \
-    || { log_error "Admin-Zugang (Secret geoserver-geoserver) nicht lesbar"; exit 2; }
-  check_never_touch || exit 2
-  check_ws_table || exit 2
-  check_ds_table || exit 2
-  load_ds_config || exit 2
-  check_styles || exit 2
-
-  local code
-  code="$(_gs_http_code GET 'security/roles.json')"
-  if [[ "$code" != "200" ]]; then
-    log_error "GeoServer nicht erreichbar (GET security/roles.json -> $code, Benutzer $GS_ADMIN_USER, Passwort aus $pw_src): $GS_REST"
-    exit 2
-  fi
-  log_ok "Preflight ok (Namespace ${NAMESPACE}, GeoServer ${GS_BASE})"
-}
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Bestand lesen (Benutzer + Rollen), nie Passwörter. Statusbewusst (K8):
@@ -399,152 +248,33 @@ _GS_BODY_FILE=""  # global: Temp-Datei mit dem Body des letzten _gs_get
 # _gs_get <path> — GET; setzt _GS_CODE und _GS_BODY_FILE (Body in Datei).
 # Wird direkt (nicht in einer Kommando-Substitution) aufgerufen, damit die
 # globalen Variablen in der aufrufenden Shell ankommen.
-_gs_get() {
-  local path="$1"
-  _GS_BODY_FILE="$(mktemp)"; chmod 600 "$_GS_BODY_FILE"
-  _GS_CODE="$( _curl_user_cfg "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - -X GET -H "Content-Type: application/json" -o "$_GS_BODY_FILE" -w '%{http_code}' "$GS_REST/$path" 2>/dev/null )" || _GS_CODE="000"
-}
 
 # read_users — Benutzernamen (sortiert) auf stdout; 0 ok, 1 Lesefehler.
-read_users() {
-  _gs_get 'security/usergroup/users.json'
-  [[ "$_GS_CODE" == "200" ]] || { rm -f "$_GS_BODY_FILE"; log_error "Lesen security/usergroup/users.json fehlgeschlagen (HTTP $_GS_CODE)"; return 1; }
-  jq -e '.users | type == "array"' "$_GS_BODY_FILE" >/dev/null 2>&1 \
-    || { rm -f "$_GS_BODY_FILE"; log_error "security/usergroup/users.json: unerwartete JSON-Form"; return 1; }
-  jq -r '.users[]?.userName // empty' "$_GS_BODY_FILE" 2>/dev/null | sort
-  rm -f "$_GS_BODY_FILE"
-}
 
 # read_roles — Rollen (sortiert) auf stdout; 0 ok, 1 Lesefehler.
-read_roles() {
-  _gs_get 'security/roles.json'
-  [[ "$_GS_CODE" == "200" ]] || { rm -f "$_GS_BODY_FILE"; log_error "Lesen security/roles.json fehlgeschlagen (HTTP $_GS_CODE)"; return 1; }
-  jq -e '.roles | type == "array"' "$_GS_BODY_FILE" >/dev/null 2>&1 \
-    || { rm -f "$_GS_BODY_FILE"; log_error "security/roles.json: unerwartete JSON-Form"; return 1; }
-  jq -r '.roles[]? // empty' "$_GS_BODY_FILE" 2>/dev/null | sort
-  rm -f "$_GS_BODY_FILE"
-}
 
 # read_user_roles <user> — Rollen eines Benutzers; 200/404 = ok (404 => leer).
-read_user_roles() {
-  local user="$1"
-  _gs_get "security/roles/user/${user}.json"
-  case "$_GS_CODE" in
-    200) ;;
-    404) rm -f "$_GS_BODY_FILE"; return 0 ;;
-    *) log_error "Lesen security/roles/user/${user}.json fehlgeschlagen (HTTP $_GS_CODE)"; rm -f "$_GS_BODY_FILE"; return 1 ;;
-  esac
-  jq -e '.roles | type == "array"' "$_GS_BODY_FILE" >/dev/null 2>&1 \
-    || { log_error "security/roles/user/${user}.json: unerwartete JSON-Form"; rm -f "$_GS_BODY_FILE"; return 1; }
-  jq -r '.roles[]? // empty' "$_GS_BODY_FILE" 2>/dev/null | sort
-  rm -f "$_GS_BODY_FILE"
-}
 
 # read_workspaces — Workspace-Namen (sortiert) auf stdout; 0 ok, 1 Fehler.
 # Akzeptiert .workspaces.workspace als Array oder als ""/null (leer).
-read_workspaces() {
-  _gs_get 'workspaces.json'
-  [[ "$_GS_CODE" == "200" ]] || { rm -f "$_GS_BODY_FILE"; log_error "Lesen workspaces.json fehlgeschlagen (HTTP $_GS_CODE)"; return 1; }
-  if jq -e '.workspaces.workspace | type == "array"' "$_GS_BODY_FILE" >/dev/null 2>&1; then
-    jq -r '.workspaces.workspace[]?.name // empty' "$_GS_BODY_FILE" 2>/dev/null | sort
-  elif jq -e '(.workspaces.workspace == "" or .workspaces.workspace == null)' "$_GS_BODY_FILE" >/dev/null 2>&1; then
-    :
-  else
-    rm -f "$_GS_BODY_FILE"; log_error "workspaces.json: unerwartete JSON-Form"; return 1
-  fi
-  rm -f "$_GS_BODY_FILE"
-}
 
 # read_namespace_uri <ws> — Namespace-URI auf stdout (leer bei Fehler); 0 ok, 1 Fehler.
-read_namespace_uri() {
-  local ws="$1"
-  _gs_get "namespaces/${ws}.json"
-  case "$_GS_CODE" in
-    200) ;;
-    *) rm -f "$_GS_BODY_FILE"; log_error "Lesen namespaces/${ws}.json fehlgeschlagen (HTTP $_GS_CODE)"; return 1 ;;
-  esac
-  jq -e '.namespace.uri | type == "string"' "$_GS_BODY_FILE" >/dev/null 2>&1 \
-    || { rm -f "$_GS_BODY_FILE"; log_error "namespaces/${ws}.json: unerwartete JSON-Form"; return 1; }
-  jq -r '.namespace.uri // empty' "$_GS_BODY_FILE" 2>/dev/null
-  rm -f "$_GS_BODY_FILE"
-}
 
 # read_available_natives <ws> <ds> — verfügbare Native-Namen (list=available); 0 ok, 1 Fehler.
-read_available_natives() {
-  local ws="$1" ds="$2"
-  _gs_get "workspaces/${ws}/datastores/${ds}/featuretypes.json?list=available"
-  [[ "$_GS_CODE" == "200" ]] || { rm -f "$_GS_BODY_FILE"; log_error "list=available für ${ws}/${ds} fehlgeschlagen (HTTP $_GS_CODE)"; return 1; }
-  jq -r '.list.string[]? // empty' "$_GS_BODY_FILE" 2>/dev/null
-  rm -f "$_GS_BODY_FILE"
-}
 
 # read_featuretypes <ws> <ds> — publizierte FeatureType-Namen; 0 ok, 1 Fehler.
 # Akzeptiert .featureTypes.featureType als Array, .featureTypes als ""/null (leer) und 404 (leer).
-read_featuretypes() {
-  local ws="$1" ds="$2"
-  _gs_get "workspaces/${ws}/datastores/${ds}/featuretypes.json"
-  case "$_GS_CODE" in
-    200) ;;
-    404) rm -f "$_GS_BODY_FILE"; return 0 ;;
-    *) rm -f "$_GS_BODY_FILE"; log_error "Lesen workspaces/${ws}/datastores/${ds}/featuretypes.json fehlgeschlagen (HTTP $_GS_CODE)"; return 1 ;;
-  esac
-  if jq -e '.featureTypes.featureType | type == "array"' "$_GS_BODY_FILE" >/dev/null 2>&1; then
-    jq -r '.featureTypes.featureType[]?.name // empty' "$_GS_BODY_FILE" 2>/dev/null | sort
-  elif jq -e '(.featureTypes == "" or .featureTypes == null)' "$_GS_BODY_FILE" >/dev/null 2>&1; then
-    :
-  else
-    rm -f "$_GS_BODY_FILE"; log_error "workspaces/${ws}/datastores/${ds}/featuretypes.json: unerwartete JSON-Form"; return 1
-  fi
-  rm -f "$_GS_BODY_FILE"
-}
 
 # read_datastores <ws> — Datastore-Namen (sortiert) für einen Workspace; 0 ok, 1 Fehler.
 # Akzeptiert .dataStores.dataStore als Array, .dataStores als ""/null (leer) und 404 (leer).
-read_datastores() {
-  local ws="$1"
-  _gs_get "workspaces/${ws}/datastores.json"
-  case "$_GS_CODE" in
-    200) ;;
-    404) rm -f "$_GS_BODY_FILE"; return 0 ;;
-    *) rm -f "$_GS_BODY_FILE"; log_error "Lesen workspaces/${ws}/datastores.json fehlgeschlagen (HTTP $_GS_CODE)"; return 1 ;;
-  esac
-  if jq -e '.dataStores.dataStore | type == "array"' "$_GS_BODY_FILE" >/dev/null 2>&1; then
-    jq -r '.dataStores.dataStore[]?.name // empty' "$_GS_BODY_FILE" 2>/dev/null | sort
-  elif jq -e '(.dataStores == "" or .dataStores == null)' "$_GS_BODY_FILE" >/dev/null 2>&1; then
-    :
-  else
-    rm -f "$_GS_BODY_FILE"; log_error "workspaces/${ws}/datastores.json: unerwartete JSON-Form"; return 1
-  fi
-  rm -f "$_GS_BODY_FILE"
-}
 
 # _ds_present <ws> <ds> — 0 wenn der Datastore existiert (der Workspace ist damit implizit vorhanden),
 # 1 wenn nicht, 2 bei Lesefehler. read_datastores liefert 404 = leer (Workspace fehlt).
-_ds_present() {
-  local ws="$1" ds="$2" tmp
-  local -a dl
-  tmp="$(mktemp)"; chmod 600 "$tmp"
-  if ! read_datastores "$ws" > "$tmp"; then rm -f "$tmp"; return 2; fi
-  mapfile -t dl < "$tmp"
-  rm -f "$tmp"
-  _has "$ds" "${dl[@]}" && return 0
-  return 1
-}
 
 # _http_code_url <url> — authentifizierter GET auf eine beliebige URL; gibt HTTP-Code.
-_http_code_url() {
-  local url="$1" code
-  code="$( _curl_user_cfg "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - -o /dev/null -w '%{http_code}' "$url" 2>/dev/null )" || code="000"
-  printf '%s' "$code"
-}
 
 # _gs_get_url <url> — authentifizierter GET auf eine beliebige URL (z. B. WFS-Dienst);
 # setzt _GS_CODE und _GS_BODY_FILE. Wird direkt aufgerufen (nicht in einer Subshell).
-_gs_get_url() {
-  local url="$1"
-  _GS_BODY_FILE="$(mktemp)"; chmod 600 "$_GS_BODY_FILE"
-  _GS_CODE="$( _curl_user_cfg "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - -X GET -o "$_GS_BODY_FILE" -w '%{http_code}' "$url" 2>/dev/null )" || _GS_CODE="000"
-}
 
 # Globaler Bestand (K8), nach dem Preflight einmal gelesen.
 _INV_USERS=()
@@ -552,112 +282,24 @@ _INV_ROLES=()
 _USER_ROLES=()
 
 # _read_user_roles_into <user> — liest Rollen in das globale Array _USER_ROLES; 0 ok, 1 Fehler.
-_read_user_roles_into() {
-  local user="$1" tmp
-  tmp="$(mktemp)"; chmod 600 "$tmp"
-  if ! read_user_roles "$user" > "$tmp"; then rm -f "$tmp"; return 1; fi
-  mapfile -t _USER_ROLES < "$tmp"
-  rm -f "$tmp"
-  return 0
-}
 
 # _load_inventory — liest Benutzer+Rollen, prüft Plausibilität (admin/ADMIN).
 # Rückgabe 0 ok; 2 bei Lesefehler oder Plausibilitätsfehler (vor jeder Mutation).
-_load_inventory() {
-  local tmp rc=0
-  tmp="$(mktemp)"; chmod 600 "$tmp"
-  if read_users > "$tmp"; then mapfile -t _INV_USERS < "$tmp"; else rc=2; fi
-  if read_roles > "$tmp"; then mapfile -t _INV_ROLES < "$tmp"; else rc=2; fi
-  rm -f "$tmp"
-  [[ "$rc" -eq 0 ]] || return 2
-  _inventory_plausible _INV_USERS _INV_ROLES || return 2
-  return 0
-}
 
 # _has <needle> <items...> — 0 wenn needle enthalten.
-_has() {
-  local needle="$1" item
-  shift
-  for item in "$@"; do
-    [[ "$item" == "$needle" ]] && return 0
-  done
-  return 1
-}
 
 # _inventory_plausible <users_array_name> <roles_array_name> — 0 wenn Admin-Benutzer
 # und ADMIN-Rolle vorhanden, sonst 1 (Meldung ohne Werte). Namerefs, bash >= 4.3.
-_inventory_plausible() {
-  local -n users="$1" roles="$2"
-  _has "$GS_ADMIN_USER" "${users[@]}" || { log_error "Benutzerliste enthält nicht den Admin-Benutzer $GS_ADMIN_USER"; return 1; }
-  _has "ADMIN" "${roles[@]}" || { log_error "Rollenliste enthält nicht die Rolle ADMIN"; return 1; }
-  return 0
-}
 
 # Sicherheitsnetz: Soll-Tabelle darf nie admin/p2d2_wfst_user enthalten.
-check_never_touch() {
-  local line key _ user roles secret n
-  while IFS='|' read -r key _ user roles secret; do
-    [[ -n "$key" ]] || continue
-    for n in $NEVER_TOUCH_USERS; do
-      [[ "$user" == "$n" ]] && { log_error "Soll-Tabelle enthält verbotenen Benutzer: $user"; return 1; }
-    done
-  done <<< "$SOL_TABLE"
-  return 0
-}
 
 # Startprüfung: jeder Workspace aus SOL_TABLE (Spalte 2, außer "-") muss in WS_TABLE stehen.
-check_ws_table() {
-  local key ws user w want
-  while IFS='|' read -r key ws user _ _; do
-    [[ -n "$key" ]] || continue
-    [[ "$ws" == "-" ]] && continue
-    want=0
-    while IFS='|' read -r w _; do
-      [[ "$w" == "$ws" ]] && { want=1; break; }
-    done <<< "$WS_TABLE"
-    [[ "$want" -eq 1 ]] || { log_error "Soll-Workspace $ws fehlt in WS_TABLE"; return 1; }
-  done <<< "$SOL_TABLE"
-  return 0
-}
 
 # _ws_uri <ws> — Namespace-URI aus WS_TABLE; 0 ok, 1 nicht gefunden.
-_ws_uri() {
-  local want="$1" w uri
-  while IFS='|' read -r w uri; do
-    [[ -n "$w" ]] || continue
-    [[ "$w" == "$want" ]] && { printf '%s' "$uri"; return 0; }
-  done <<< "$WS_TABLE"
-  return 1
-}
 
 # Startprüfung (C1): jeder DS_TABLE-KEY steht in SOL_TABLE, jeder Workspace in WS_TABLE.
-check_ds_table() {
-  local key ws ds schema uservar secret w want
-  while IFS='|' read -r key ws ds schema uservar secret; do
-    [[ -n "$key" ]] || continue
-    want=0
-    while IFS='|' read -r k _; do
-      [[ "$k" == "$key" ]] && { want=1; break; }
-    done <<< "$SOL_TABLE"
-    [[ "$want" -eq 1 ]] || { log_error "Datastore-KEY $key fehlt in SOL_TABLE"; return 1; }
-    want=0
-    while IFS='|' read -r w _; do
-      [[ "$w" == "$ws" ]] && { want=1; break; }
-    done <<< "$WS_TABLE"
-    [[ "$want" -eq 1 ]] || { log_error "Datastore-Workspace $ws fehlt in WS_TABLE"; return 1; }
-  done <<< "$DS_TABLE"
-  return 0
-}
 
 # Startprüfung (D1): die eingebauten Default-Styles polygon/generic müssen existieren.
-check_styles() {
-  local style code
-  for style in polygon generic; do
-    code="$(_gs_http_code GET "styles/${style}.json")"
-    [[ "$code" == "200" ]] || { log_error "Stil $style nicht vorhanden (GET styles/$style.json -> $code)"; return 1; }
-  done
-  return 0
-}
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Install
@@ -848,139 +490,8 @@ verify_install() {
 # ═══════════════════════════════════════════════════════════════════════════
 # Workspaces (Schritt 2): anlegen / verifizieren / löschen
 # ═══════════════════════════════════════════════════════════════════════════
-install_workspaces() {
-  local -a existing
-  local ws uri cur code rc=0 f
-  local tmp
-  tmp="$(mktemp)"; chmod 600 "$tmp"
-  if ! read_workspaces > "$tmp"; then
-    rm -f "$tmp"; log_error "Workspace-Liste nicht lesbar"; return 1
-  fi
-  mapfile -t existing < "$tmp"
-  rm -f "$tmp"
 
-  log "== Workspaces =="
-  while IFS='|' read -r ws uri; do
-    [[ -n "$ws" ]] || continue
-    if ! _has "$ws" "${existing[@]}"; then
-      log "  Workspace $ws anlegen"
-      if [[ "$DRY_RUN" -eq 1 ]]; then
-        howto_step "POST namespaces" "201" "-" "JSON {\"namespace\":{\"prefix\":\"$ws\",\"uri\":\"$uri\"}}"
-        continue
-      fi
-      f="$(mktemp)"; chmod 600 "$f"
-      jq -nc --arg p "$ws" --arg u "$uri" '{namespace:{prefix:$p,uri:$u}}' > "$f"
-      _gs_write_body POST 'namespaces' "$f" 'application/json'
-      code="$_GS_CODE"
-      rm -f "$f"
-      howto_step "POST namespaces" "201" "$code" "JSON {\"namespace\":{\"prefix\":\"$ws\",\"uri\":\"$uri\"}}"
-      if [[ "$code" == "200" || "$code" == "201" ]]; then
-        log_ok "  Workspace $ws angelegt"
-      else
-        log_gs_error "Workspace $ws anlegen fehlgeschlagen (HTTP $code)"; rc=1
-      fi
-    else
-      if ! cur="$(read_namespace_uri "$ws")"; then
-        log_error "Workspace $ws: Namespace nicht lesbar"; rc=1
-        continue
-      fi
-      if [[ -z "$cur" ]]; then
-        log_error "Workspace $ws vorhanden, aber Namespace fehlt"; rc=1
-      elif [[ "$cur" != "$uri" ]]; then
-        log_error "Workspace $ws: Namespace-URI weicht ab (erwartet $uri, vorhanden $cur)"; rc=1
-      else
-        log "  Workspace $ws vorhanden, URI stimmt"
-      fi
-    fi
-  done <<< "$WS_TABLE"
-  return "$rc"
-}
 
-verify_workspaces() {
-  local ws uri cur code rc=0 name
-  log "== Verifikation Workspaces =="
-  while IFS='|' read -r ws uri; do
-    [[ -n "$ws" ]] || continue
-    # Namespace-URI
-    _gs_get "namespaces/${ws}.json"
-    code="$_GS_CODE"
-    if [[ "$code" == "200" ]]; then
-      cur="$(jq -r '.namespace.uri // empty' "$_GS_BODY_FILE" 2>/dev/null)"
-      rm -f "$_GS_BODY_FILE"
-      howto_step "GET namespaces/$ws.json" "200" "200" "URI prüfen"
-      if [[ "$cur" == "$uri" ]]; then
-        log_ok "  $ws: Namespace-URI ok"
-      else
-        log_error "Verifikation $ws: Namespace-URI weicht ab (erwartet $uri, vorhanden $cur)"; rc=1
-      fi
-    else
-      rm -f "$_GS_BODY_FILE"
-      howto_step "GET namespaces/$ws.json" "200" "$code" "URI prüfen"
-      log_error "Verifikation $ws: GET namespaces/$ws.json -> $code (erwartet 200)"; rc=1
-    fi
-    # Workspace vorhanden und name stimmt
-    _gs_get "workspaces/${ws}.json"
-    code="$_GS_CODE"
-    if [[ "$code" == "200" ]]; then
-      name="$(jq -r '.workspace.name // empty' "$_GS_BODY_FILE" 2>/dev/null)"
-      rm -f "$_GS_BODY_FILE"
-      howto_step "GET workspaces/$ws.json" "200" "200" "name prüfen"
-      if [[ "$name" == "$ws" ]]; then
-        log_ok "  $ws: Workspace-name ok"
-      else
-        log_error "Verifikation $ws: workspaces/$ws.json name weicht ab (erwartet $ws, erhalten $name)"; rc=1
-      fi
-    else
-      rm -f "$_GS_BODY_FILE"
-      howto_step "GET workspaces/$ws.json" "200" "$code" "name prüfen"
-      log_error "Verifikation $ws: GET workspaces/$ws.json -> $code (erwartet 200)"; rc=1
-    fi
-    # Virtuelle Dienste (hart, R7)
-    code="$(_http_code_url "$GS_BASE/$ws/wms?service=WMS&version=1.3.0&request=GetCapabilities")"
-    howto_step "GET $ws/wms GetCapabilities" "200" "$code" "Dienstprüfung"
-    if [[ "$code" == "200" ]]; then log_ok "  $ws: WMS GetCapabilities 200"; else log_error "Verifikation $ws: WMS GetCapabilities -> $code (erwartet 200)"; rc=1; fi
-    if [[ "$ws" != "friedhofsplaene" ]]; then
-      code="$(_http_code_url "$GS_BASE/$ws/wfs?service=WFS&version=2.0.0&request=GetCapabilities")"
-      howto_step "GET $ws/wfs GetCapabilities" "200" "$code" "Dienstprüfung"
-      if [[ "$code" == "200" ]]; then log_ok "  $ws: WFS GetCapabilities 200"; else log_error "Verifikation $ws: WFS GetCapabilities -> $code (erwartet 200)"; rc=1; fi
-    fi
-  done <<< "$WS_TABLE"
-  return "$rc"
-}
-
-uninstall_workspaces() {
-  local -a existing
-  local ws code rc=0
-  local tmp
-  tmp="$(mktemp)"; chmod 600 "$tmp"
-  if ! read_workspaces > "$tmp"; then
-    rm -f "$tmp"; log_error "Workspace-Liste nicht lesbar"; return 1
-  fi
-  mapfile -t existing < "$tmp"
-  rm -f "$tmp"
-
-  log "== Workspaces entfernen =="
-  while IFS='|' read -r ws _; do
-    [[ -n "$ws" ]] || continue
-    if ! _has "$ws" "${existing[@]}"; then
-      log "  Workspace $ws nicht vorhanden — übersprungen"
-      continue
-    fi
-    if [[ "$DRY_RUN" -eq 1 ]]; then
-      howto_step "DELETE workspaces/$ws" "200" "-" "404 = schon weg, ohne recurse"
-      continue
-    fi
-    _gs_write_body DELETE "workspaces/${ws}"
-    code="$_GS_CODE"
-    howto_step "DELETE workspaces/$ws" "200" "$code" "404 = schon weg, ohne recurse"
-    case "$code" in
-      200|201) log_ok "  Workspace $ws gelöscht" ;;
-      404)     log "  Workspace $ws schon weg" ;;
-      *)       log_gs_error "Workspace $ws löschen fehlgeschlagen (HTTP $code)"; rc=1 ;;
-    esac
-  done <<< "$WS_TABLE"
-  return "$rc"
-}
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Datastores (Schritt 3): anlegen / aktualisieren / verifizieren / löschen
@@ -989,770 +500,49 @@ uninstall_workspaces() {
 # Baut den vollständigen PostGIS-Datastore-Body (20 Parameter). Das Passwort wird
 # nur per --rawfile über Prozesssubstitution eingelesen (printf ist Builtin), damit
 # es in keiner Argumentliste von jq auftaucht (C3).
-_ds_body() {
-  local name="$1" schema="$2" host="$3" port="$4" db="$5" user="$6" ns="$7" pw="$8" out="$9"
-  jq -n \
-    --rawfile pw <(printf '%s' "$pw") \
-    --arg name "$name" --arg schema "$schema" --arg host "$host" --arg port "$port" \
-    --arg db "$db" --arg user "$user" --arg ns "$ns" \
-    '{dataStore:{name:$name,type:"PostGIS",enabled:true,disableOnConnFailure:false,
-      connectionParameters:{entry:[
-        {"@key":"schema","$":$schema},
-        {"@key":"Estimated extends","$":"false"},
-        {"@key":"fetch size","$":"1000"},
-        {"@key":"encode functions","$":"false"},
-        {"@key":"Expose primary keys","$":"true"},
-        {"@key":"validate connections","$":"true"},
-        {"@key":"Support on the fly geometry simplification","$":"false"},
-        {"@key":"Connection timeout","$":"20"},
-        {"@key":"create database","$":"false"},
-        {"@key":"preparedStatements","$":"false"},
-        {"@key":"database","$":$db},
-        {"@key":"reWriteBatchedInserts","$":"false"},
-        {"@key":"port","$":$port},
-        {"@key":"passwd","$":$pw},
-        {"@key":"dbtype","$":"postgis"},
-        {"@key":"host","$":$host},
-        {"@key":"namespace","$":$ns},
-        {"@key":"Loose bbox","$":"false"},
-        {"@key":"Test while idle","$":"false"},
-        {"@key":"user","$":$user}
-      ]}}}' > "$out"
-}
 
-install_datastores() {
-  local -a existing
-  local key ws ds schema uservar secret uri user password code rc=0 f tmp
-  log "== Datastores =="
-  log "  Basis: host=${_DB_HOST} port=${_DB_PORT} db=${_DB_NAME}"
-  while IFS='|' read -r key ws ds schema uservar secret; do
-    [[ -n "$key" ]] || continue
-    uri="$(_ws_uri "$ws")"
-    user="$(_env_resolve "$uservar")"
-    password="$(_secret_get "$NAMESPACE" "$secret" "DB_PASSWORD")"
-    if ! _pw_is_valid "$password"; then
-      log_error "Datastore $ds: kein gültiges DB_PASSWORD im Secret $secret"
-      rc=1
-      continue
-    fi
-    tmp="$(mktemp)"; chmod 600 "$tmp"
-    if ! read_datastores "$ws" > "$tmp"; then
-      rm -f "$tmp"; log_error "Datastore-Liste für $ws nicht lesbar"; rc=1; continue
-    fi
-    mapfile -t existing < "$tmp"
-    rm -f "$tmp"
-    if ! _has "$ds" "${existing[@]}"; then
-      if [[ "$DRY_RUN" -eq 1 ]]; then
-        log "  [dry-run] $ds würde angelegt (schema=$schema, user=$user)"
-        howto_step "POST workspaces/$ws/datastores" "201" "-" "JSON (20 Parameter, passwd=<PASSWORD>); schema=$schema user=$user host=${_DB_HOST} port=${_DB_PORT} db=${_DB_NAME}"
-        continue
-      fi
-      f="$(mktemp)"; chmod 600 "$f"
-      _ds_body "$ds" "$schema" "$_DB_HOST" "$_DB_PORT" "$_DB_NAME" "$user" "$uri" "$password" "$f"
-      _gs_write_body POST "workspaces/${ws}/datastores" "$f" 'application/json'
-      code="$_GS_CODE"
-      rm -f "$f"
-      howto_step "POST workspaces/$ws/datastores" "201" "$code" "JSON (20 Parameter, passwd=<PASSWORD>)"
-      if [[ "$code" == "200" || "$code" == "201" ]]; then
-        log_ok "  Datastore $ds angelegt"
-      else
-        log_gs_error "Datastore $ds anlegen fehlgeschlagen (HTTP $code)"; rc=1
-      fi
-    else
-      if [[ "$DRY_RUN" -eq 1 ]]; then
-        log "  [dry-run] $ds würde aktualisiert (schema=$schema, user=$user)"
-        howto_step "PUT workspaces/$ws/datastores/$ds" "200" "-" "JSON (20 Parameter, passwd=<PASSWORD>)"
-        continue
-      fi
-      f="$(mktemp)"; chmod 600 "$f"
-      _ds_body "$ds" "$schema" "$_DB_HOST" "$_DB_PORT" "$_DB_NAME" "$user" "$uri" "$password" "$f"
-      _gs_write_body PUT "workspaces/${ws}/datastores/${ds}" "$f" 'application/json'
-      code="$_GS_CODE"
-      rm -f "$f"
-      howto_step "PUT workspaces/$ws/datastores/$ds" "200" "$code" "JSON (20 Parameter, passwd=<PASSWORD>)"
-      if [[ "$code" == "200" ]]; then
-        log_ok "  Datastore $ds aktualisiert"
-      else
-        log_gs_error "Datastore $ds aktualisieren fehlgeschlagen (HTTP $code)"; rc=1
-      fi
-    fi
-  done <<< "$DS_TABLE"
-  return "$rc"
-}
 
-verify_datastores() {
-  local key ws ds schema uservar secret uri user code rc=0 cnt diag
-  local en get_schema get_user get_db get_host get_ns
-  log "== Verifikation Datastores =="
-  while IFS='|' read -r key ws ds schema uservar secret; do
-    [[ -n "$key" ]] || continue
-    uri="$(_ws_uri "$ws")"
-    user="$(_env_resolve "$uservar")"
-    _gs_get "workspaces/${ws}/datastores/${ds}.json"
-    code="$_GS_CODE"
-    if [[ "$code" == "200" ]]; then
-      en="$(jq -r '.dataStore.enabled // empty' "$_GS_BODY_FILE" 2>/dev/null)"
-      get_schema="$(jq -r '.dataStore.connectionParameters.entry[]? | select(."@key"=="schema") | ."$"' "$_GS_BODY_FILE" 2>/dev/null)"
-      get_user="$(jq -r '.dataStore.connectionParameters.entry[]? | select(."@key"=="user") | ."$"' "$_GS_BODY_FILE" 2>/dev/null)"
-      get_db="$(jq -r '.dataStore.connectionParameters.entry[]? | select(."@key"=="database") | ."$"' "$_GS_BODY_FILE" 2>/dev/null)"
-      get_host="$(jq -r '.dataStore.connectionParameters.entry[]? | select(."@key"=="host") | ."$"' "$_GS_BODY_FILE" 2>/dev/null)"
-      get_ns="$(jq -r '.dataStore.connectionParameters.entry[]? | select(."@key"=="namespace") | ."$"' "$_GS_BODY_FILE" 2>/dev/null)"
-      rm -f "$_GS_BODY_FILE"
-      howto_step "GET workspaces/$ws/datastores/$ds.json" "200" "200" "Parameter prüfen"
-      if [[ "$en" == "true" && "$get_schema" == "$schema" && "$get_user" == "$user" && "$get_db" == "$_DB_NAME" && "$get_host" == "$_DB_HOST" && "$get_ns" == "$uri" ]]; then
-        log_ok "  $ds: Parameter ok"
-      else
-        diag=""
-        [[ "$en" == "true" ]] || diag+=" enabled(erwartet true, vorhanden $en)"
-        [[ "$get_schema" == "$schema" ]] || diag+=" schema(erwartet $schema, vorhanden $get_schema)"
-        [[ "$get_user" == "$user" ]] || diag+=" user(erwartet $user, vorhanden $get_user)"
-        [[ "$get_db" == "$_DB_NAME" ]] || diag+=" database(erwartet $_DB_NAME, vorhanden $get_db)"
-        [[ "$get_host" == "$_DB_HOST" ]] || diag+=" host(erwartet $_DB_HOST, vorhanden $get_host)"
-        [[ "$get_ns" == "$uri" ]] || diag+=" namespace(erwartet $uri, vorhanden $get_ns)"
-        log_error "Verifikation $ds: Parameter weichen ab:$diag"; rc=1
-      fi
-    else
-      rm -f "$_GS_BODY_FILE"
-      howto_step "GET workspaces/$ws/datastores/$ds.json" "200" "$code" "Parameter prüfen"
-      log_error "Verifikation $ds: GET workspaces/$ws/datastores/$ds.json -> $code (erwartet 200)"; rc=1
-    fi
-    # Verbindungstest: list=available erzwingt DB-Verbindung (Statuscode hart, Form tolerant).
-    _gs_get "workspaces/${ws}/datastores/${ds}/featuretypes.json?list=available"
-    code="$_GS_CODE"
-    if [[ "$code" == "200" ]]; then
-      cnt="$(jq -r '.list.string[]? // empty' "$_GS_BODY_FILE" 2>/dev/null | awk 'END{print NR}')"
-      rm -f "$_GS_BODY_FILE"
-      howto_step "GET workspaces/$ws/datastores/$ds/featuretypes.json?list=available" "200" "200" "DB-Verbindungstest"
-      log_ok "  $ds: list=available 200 ($cnt Namen)"
-    else
-      rm -f "$_GS_BODY_FILE"
-      howto_step "GET workspaces/$ws/datastores/$ds/featuretypes.json?list=available" "200" "$code" "DB-Verbindungstest"
-      log_error "Verifikation $ds: list=available -> $code (erwartet 200)"; rc=1
-    fi
-  done <<< "$DS_TABLE"
-  return "$rc"
-}
 
-uninstall_datastores() {
-  local -a existing
-  local key ws ds schema uservar secret code rc=0 tmp
-  log "== Datastores entfernen =="
-  while IFS='|' read -r key ws ds schema uservar secret; do
-    [[ -n "$key" ]] || continue
-    tmp="$(mktemp)"; chmod 600 "$tmp"
-    if ! read_datastores "$ws" > "$tmp"; then
-      rm -f "$tmp"; log_error "Datastore-Liste für $ws nicht lesbar"; rc=1; continue
-    fi
-    mapfile -t existing < "$tmp"
-    rm -f "$tmp"
-    if ! _has "$ds" "${existing[@]}"; then
-      log "  Datastore $ds nicht vorhanden — übersprungen"
-      continue
-    fi
-    if [[ "$DRY_RUN" -eq 1 ]]; then
-      howto_step "DELETE workspaces/$ws/datastores/$ds" "200" "-" "404 = schon weg, ohne recurse"
-      continue
-    fi
-    _gs_write_body DELETE "workspaces/${ws}/datastores/${ds}"
-    code="$_GS_CODE"
-    howto_step "DELETE workspaces/$ws/datastores/$ds" "200" "$code" "404 = schon weg, ohne recurse"
-    case "$code" in
-      200|201) log_ok "  Datastore $ds gelöscht" ;;
-      404)     log "  Datastore $ds schon weg" ;;
-      *)       log_gs_error "Datastore $ds löschen fehlgeschlagen (HTTP $code)"; rc=1 ;;
-    esac
-  done <<< "$DS_TABLE"
-  return "$rc"
-}
 
 # ═══════════════════════════════════════════════════════════════════════════
 # FeatureTypes + Default-Styles (Schritt 4): anlegen / verifizieren / löschen
 # ═══════════════════════════════════════════════════════════════════════════
 # _ft_title <template> <ws> — ersetzt %ws% im Titelmuster durch den Workspace-Namen.
-_ft_title() {
-  local t="$1" ws="$2"
-  printf '%s' "${t//%ws%/$ws}"
-}
 
 # _ft_body <name> <native> <ws> <title> <cache> <outfile> — FeatureType-Body (kein Passwort).
-_ft_body() {
-  local name="$1" native="$2" ws="$3" title="$4" cache="$5" out="$6"
-  if [[ "$cache" == "false" ]]; then
-    jq -n --arg ws "$ws" --arg name "$name" --arg native "$native" --arg title "$title" \
-      '{featureType:{name:$name,nativeName:$native,namespace:{name:$ws},title:$title,
-        keywords:{string:["features",$native]},srs:"EPSG:4326",projectionPolicy:"FORCE_DECLARED",
-        enabled:true,advertised:true,
-        nativeBoundingBox:{minx:-10,maxx:40,miny:35,maxy:71,crs:"EPSG:4326"},
-        latLonBoundingBox:{minx:-10,maxx:40,miny:35,maxy:71,crs:"EPSG:4326"},
-        metadata:{entry:{"@key":"cachingEnabled","$":"false"}}}}' > "$out"
-  else
-    jq -n --arg ws "$ws" --arg name "$name" --arg native "$native" --arg title "$title" \
-      '{featureType:{name:$name,nativeName:$native,namespace:{name:$ws},title:$title,
-        keywords:{string:["features",$native]},srs:"EPSG:4326",projectionPolicy:"FORCE_DECLARED",
-        enabled:true,advertised:true,
-        nativeBoundingBox:{minx:-10,maxx:40,miny:35,maxy:71,crs:"EPSG:4326"},
-        latLonBoundingBox:{minx:-10,maxx:40,miny:35,maxy:71,crs:"EPSG:4326"}}}' > "$out"
-  fi
-}
 
 # _ft_cmp <body-file> <ws> <name> <native> <title> <cache> — 0 wenn alle nicht generierten
 # Felder stimmen, sonst 1. Abweichungen werden als Info (log) gemeldet; erst ein fehlgeschlagener
 # PUT ist ein Fehler (B5). Bounding-Box-Vergleich numerisch; metadata.entry als Objekt ODER Array.
-_ft_cmp() {
-  local f="$1" ws="$2" name="$3" native="$4" title="$5" cache="$6" dev=0 v
-  v="$(jq -r '.featureType.nativeName // empty' "$f" 2>/dev/null)"
-  [[ "$v" == "$native" ]] || { log "  FeatureType $ws/$name: nativeName weicht ab (erwartet $native, vorhanden $v) — wird per PUT angepasst"; dev=1; }
-  v="$(jq -r '.featureType.title // empty' "$f" 2>/dev/null)"
-  [[ "$v" == "$title" ]] || { log "  FeatureType $ws/$name: title weicht ab (erwartet $title, vorhanden $v) — wird per PUT angepasst"; dev=1; }
-  v="$(jq -r '.featureType.srs // empty' "$f" 2>/dev/null)"
-  [[ "$v" == "EPSG:4326" ]] || { log "  FeatureType $ws/$name: srs weicht ab (erwartet EPSG:4326, vorhanden $v) — wird per PUT angepasst"; dev=1; }
-  v="$(jq -r '.featureType.projectionPolicy // empty' "$f" 2>/dev/null)"
-  [[ "$v" == "FORCE_DECLARED" ]] || { log "  FeatureType $ws/$name: projectionPolicy weicht ab (erwartet FORCE_DECLARED, vorhanden $v) — wird per PUT angepasst"; dev=1; }
-  v="$(jq -r '.featureType.enabled // empty' "$f" 2>/dev/null)"
-  [[ "$v" == "true" ]] || { log "  FeatureType $ws/$name: enabled weicht ab (erwartet true, vorhanden $v) — wird per PUT angepasst"; dev=1; }
-  v="$(jq -r '.featureType.advertised // empty' "$f" 2>/dev/null)"
-  [[ "$v" == "true" ]] || { log "  FeatureType $ws/$name: advertised weicht ab (erwartet true, vorhanden $v) — wird per PUT angepasst"; dev=1; }
-  jq -e '.featureType.nativeBoundingBox | (.minx==-10 and .maxx==40 and .miny==35 and .maxy==71)' "$f" >/dev/null 2>&1 \
-    || { log "  FeatureType $ws/$name: nativeBoundingBox weicht ab — wird per PUT angepasst"; dev=1; }
-  jq -e '.featureType.latLonBoundingBox | (.minx==-10 and .maxx==40 and .miny==35 and .maxy==71)' "$f" >/dev/null 2>&1 \
-    || { log "  FeatureType $ws/$name: latLonBoundingBox weicht ab — wird per PUT angepasst"; dev=1; }
-  if [[ "$cache" == "false" ]]; then
-    v="$(jq -r '[.featureType.metadata.entry] | flatten | map(select(."@key"=="cachingEnabled")) | .[0]."$" // empty' "$f" 2>/dev/null)"
-    [[ "$v" == "false" ]] || { log "  FeatureType $ws/$name: cachingEnabled weicht ab (erwartet false, vorhanden $v) — wird per PUT angepasst"; dev=1; }
-  fi
-  return "$dev"
-}
 
 # _ensure_default_style <ws> <name> <style> — setzt bei Abweichung den Layer-Default-Style.
-_ensure_default_style() {
-  local ws="$1" name="$2" style="$3" code cur f
-  _gs_get "workspaces/${ws}/layers/${name}.json"
-  code="$_GS_CODE"
-  if [[ "$code" == "200" ]]; then
-    cur="$(jq -r '.layer.defaultStyle.name // empty' "$_GS_BODY_FILE" 2>/dev/null)"
-    rm -f "$_GS_BODY_FILE"
-    howto_step "GET workspaces/$ws/layers/$name.json" "200" "200" "defaultStyle prüfen $ws/$name"
-    if [[ "$cur" == "$style" ]]; then
-      log "  $ws/$name: Default-Style ok ($style)"
-      return 0
-    fi
-    if [[ "$DRY_RUN" -eq 1 ]]; then
-      log "  [dry-run] $ws/$name: Default-Style $style würde gesetzt (vorhanden $cur)"
-      howto_step "PUT workspaces/$ws/layers/$name" "200" "-" "defaultStyle $ws/$name=$style"
-      return 0
-    fi
-    f="$(mktemp)"; chmod 600 "$f"
-    jq -nc --arg s "$style" '{layer:{defaultStyle:{name:$s}}}' > "$f"
-    _gs_write_body PUT "workspaces/${ws}/layers/${name}" "$f" 'application/json'
-    code="$_GS_CODE"; rm -f "$f"
-    howto_step "PUT workspaces/$ws/layers/$name" "200" "$code" "defaultStyle $ws/$name=$style"
-    [[ "$code" == "200" ]] || { log_gs_error "$ws/$name Default-Style setzen fehlgeschlagen (HTTP $code)"; return 1; }
-    log_ok "  $ws/$name: Default-Style $style gesetzt"
-  elif [[ "$code" == "404" ]]; then
-    rm -f "$_GS_BODY_FILE"
-    howto_step "GET workspaces/$ws/layers/$name.json" "200" "404" "defaultStyle prüfen $ws/$name"
-    log "  $ws/$name nicht vorhanden (wird mit dem FeatureType angelegt)"
-  else
-    rm -f "$_GS_BODY_FILE"
-    log_error "$ws/$name lesen fehlgeschlagen (HTTP $code)"; return 1
-  fi
-  return 0
-}
 
-install_featuretypes() {
-  local -a existing avail
-  local key ws ds schema uservar secret name native tpl cache style title code rc=0 f tmp dsp
-  log "== FeatureTypes =="
-  while IFS='|' read -r key ws ds schema uservar secret; do
-    [[ -n "$key" ]] || continue
-    _ds_present "$ws" "$ds"; dsp=$?
-    if [[ "$dsp" -eq 2 ]]; then
-      log_error "FeatureTypes $ws/$ds: Datastore-Präsenz nicht lesbar"; rc=1; continue
-    fi
-    if [[ "$dsp" -eq 1 ]]; then
-      if [[ "$DRY_RUN" -eq 1 ]]; then
-        while IFS='|' read -r name native tpl cache style; do
-          [[ -n "$name" ]] || continue
-          title="$(_ft_title "$tpl" "$ws")"
-          log "  [dry-run] $ws/$name würde angelegt (Datastore wird zuvor angelegt; native=$native erst danach prüfbar)"
-          howto_step "POST workspaces/$ws/datastores/$ds/featuretypes" "201" "-" "FeatureType $ws/$name (native=$native)"
-          log "  [dry-run] $ws/$name: Default-Style $style würde gesetzt"
-          howto_step "PUT workspaces/$ws/layers/$name" "200" "-" "defaultStyle $ws/$name=$style"
-        done <<< "$FT_TABLE"
-      else
-        log_error "FeatureTypes $ws/$ds: Datastore nicht vorhanden"; rc=1
-      fi
-      continue
-    fi
-    tmp="$(mktemp)"; chmod 600 "$tmp"
-    if ! read_available_natives "$ws" "$ds" > "$tmp"; then
-      rm -f "$tmp"; log_error "list=available für $ws/$ds nicht lesbar"; rc=1; continue
-    fi
-    mapfile -t avail < "$tmp"; rm -f "$tmp"
-    tmp="$(mktemp)"; chmod 600 "$tmp"
-    if ! read_featuretypes "$ws" "$ds" > "$tmp"; then
-      rm -f "$tmp"; log_error "FeatureType-Liste für $ws/$ds nicht lesbar"; rc=1; continue
-    fi
-    mapfile -t existing < "$tmp"; rm -f "$tmp"
-    while IFS='|' read -r name native tpl cache style; do
-      [[ -n "$name" ]] || continue
-      title="$(_ft_title "$tpl" "$ws")"
-      if ! _has "$native" "${avail[@]}" && ! _has "$name" "${existing[@]}"; then
-        log_error "FeatureType $ws/$name: Native-Name $native nicht in list=available"
-        rc=1
-        continue
-      fi
-      if ! _has "$name" "${existing[@]}"; then
-        if [[ "$DRY_RUN" -eq 1 ]]; then
-          log "  [dry-run] $ws/$name würde angelegt (title=$title)"
-          howto_step "POST workspaces/$ws/datastores/$ds/featuretypes" "201" "-" "FeatureType $ws/$name (native=$native)"
-        else
-          f="$(mktemp)"; chmod 600 "$f"
-          _ft_body "$name" "$native" "$ws" "$title" "$cache" "$f"
-          _gs_write_body POST "workspaces/${ws}/datastores/${ds}/featuretypes" "$f" 'application/json'
-          code="$_GS_CODE"; rm -f "$f"
-          howto_step "POST workspaces/$ws/datastores/$ds/featuretypes" "201" "$code" "FeatureType $ws/$name"
-          if [[ "$code" == "200" || "$code" == "201" ]]; then
-            log_ok "  $ws/$name angelegt"
-          else
-            log_gs_error "FeatureType $ws/$name anlegen fehlgeschlagen (HTTP $code)"; rc=1
-          fi
-        fi
-      else
-        if [[ "$DRY_RUN" -eq 1 ]]; then
-          howto_step "GET workspaces/$ws/datastores/$ds/featuretypes/$name.json" "200" "-" "Vergleich $ws/$name"
-        else
-          _gs_get "workspaces/${ws}/datastores/${ds}/featuretypes/${name}.json"
-          if [[ "$_GS_CODE" == "200" ]]; then
-            if _ft_cmp "$_GS_BODY_FILE" "$ws" "$name" "$native" "$title" "$cache"; then
-              rm -f "$_GS_BODY_FILE"
-              log "  $ws/$name vorhanden, unverändert"
-            else
-              rm -f "$_GS_BODY_FILE"
-              f="$(mktemp)"; chmod 600 "$f"
-              _ft_body "$name" "$native" "$ws" "$title" "$cache" "$f"
-              _gs_write_body PUT "workspaces/${ws}/datastores/${ds}/featuretypes/${name}" "$f" 'application/json'
-              code="$_GS_CODE"; rm -f "$f"
-              howto_step "PUT workspaces/$ws/datastores/$ds/featuretypes/$name" "200" "$code" "FeatureType $ws/$name"
-              [[ "$code" == "200" ]] || { log_gs_error "FeatureType $ws/$name aktualisieren fehlgeschlagen (HTTP $code)"; rc=1; }
-            fi
-          else
-            rm -f "$_GS_BODY_FILE"
-            log_error "FeatureType $ws/$name: GET -> $_GS_CODE (erwartet 200)"; rc=1
-          fi
-        fi
-      fi
-      _ensure_default_style "$ws" "$name" "$style" || rc=1
-    done <<< "$FT_TABLE"
-  done <<< "$DS_TABLE"
-  return "$rc"
-}
 
-verify_featuretypes() {
-  local key ws ds schema uservar secret name native tpl cache style title code rc=0
-  log "== Verifikation FeatureTypes =="
-  while IFS='|' read -r key ws ds schema uservar secret; do
-    [[ -n "$key" ]] || continue
-    while IFS='|' read -r name native tpl cache style; do
-      [[ -n "$name" ]] || continue
-      title="$(_ft_title "$tpl" "$ws")"
-      _gs_get "workspaces/${ws}/datastores/${ds}/featuretypes/${name}.json"
-      code="$_GS_CODE"
-      if [[ "$code" == "200" ]]; then
-        local en adv nn tt ss
-        en="$(jq -r '.featureType.enabled // empty' "$_GS_BODY_FILE" 2>/dev/null)"
-        adv="$(jq -r '.featureType.advertised // empty' "$_GS_BODY_FILE" 2>/dev/null)"
-        nn="$(jq -r '.featureType.nativeName // empty' "$_GS_BODY_FILE" 2>/dev/null)"
-        tt="$(jq -r '.featureType.title // empty' "$_GS_BODY_FILE" 2>/dev/null)"
-        ss="$(jq -r '.featureType.srs // empty' "$_GS_BODY_FILE" 2>/dev/null)"
-        rm -f "$_GS_BODY_FILE"
-        howto_step "GET workspaces/$ws/datastores/$ds/featuretypes/$name.json" "200" "200" "verifizieren $ws/$name"
-        if [[ "$en" == "true" && "$adv" == "true" && "$nn" == "$native" && "$tt" == "$title" && "$ss" == "EPSG:4326" ]]; then
-          log_ok "  $ws/$name: FeatureType ok"
-        else
-          log_error "Verifikation $ws/$name: FeatureType weicht ab"; rc=1
-        fi
-      else
-        rm -f "$_GS_BODY_FILE"
-        howto_step "GET workspaces/$ws/datastores/$ds/featuretypes/$name.json" "200" "$code" "verifizieren $ws/$name"
-        log_error "Verifikation $ws/$name: FeatureType GET -> $code (erwartet 200)"; rc=1
-      fi
-      _gs_get "workspaces/${ws}/layers/${name}.json"
-      code="$_GS_CODE"
-      if [[ "$code" == "200" ]]; then
-        local dstyle
-        dstyle="$(jq -r '.layer.defaultStyle.name // empty' "$_GS_BODY_FILE" 2>/dev/null)"
-        rm -f "$_GS_BODY_FILE"
-        howto_step "GET workspaces/$ws/layers/$name.json" "200" "200" "defaultStyle verifizieren $ws/$name"
-        if [[ "$dstyle" == "$style" ]]; then
-          log_ok "  $ws/$name: defaultStyle $style ok"
-        else
-          log_error "Verifikation $ws/$name: defaultStyle weicht ab (erwartet $style, vorhanden $dstyle)"; rc=1
-        fi
-      else
-        rm -f "$_GS_BODY_FILE"
-        howto_step "GET workspaces/$ws/layers/$name.json" "200" "$code" "defaultStyle verifizieren $ws/$name"
-        log_error "Verifikation $ws/$name: Layer GET -> $code (erwartet 200)"; rc=1
-      fi
-      _gs_get_url "$GS_BASE/$ws/wfs?service=WFS&version=2.0.0&request=DescribeFeatureType&typeNames=${ws}:${name}"
-      code="$_GS_CODE"
-      if [[ "$code" == "200" ]] && ! grep -q 'ExceptionReport' "$_GS_BODY_FILE" 2>/dev/null; then
-        rm -f "$_GS_BODY_FILE"
-        howto_step "GET $ws/wfs DescribeFeatureType" "200" "200" "kein ExceptionReport $ws/$name"
-        log_ok "  $ws/$name: DescribeFeatureType ok"
-      else
-        rm -f "$_GS_BODY_FILE"
-        howto_step "GET $ws/wfs DescribeFeatureType" "200" "$code" "kein ExceptionReport $ws/$name"
-        log_error "Verifikation $ws/$name: DescribeFeatureType -> $code (erwartet 200, kein ExceptionReport)"; rc=1
-      fi
-      _gs_get_url "$GS_BASE/$ws/wfs?service=WFS&version=2.0.0&request=GetFeature&typeNames=${ws}:${name}&resultType=hits"
-      code="$_GS_CODE"
-      if [[ "$code" == "200" ]] && ! grep -q 'ExceptionReport' "$_GS_BODY_FILE" 2>/dev/null; then
-        local nm
-        nm="$(grep -o 'numberMatched="[0-9]*"' "$_GS_BODY_FILE" 2>/dev/null | head -1)"
-        rm -f "$_GS_BODY_FILE"
-        howto_step "GET $ws/wfs GetFeature hits" "200" "200" "kein ExceptionReport $ws/$name"
-        log_ok "  $ws/$name: GetFeature hits ok${nm:+ ($nm)}"
-      else
-        rm -f "$_GS_BODY_FILE"
-        howto_step "GET $ws/wfs GetFeature hits" "200" "$code" "kein ExceptionReport $ws/$name"
-        log_error "Verifikation $ws/$name: GetFeature hits -> $code (erwartet 200, kein ExceptionReport)"; rc=1
-      fi
-    done <<< "$FT_TABLE"
-  done <<< "$DS_TABLE"
-  return "$rc"
-}
 
-uninstall_featuretypes() {
-  local -a existing
-  local key ws ds schema uservar secret name native tpl cache style code rc=0 tmp dsp
-  log "== FeatureTypes entfernen =="
-  while IFS='|' read -r key ws ds schema uservar secret; do
-    [[ -n "$key" ]] || continue
-    _ds_present "$ws" "$ds"; dsp=$?
-    if [[ "$dsp" -eq 1 ]]; then
-      log "  FeatureTypes von $ws/$ds nicht prüfbar (Datastore nicht vorhanden) — übersprungen"
-      continue
-    fi
-    if [[ "$dsp" -eq 2 ]]; then
-      log_error "FeatureTypes $ws/$ds: Datastore-Präsenz nicht lesbar"; rc=1; continue
-    fi
-    tmp="$(mktemp)"; chmod 600 "$tmp"
-    if ! read_featuretypes "$ws" "$ds" > "$tmp"; then
-      rm -f "$tmp"; log_error "FeatureType-Liste für $ws/$ds nicht lesbar"; rc=1; continue
-    fi
-    mapfile -t existing < "$tmp"; rm -f "$tmp"
-    while IFS='|' read -r name native tpl cache style; do
-      [[ -n "$name" ]] || continue
-      if ! _has "$name" "${existing[@]}"; then
-        log "  $ws/$name nicht vorhanden — übersprungen"
-        continue
-      fi
-      if [[ "$DRY_RUN" -eq 1 ]]; then
-        howto_step "DELETE workspaces/$ws/layers/$name" "200" "-" "404 = schon weg, ohne recurse ($ws/$name)"
-        howto_step "DELETE workspaces/$ws/datastores/$ds/featuretypes/$name" "200" "-" "404 = schon weg, ohne recurse ($ws/$name)"
-        continue
-      fi
-      _gs_write_body DELETE "workspaces/${ws}/layers/${name}"
-      code="$_GS_CODE"
-      howto_step "DELETE workspaces/$ws/layers/$name" "200" "$code" "404 = schon weg, ohne recurse ($ws/$name)"
-      case "$code" in
-        200|201) log_ok "  $ws/$name: Layer gelöscht" ;;
-        404)     log "  $ws/$name: Layer schon weg" ;;
-        *)       log_gs_error "Layer $ws/$name löschen fehlgeschlagen (HTTP $code)"; rc=1 ;;
-      esac
-      _gs_write_body DELETE "workspaces/${ws}/datastores/${ds}/featuretypes/${name}"
-      code="$_GS_CODE"
-      howto_step "DELETE workspaces/$ws/datastores/$ds/featuretypes/$name" "200" "$code" "404 = schon weg, ohne recurse ($ws/$name)"
-      case "$code" in
-        200|201) log_ok "  $ws/$name: FeatureType gelöscht" ;;
-        404)     log "  $ws/$name: FeatureType schon weg" ;;
-        *)       log_gs_error "FeatureType $ws/$name löschen fehlgeschlagen (HTTP $code)"; rc=1 ;;
-      esac
-    done <<< "$FT_TABLE"
-  done <<< "$DS_TABLE"
-  return "$rc"
-}
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Attribut-Mapping (Schritt 4a): veröffentlichtes Attribut liest eine Native-Spalte
 # ═══════════════════════════════════════════════════════════════════════════
 # _apply_attr_mapping <ws> <ds> <name> <native> <target> — 0 ok, 1 Fehler.
 # Liest die generierte Attributliste, benennt <native> nach <target> um und setzt source=<native>.
-_apply_attr_mapping() {
-  local ws="$1" ds="$2" name="$3" native="$4" target="$5" code has_t has_n src new put_body
-  _gs_get "workspaces/${ws}/datastores/${ds}/featuretypes/${name}.json"
-  code="$_GS_CODE"
-  if [[ "$code" != "200" ]]; then
-    rm -f "$_GS_BODY_FILE"
-    if [[ "$DRY_RUN" -eq 1 && "$code" == "404" ]]; then
-      log "  [dry-run] $ws/$name: Attribut-Mapping $target←$native würde gesetzt (FeatureType wird zuvor angelegt)"
-      howto_step "PUT workspaces/$ws/datastores/$ds/featuretypes/$name" "200" "-" "Attribut-Mapping $target←$native"
-      return 0
-    fi
-    log_error "FeatureType $ws/$name lesen fehlgeschlagen (HTTP $_GS_CODE)"; return 1
-  fi
 
-  has_t="$(jq -r --arg t "$target" '[.featureType.attributes.attribute[]?.name] | index($t) != null' "$_GS_BODY_FILE" 2>/dev/null)"
-  has_n="$(jq -r --arg n "$native"  '[.featureType.attributes.attribute[]?.name] | index($n) != null' "$_GS_BODY_FILE" 2>/dev/null)"
-  src="$(jq -r --arg t "$target" '.featureType.attributes.attribute[]? | select(.name==$t) | .source // empty' "$_GS_BODY_FILE" 2>/dev/null | head -1)"
 
-  if [[ "$has_t" == "true" ]]; then
-    if [[ "$has_n" == "true" ]]; then
-      rm -f "$_GS_BODY_FILE"
-      log_error "FeatureType $ws/$name: doppeltes Attribut ($target und $native veröffentlicht)"
-      return 1
-    fi
-    if [[ "$src" == "$native" ]]; then
-      rm -f "$_GS_BODY_FILE"
-      howto_step "GET workspaces/$ws/datastores/$ds/featuretypes/$name.json" "200" "200" "Attribut-Mapping $target←$native prüfen"
-      log "  $ws/$name: Attribut-Mapping ok ($target ← $native)"
-      return 0
-    fi
-    rm -f "$_GS_BODY_FILE"
-    log_error "FeatureType $ws/$name: Attribut $target mit abweichender/fehlender Quelle (erwartet $native, vorhanden ${src:-leer})"
-    return 1
-  fi
-
-  if [[ "$has_n" != "true" ]]; then
-    rm -f "$_GS_BODY_FILE"
-    log_error "FeatureType $ws/$name: weder $target noch $native veröffentlicht (Quelle fehlt)"
-    return 1
-  fi
-
-  new="$(mktemp)"; chmod 600 "$new"
-  if ! jq -c --arg n "$native" --arg t "$target" \
-      '[.featureType.attributes.attribute[] | if .name == $n then (.name = $t | .source = $n) else . end]' \
-      "$_GS_BODY_FILE" > "$new" 2>/dev/null; then
-    rm -f "$_GS_BODY_FILE" "$new"; log_error "FeatureType $ws/$name: Attributliste nicht transformierbar"; return 1
-  fi
-  rm -f "$_GS_BODY_FILE"
-
-  if [[ "$DRY_RUN" -eq 1 ]]; then
-    log "  [dry-run] $ws/$name: Attribut $native → $target (source=$native) würde gesetzt"
-    howto_step "PUT workspaces/$ws/datastores/$ds/featuretypes/$name" "200" "-" "Attribut-Mapping $target←$native"
-    rm -f "$new"
-    return 0
-  fi
-
-  put_body="$(mktemp)"; chmod 600 "$put_body"
-  jq -n --slurpfile a "$new" '{featureType:{attributes:{attribute:$a[0]}}}' > "$put_body" 2>/dev/null
-  rm -f "$new"
-  _gs_write_body PUT "workspaces/${ws}/datastores/${ds}/featuretypes/${name}" "$put_body" 'application/json'
-  code="$_GS_CODE"; rm -f "$put_body"
-  howto_step "PUT workspaces/$ws/datastores/$ds/featuretypes/$name" "200" "$code" "Attribut-Mapping $target←$native"
-  [[ "$code" == "200" ]] || { log_gs_error "FeatureType $ws/$name: Attribut-Mapping setzen fehlgeschlagen (HTTP $code)"; return 1; }
-  log_ok "  $ws/$name: Attribut-Mapping $target ← $native gesetzt"
-  return 0
-}
-
-install_attr_mapping() {
-  local key ws ds schema uservar secret name native target rc=0
-  log "== Attribut-Mapping =="
-  while IFS='|' read -r name native target; do
-    [[ -n "$name" ]] || continue
-    while IFS='|' read -r key ws ds _ _ _; do
-      [[ -n "$key" ]] || continue
-      _apply_attr_mapping "$ws" "$ds" "$name" "$native" "$target" || rc=1
-    done <<< "$DS_TABLE"
-  done <<< "$ATTR_MAP_TABLE"
-  return "$rc"
-}
-
-verify_attr_mapping() {
-  local key ws ds schema uservar secret name native target code rc=0 has_t has_n src
-  log "== Verifikation Attribut-Mapping =="
-  while IFS='|' read -r name native target; do
-    [[ -n "$name" ]] || continue
-    while IFS='|' read -r key ws ds _ _ _; do
-      [[ -n "$key" ]] || continue
-      _gs_get "workspaces/${ws}/datastores/${ds}/featuretypes/${name}.json"
-      code="$_GS_CODE"
-      if [[ "$code" != "200" ]]; then
-        rm -f "$_GS_BODY_FILE"
-        log_error "Verifikation $ws/$name: GET -> $code (erwartet 200)"; rc=1; continue
-      fi
-      has_t="$(jq -r --arg t "$target" '[.featureType.attributes.attribute[]?.name] | index($t) != null' "$_GS_BODY_FILE" 2>/dev/null)"
-      has_n="$(jq -r --arg n "$native"  '[.featureType.attributes.attribute[]?.name] | index($n) != null' "$_GS_BODY_FILE" 2>/dev/null)"
-      src="$(jq -r --arg t "$target" '.featureType.attributes.attribute[]? | select(.name==$t) | .source // empty' "$_GS_BODY_FILE" 2>/dev/null | head -1)"
-      rm -f "$_GS_BODY_FILE"
-      if [[ "$has_t" == "true" && "$src" == "$native" && "$has_n" == "false" ]]; then
-        log_ok "  $ws/$name: Attribut-Mapping $target ← $native ok"
-      else
-        log_error "Verifikation $ws/$name: Attribut-Mapping fehlerhaft (target=$has_t, source=${src:-leer}, native-extra=$has_n)"; rc=1
-      fi
-    done <<< "$DS_TABLE"
-  done <<< "$ATTR_MAP_TABLE"
-  return "$rc"
-}
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Layer-ACLs (Schritt 5): explizite Lese-/Schreib-Regeln, keine Wildcards
 # ═══════════════════════════════════════════════════════════════════════════
 # _stage_role <key> — P2D2_WFST_<KEY> aus SOL_TABLE.
-_stage_role() {
-  local want="$1" key _ user roles _ r
-  while IFS='|' read -r key _ user roles _; do
-    [[ -n "$key" ]] || continue
-    [[ "$key" == "$want" ]] || continue
-    for r in ${roles//,/ }; do
-      [[ "$r" == "P2D2_WFST_"* ]] && { printf '%s' "$r"; return 0; }
-    done
-  done <<< "$SOL_TABLE"
-  return 1
-}
 
 # _acl_roles_equal <a> <b> — 0 wenn gleiche Rollenmenge (Reihenfolge egal).
-_acl_roles_equal() {
-  local a="$1" b="$2" sa sb
-  sa="$(printf '%s' "$a" | tr ',' '\n' | sort | tr '\n' ',')"
-  sb="$(printf '%s' "$b" | tr ',' '\n' | sort | tr '\n' ',')"
-  [[ "$sa" == "$sb" ]]
-}
 
 # _acl_get <outfile> — Layer-ACL-Map ({"<rule>":"<roles>"}) nach <outfile>; 0 ok, 1 Fehler.
-_acl_get() {
-  local out="$1"
-  _gs_get "security/acl/layers"
-  [[ "$_GS_CODE" == "200" ]] || { rm -f "$_GS_BODY_FILE"; log_error "Lesen security/acl/layers fehlgeschlagen (HTTP $_GS_CODE)"; return 1; }
-  cp "$_GS_BODY_FILE" "$out" 2>/dev/null || { rm -f "$_GS_BODY_FILE"; return 1; }
-  rm -f "$_GS_BODY_FILE"
-  return 0
-}
 
 # _protect_roles <comma-roles> — merkt sich Rollen, die beim Uninstall NICHT gelöscht werden.
-_protect_roles() {
-  local r
-  for r in ${1//,/ }; do
-    [[ -n "$r" ]] || continue
-    _has "$r" "${_KEEP_ROLES[@]}" || _KEEP_ROLES+=("$r")
-  done
-}
 
 # _acl_apply <ws> <layer> <mode> <roles> <mapfile> — 0 ok, 1 Konflikt/Fehler.
-_acl_apply() {
-  local ws="$1" layer="$2" mode="$3" roles="$4" map="$5" rule cur code body
-  rule="${ws}.${layer}.${mode}"
-  cur="$(jq -r --arg r "$rule" '.[$r] // empty' "$map" 2>/dev/null)"
-  if [[ -n "$cur" ]]; then
-    if _acl_roles_equal "$cur" "$roles"; then
-      log "  ACL $rule vorhanden, unverändert"
-      return 0
-    fi
-    log_error "ACL $rule Konflikt: vorhanden '$cur', erwartet '$roles' — keine Änderung"
-    return 1
-  fi
-  if [[ "$DRY_RUN" -eq 1 ]]; then
-    log "  [dry-run] ACL $rule würde gesetzt ($roles)"
-    howto_step "POST security/acl/layers" "200/201/409" "-" "$rule=$roles"
-    return 0
-  fi
-  body="$(mktemp)"; chmod 600 "$body"
-  jq -nc --arg rule "$rule" --arg roles "$roles" '{($rule):$roles}' > "$body"
-  _gs_write_body POST "security/acl/layers" "$body" 'application/json'
-  code="$_GS_CODE"; rm -f "$body"
-  howto_step "POST security/acl/layers" "200/201/409" "$code" "$rule=$roles"
-  case "$code" in
-    200|201|409) log_ok "  ACL $rule gesetzt ($roles)" ;;
-    *)           log_gs_error "ACL $rule setzen fehlgeschlagen (HTTP $code)"; return 1 ;;
-  esac
-  return 0
-}
 
-install_acls() {
-  local key ws ds _ _ _ layer rroles wroles stage_rule rc=0 tmp
-  tmp="$(mktemp)"; chmod 600 "$tmp"
-  if ! _acl_get "$tmp"; then rm -f "$tmp"; return 1; fi
-  log "== Layer-ACLs =="
-  while IFS='|' read -r key ws ds _ _ _; do
-    [[ -n "$key" ]] || continue
-    while IFS='|' read -r layer rroles wroles; do
-      [[ -n "$layer" ]] || continue
-      stage_rule="$(_stage_role "$key")"
-      wroles="${wroles//%stage%/$stage_rule}"
-      _acl_apply "$ws" "$layer" "r" "$rroles" "$tmp" || rc=1
-      _acl_apply "$ws" "$layer" "w" "$wroles" "$tmp" || rc=1
-    done <<< "$ACL_LAYER_TABLE"
-  done <<< "$DS_TABLE"
-  rm -f "$tmp"
-  return "$rc"
-}
 
-verify_acls() {
-  local key ws ds _ _ _ layer rroles wroles stage_rule rule roles cur rc=0 tmp
-  tmp="$(mktemp)"; chmod 600 "$tmp"
-  if ! _acl_get "$tmp"; then rm -f "$tmp"; return 1; fi
-  log "== Verifikation Layer-ACLs =="
-  while IFS='|' read -r key ws ds _ _ _; do
-    [[ -n "$key" ]] || continue
-    while IFS='|' read -r layer rroles wroles; do
-      [[ -n "$layer" ]] || continue
-      stage_rule="$(_stage_role "$key")"
-      wroles="${wroles//%stage%/$stage_rule}"
-      for mode in r w; do
-        roles="$rroles"; [[ "$mode" == "w" ]] && roles="$wroles"
-        rule="${ws}.${layer}.${mode}"
-        cur="$(jq -r --arg r "$rule" '.[$r] // empty' "$tmp" 2>/dev/null)"
-        if [[ -n "$cur" ]] && _acl_roles_equal "$cur" "$roles"; then
-          log_ok "  $rule ok"
-        else
-          log_error "Verifikation $rule: fehlt oder weicht ab"; rc=1
-        fi
-      done
-    done <<< "$ACL_LAYER_TABLE"
-  done <<< "$DS_TABLE"
-  rm -f "$tmp"
-  return "$rc"
-}
 
-uninstall_acls() {
-  local key ws ds _ _ _ layer rroles wroles stage_rule rule roles cur code rc=0 tmp
-  tmp="$(mktemp)"; chmod 600 "$tmp"
-  if ! _acl_get "$tmp"; then rm -f "$tmp"; return 1; fi
-  log "== Layer-ACLs entfernen =="
-  while IFS='|' read -r key ws ds _ _ _; do
-    [[ -n "$key" ]] || continue
-    while IFS='|' read -r layer rroles wroles; do
-      [[ -n "$layer" ]] || continue
-      stage_rule="$(_stage_role "$key")"
-      wroles="${wroles//%stage%/$stage_rule}"
-      for mode in r w; do
-        roles="$rroles"; [[ "$mode" == "w" ]] && roles="$wroles"
-        rule="${ws}.${layer}.${mode}"
-        cur="$(jq -r --arg r "$rule" '.[$r] // empty' "$tmp" 2>/dev/null)"
-        [[ -n "$cur" ]] || { log "  ACL $rule nicht vorhanden — übersprungen"; continue; }
-        _gs_get "workspaces/${ws}/layers/${layer}.json"
-        code="$_GS_CODE"
-        if [[ "$code" == "200" ]]; then
-          rm -f "$_GS_BODY_FILE"
-          log_warn "  ACL $rule behalten (Layer $ws/$layer besteht weiter)"
-          _protect_roles "$roles"
-          continue
-        fi
-        rm -f "$_GS_BODY_FILE"
-        if ! _acl_roles_equal "$cur" "$roles"; then
-          log_error "ACL $rule abweichend ('$cur') — nicht gelöscht"; rc=1
-          _protect_roles "$cur"
-          continue
-        fi
-        if [[ "$DRY_RUN" -eq 1 ]]; then
-          howto_step "DELETE security/acl/layers/$rule" "200" "-" "404 = schon weg"
-          continue
-        fi
-        _gs_write_body DELETE "security/acl/layers/$rule"
-        code="$_GS_CODE"
-        howto_step "DELETE security/acl/layers/$rule" "200" "$code" "404 = schon weg"
-        case "$code" in
-          200|201) log_ok "  ACL $rule gelöscht" ;;
-          404)     log "  ACL $rule schon weg" ;;
-          *)       log_gs_error "ACL $rule löschen fehlgeschlagen (HTTP $code)"; rc=1 ;;
-        esac
-      done
-    done <<< "$ACL_LAYER_TABLE"
-  done <<< "$DS_TABLE"
-  rm -f "$tmp"
-  return "$rc"
-}
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Uninstall (nur exakt benannte Objekte)

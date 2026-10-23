@@ -1089,6 +1089,8 @@ unset GS_WS_VERIFY_BAD
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 sed 's/main|urn:data-dna:govdata:main//' "$SCRIPT" > "$T/script-ws-missing.sh"
+# Vollständiges Bundle für die mutierte Einstiegskopie bereitstellen (Loader braucht geoserver-config/).
+cp -r "$REPO/supplement/geoserver-config" "$T/geoserver-config"
 rc="$( cd "$WORK" && bash "$T/script-ws-missing.sh" --url "$URL" --ns "$NS" >"$T/out.log" 2>"$T/err.log"; printf '%s' "$?" )"
 check "WS Startprüfung Exit 2"  "2" "$rc"
 check "WS Startprüfung Meldung" "yes" "$(grep -q 'fehlt in WS_TABLE' "$T/err.log" && echo yes || echo no)"

@@ -23,6 +23,9 @@ supplement/*
 !supplement/*.sha256
 !supplement/templates/
 !supplement/templates/**
+# Geoserver-Konfigurations-Bundle (in mehrere Dateien aufgeteilter Code)
+!supplement/geoserver-config/
+!supplement/geoserver-config/**
 
 # Lokale Secrets-Dateien (die Vorlagen *.example sind versioniert)
 .env.local
