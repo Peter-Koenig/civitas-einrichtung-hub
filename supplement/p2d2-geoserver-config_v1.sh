@@ -501,6 +501,19 @@ read_datastores() {
   rm -f "$_GS_BODY_FILE"
 }
 
+# _ds_present <ws> <ds> — 0 wenn der Datastore existiert (der Workspace ist damit implizit vorhanden),
+# 1 wenn nicht, 2 bei Lesefehler. read_datastores liefert 404 = leer (Workspace fehlt).
+_ds_present() {
+  local ws="$1" ds="$2" tmp
+  local -a dl
+  tmp="$(mktemp)"; chmod 600 "$tmp"
+  if ! read_datastores "$ws" > "$tmp"; then rm -f "$tmp"; return 2; fi
+  mapfile -t dl < "$tmp"
+  rm -f "$tmp"
+  _has "$ds" "${dl[@]}" && return 0
+  return 1
+}
+
 # _http_code_url <url> — authentifizierter GET auf eine beliebige URL; gibt HTTP-Code.
 _http_code_url() {
   local url="$1" code
@@ -1228,10 +1241,29 @@ _ensure_default_style() {
 
 install_featuretypes() {
   local -a existing avail
-  local key ws ds schema uservar secret name native tpl cache style title code rc=0 f tmp
+  local key ws ds schema uservar secret name native tpl cache style title code rc=0 f tmp dsp
   log "== FeatureTypes =="
   while IFS='|' read -r key ws ds schema uservar secret; do
     [[ -n "$key" ]] || continue
+    _ds_present "$ws" "$ds"; dsp=$?
+    if [[ "$dsp" -eq 2 ]]; then
+      log_error "FeatureTypes $ws/$ds: Datastore-Präsenz nicht lesbar"; rc=1; continue
+    fi
+    if [[ "$dsp" -eq 1 ]]; then
+      if [[ "$DRY_RUN" -eq 1 ]]; then
+        while IFS='|' read -r name native tpl cache style; do
+          [[ -n "$name" ]] || continue
+          title="$(_ft_title "$tpl" "$ws")"
+          log "  [dry-run] $ws/$name würde angelegt (Datastore wird zuvor angelegt; native=$native erst danach prüfbar)"
+          howto_step "POST workspaces/$ws/datastores/$ds/featuretypes" "201" "-" "FeatureType $ws/$name (native=$native)"
+          log "  [dry-run] $ws/$name: Default-Style $style würde gesetzt"
+          howto_step "PUT workspaces/$ws/layers/$name" "200" "-" "defaultStyle $ws/$name=$style"
+        done <<< "$FT_TABLE"
+      else
+        log_error "FeatureTypes $ws/$ds: Datastore nicht vorhanden"; rc=1
+      fi
+      continue
+    fi
     tmp="$(mktemp)"; chmod 600 "$tmp"
     if ! read_available_natives "$ws" "$ds" > "$tmp"; then
       rm -f "$tmp"; log_error "list=available für $ws/$ds nicht lesbar"; rc=1; continue
@@ -1373,10 +1405,18 @@ verify_featuretypes() {
 
 uninstall_featuretypes() {
   local -a existing
-  local key ws ds schema uservar secret name native tpl cache style code rc=0 tmp
+  local key ws ds schema uservar secret name native tpl cache style code rc=0 tmp dsp
   log "== FeatureTypes entfernen =="
   while IFS='|' read -r key ws ds schema uservar secret; do
     [[ -n "$key" ]] || continue
+    _ds_present "$ws" "$ds"; dsp=$?
+    if [[ "$dsp" -eq 1 ]]; then
+      log "  FeatureTypes von $ws/$ds nicht prüfbar (Datastore nicht vorhanden) — übersprungen"
+      continue
+    fi
+    if [[ "$dsp" -eq 2 ]]; then
+      log_error "FeatureTypes $ws/$ds: Datastore-Präsenz nicht lesbar"; rc=1; continue
+    fi
     tmp="$(mktemp)"; chmod 600 "$tmp"
     if ! read_featuretypes "$ws" "$ds" > "$tmp"; then
       rm -f "$tmp"; log_error "FeatureType-Liste für $ws/$ds nicht lesbar"; rc=1; continue
@@ -1577,12 +1617,20 @@ do_uninstall() {
   done <<< "$DS_TABLE"
   rm -f "$dtmp"
 
-  # FeatureTypes: nicht mehr gelistet (Schritt 4)
+  # FeatureTypes: nicht mehr gelistet (Schritt 4). Datastore, den der Uninstall
+  # bereits gelöscht hat, wird übersprungen (B1); nur echte Lesefehler sind Fehler.
   local -a after_ft
-  local ftmp fkey fws fds fname
+  local ftmp fkey fws fds fname fdsp
   ftmp="$(mktemp)"; chmod 600 "$ftmp"
   while IFS='|' read -r fkey fws fds _ _ _; do
     [[ -n "$fkey" ]] || continue
+    _ds_present "$fws" "$fds"; fdsp=$?
+    if [[ "$fdsp" -eq 1 ]]; then
+      continue
+    fi
+    if [[ "$fdsp" -eq 2 ]]; then
+      rm -f "$ftmp"; log_error "Schlussverifikation: Datastore-Präsenz für $fws/$fds nicht lesbar"; return 1
+    fi
     if ! read_featuretypes "$fws" "$fds" > "$ftmp"; then
       rm -f "$ftmp"; log_error "Schlussverifikation: FeatureType-Liste für $fws/$fds nicht lesbar"; return 1
     fi
