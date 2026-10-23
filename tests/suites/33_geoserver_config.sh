@@ -1386,7 +1386,7 @@ check "B4 Präfix main/graeber DescribeFeatureType"  "yes" "$(grep -q 'main/grae
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
-sed 's/"minx":-10,/"minx":-10.0,/g' "$GS_STATE_DIR/ft/main/main_pg/geo-containers.json" > "$GS_STATE_DIR/ft/main/main_pg/geo-containers.json.tmp"
+sed 's/"minx": -10,/"minx": -10.0,/g' "$GS_STATE_DIR/ft/main/main_pg/geo-containers.json" > "$GS_STATE_DIR/ft/main/main_pg/geo-containers.json.tmp"
 mv "$GS_STATE_DIR/ft/main/main_pg/geo-containers.json.tmp" "$GS_STATE_DIR/ft/main/main_pg/geo-containers.json"
 clear_logs
 rc="$(run_script --url "$URL" --ns "$NS")"
