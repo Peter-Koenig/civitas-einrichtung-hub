@@ -137,6 +137,20 @@ datastores_json() {
     printf '{"dataStores":""}'
   fi
 }
+featuretypes_json() {
+  if [ -f "$S/ft/$1/$2.list" ]; then
+    printf '{"featureTypes":{"featureType":['
+    local first=1 n
+    while IFS= read -r n; do
+      [ -n "$n" ] || continue
+      [ "$first" = "1" ] || printf ','
+      printf '{"name":"%s","href":""}' "$n"; first=0
+    done < "$S/ft/$1/$2.list"
+    printf ']}}'
+  else
+    printf '{"featureTypes":""}'
+  fi
+}
 
 code="200"; body=""
 case "$url" in
@@ -234,13 +248,97 @@ case "$url" in
   *"/rest/workspaces/"*"/datastores.json")
     ws="${url#*/rest/workspaces/}"; ws="${ws%%/*}"
     body="$(datastores_json "$ws")" ;;
-  *"/featuretypes.json"*)
+  *"list=available"*)
     if [ "${GS_LIST_AVAILABLE_FAIL:-0}" = "1" ]; then code=500
-    else body='{"list":{"string":["a","b"]}}'; code=200; fi ;;
+    elif [ "${GS_LIST_AVAILABLE_MISSING_NATIVE:-0}" = "1" ]; then body='{"list":{"string":["p2d2_containers","v_grabflure_aktuell","p2d2_grabflure_versionen","p2d2_graeber_versionen"]}}'; code=200
+    else body='{"list":{"string":["p2d2_containers","v_grabflure_aktuell","p2d2_grabflure_versionen","v_graeber_aktuell","p2d2_graeber_versionen"]}}'; code=200; fi ;;
+  *"/rest/workspaces/"*"/datastores/"*"/featuretypes.json")
+    ws="${url#*/rest/workspaces/}"; ws="${ws%%/*}"
+    ds="${url#*/datastores/}"; ds="${ds%%/*}"
+    body="$(featuretypes_json "$ws" "$ds")" ;;
+  *"/rest/workspaces/"*"/datastores/"*"/featuretypes/"*".json")
+    ws="${url#*/rest/workspaces/}"; ws="${ws%%/*}"
+    ds="${url#*/datastores/}"; ds="${ds%%/*}"
+    name="${url##*/featuretypes/}"; name="${name%.json}"
+    if [ -f "$S/ft/$ws/$ds/$name.json" ]; then body="$(cat "$S/ft/$ws/$ds/$name.json")"; code=200
+    else code=404; fi ;;
+  *"/rest/workspaces/"*"/datastores/"*"/featuretypes")
+    ws="${url#*/rest/workspaces/}"; ws="${ws%%/*}"
+    ds="${url#*/datastores/}"; ds="${ds%%/*}"
+    case "$method" in
+      POST)
+        if [ -n "$body_file" ] && [ -f "$body_file" ]; then
+          name="$(jq -r '.featureType.name // empty' "$body_file" 2>/dev/null)"
+          if [ -n "$name" ]; then
+            mkdir -p "$S/ft/$ws/$ds" "$S/layers/$ws"
+            cp "$body_file" "$S/ft/$ws/$ds/$name.json"
+            grep -qx "$name" "$S/ft/$ws/$ds.list" 2>/dev/null || printf '%s\n' "$name" >> "$S/ft/$ws/$ds.list"
+            printf '%s' "${GS_DEFAULT_STYLE:-point}" > "$S/layers/$ws/$name.style"
+            code=201
+          else code=500; fi
+        else code=500; fi ;;
+      *) code=500 ;;
+    esac ;;
+  *"/rest/workspaces/"*"/datastores/"*"/featuretypes/"*)
+    ws="${url#*/rest/workspaces/}"; ws="${ws%%/*}"
+    ds="${url#*/datastores/}"; ds="${ds%%/*}"
+    name="${url##*/featuretypes/}"
+    case "$method" in
+      PUT)
+        if [ -n "$body_file" ] && [ -f "$body_file" ] && [ -f "$S/ft/$ws/$ds/$name.json" ]; then
+          cp "$body_file" "$S/ft/$ws/$ds/$name.json"
+          code=200
+        else code=404; fi ;;
+      DELETE)
+        if [ "${GS_DELETE_FAIL:-0}" = "1" ]; then
+          [ -n "${GS_403_BODY:-}" ] && body="$GS_403_BODY"
+          code=500
+        elif [ -f "$S/ft/$ws/$ds/$name.json" ]; then
+          rm -f "$S/ft/$ws/$ds/$name.json"
+          grep -vx "$name" "$S/ft/$ws/$ds.list" > "$S/ft/$ws/$ds.list.tmp" 2>/dev/null || true
+          mv "$S/ft/$ws/$ds.list.tmp" "$S/ft/$ws/$ds.list"
+          rm -f "$S/layers/$ws/$name.style"
+          code=200
+        else code=404; fi ;;
+      *) code=500 ;;
+    esac ;;
+  *"/rest/workspaces/"*"/layers/"*".json")
+    ws="${url#*/rest/workspaces/}"; ws="${ws%%/*}"
+    name="${url##*/layers/}"; name="${name%.json}"
+    if [ -f "$S/layers/$ws/$name.style" ]; then
+      s="$(cat "$S/layers/$ws/$name.style")"
+      body="{\"layer\":{\"name\":\"$name\",\"defaultStyle\":{\"name\":\"$s\"}}}"
+      code=200
+    else code=404; fi ;;
+  *"/rest/workspaces/"*"/layers/"*)
+    ws="${url#*/rest/workspaces/}"; ws="${ws%%/*}"
+    name="${url##*/layers/}"
+    case "$method" in
+      PUT)
+        if [ -n "$body_file" ] && [ -f "$body_file" ] && [ -f "$S/layers/$ws/$name.style" ]; then
+          s="$(jq -r '.layer.defaultStyle.name // empty' "$body_file" 2>/dev/null)"
+          [ -n "$s" ] && printf '%s' "$s" > "$S/layers/$ws/$name.style"
+          code=200
+        else code=404; fi ;;
+      DELETE)
+        if [ "${GS_DELETE_FAIL:-0}" = "1" ]; then
+          [ -n "${GS_403_BODY:-}" ] && body="$GS_403_BODY"
+          code=500
+        elif [ -f "$S/layers/$ws/$name.style" ]; then
+          rm -f "$S/layers/$ws/$name.style"
+          code=200
+        else code=404; fi ;;
+      *) code=500 ;;
+    esac ;;
   *"/rest/workspaces/"*"/datastores/"*".json")
     ws="${url#*/rest/workspaces/}"; ws="${ws%%/*}"
     ds="${url#*/datastores/}"; ds="${ds%.json}"
-    if [ -f "$S/ds/$ws/$ds.json" ]; then body="$(cat "$S/ds/$ws/$ds.json")"; code=200
+    if [ -f "$S/ds/$ws/$ds.json" ]; then
+      body="$(cat "$S/ds/$ws/$ds.json")"
+      if [ "${GS_DS_BAD_PARAM:-0}" = "1" ]; then
+        body="$(printf '%s' "$body" | jq -c '.dataStore.connectionParameters.entry |= map(if ."@key"=="user" then {"@key":"user","$":"WRONG"} else . end)' 2>/dev/null)"
+      fi
+      code=200
     else code=404; fi ;;
   *"/rest/workspaces/"*"/datastores")
     ws="${url#*/rest/workspaces/}"; ws="${ws%%/*}"
@@ -327,9 +425,22 @@ case "$url" in
         else code=404; fi ;;
       *) code=500 ;;
     esac ;;
+  *"/styles/polygon.json")
+    [ "${GS_STYLE_POLYGON_MISSING:-0}" = "1" ] && code=404 || code=200 ;;
+  *"/styles/generic.json")
+    [ "${GS_STYLE_GENERIC_MISSING:-0}" = "1" ] && code=404 || code=200 ;;
+  *"DescribeFeatureType"*)
+    if [ "${GS_WFS_EXCEPTION:-0}" = "1" ]; then body='<ExceptionReport><Exception>error</Exception></ExceptionReport>'
+    else body='<xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema"/>'; fi
+    code=200 ;;
+  *"GetFeature"*)
+    if [ "${GS_WFS_EXCEPTION:-0}" = "1" ]; then body='<ExceptionReport><Exception>error</Exception></ExceptionReport>'
+    else body='<wfs:FeatureCollection numberMatched="1"/>'; fi
+    code=200 ;;
   *"/wms"*|*"/wfs"*)
     ws="${url#*/geoserver/}"; ws="${ws%%/*}"
-    has_ws "$ws" && code=200 || code=404 ;;
+    if [ "${GS_WMS_FAIL:-0}" = "1" ]; then code=503
+    else has_ws "$ws" && code=200 || code=404; fi ;;
   *) code=500 ;;
 esac
 
@@ -448,7 +559,7 @@ clear_logs() { : > "$CURL_LOG"; : > "$CURL_BODY_LOG"; : > "$CURL_STDIN_LOG"; : >
 
 reset_state() {
   rm -rf "$GS_STATE_DIR" "$KUBE_STATE_DIR"
-  mkdir -p "$GS_STATE_DIR/userroles" "$GS_STATE_DIR/namespaces" "$GS_STATE_DIR/ds" "$KUBE_STATE_DIR/secrets"
+  mkdir -p "$GS_STATE_DIR/userroles" "$GS_STATE_DIR/namespaces" "$GS_STATE_DIR/ds" "$GS_STATE_DIR/ft" "$GS_STATE_DIR/layers" "$KUBE_STATE_DIR/secrets"
   printf '%s\n' admin > "$GS_STATE_DIR/users.list"
   printf '%s\n' ADMIN > "$GS_STATE_DIR/roles.list"
   : > "$GS_STATE_DIR/workspaces.list"
@@ -456,7 +567,7 @@ reset_state() {
     seed_db_secret "$n" "$DB_PW_B64"
   done
   clear_logs
-  unset GS_OFF GS_NEG200 GS_PREFLIGHT_FAIL GS_DELETE_FAIL GS_USERS_500 GS_USERS_EMPTY GS_USERS_FAIL_ON GS_USERS_EMPTY_ON GS_ROLES_EMPTY_ON GS_WS_NONEMPTY GS_WS_DELETE_404 GS_WS_EMPTY_FORM GS_WS_VERIFY_BAD GS_DS_NONEMPTY GS_403_BODY GS_LIST_AVAILABLE_FAIL KUBECTL_NO_NS KUBECTL_APPLY_FAIL 2>/dev/null || true
+  unset GS_OFF GS_NEG200 GS_PREFLIGHT_FAIL GS_DELETE_FAIL GS_USERS_500 GS_USERS_EMPTY GS_USERS_FAIL_ON GS_USERS_EMPTY_ON GS_ROLES_EMPTY_ON GS_WS_NONEMPTY GS_WS_DELETE_404 GS_WS_EMPTY_FORM GS_WS_VERIFY_BAD GS_DS_NONEMPTY GS_DS_BAD_PARAM GS_403_BODY GS_LIST_AVAILABLE_FAIL GS_LIST_AVAILABLE_MISSING_NATIVE GS_STYLE_POLYGON_MISSING GS_STYLE_GENERIC_MISSING GS_WFS_EXCEPTION GS_WMS_FAIL GS_DEFAULT_STYLE KUBECTL_NO_NS KUBECTL_APPLY_FAIL 2>/dev/null || true
 }
 
 run_script() { run_script_in "$WORK" "$@"; }
@@ -1046,8 +1157,8 @@ rc="$(run_script --uninstall --url "$URL" --ns "$NS")"
 check "DS Uninstall Exit 0"           "0" "$rc"
 check "DS Uninstall ohne recurse"     "0" "$(grep -c 'recurse' "$CURL_LOG" || true)"
 check "DS Uninstall keine Datastores" "0" "$(find "$GS_STATE_DIR/ds" -name '*.json' -type f 2>/dev/null | awk 'END{print NR}')"
-ds_line="$(grep -n -- '-X DELETE' "$CURL_LOG" | grep 'datastores/' | head -1 | cut -d: -f1)"
-ws_line="$(grep -n -- '-X DELETE' "$CURL_LOG" | grep 'workspaces/' | grep -v 'datastores/' | head -1 | cut -d: -f1)"
+ds_line="$(grep -n -- '-X DELETE' "$CURL_LOG" | grep 'datastores/[^/]*$' | head -1 | cut -d: -f1)"
+ws_line="$(grep -n -- '-X DELETE' "$CURL_LOG" | grep 'rest/workspaces/[^/]*$' | head -1 | cut -d: -f1)"
 check "DS Uninstall Datastores vor Workspaces" "yes" "$([ -n "$ds_line" ] && [ -n "$ws_line" ] && [ "$ds_line" -lt "$ws_line" ] && echo yes || echo no)"
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1080,5 +1191,129 @@ run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
 check "DS kein DB-Passwort in curl-Args"    "0" "$(grep -c "$DB_PW" "$CURL_LOG" || true)"
 check "DS kein DB-Passwort in kubectl-Args" "0" "$(grep -c "$DB_PW" "$KUBECTL_LOG" || true)"
 check "DS kein DB-Passwort in jq-Args"      "0" "$(grep -c "$DB_PW" "$JQ_LOG" || true)"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (52) R3: zwei Läufe unterschiedlichen Modus → zwei How-To-Dateien (Modus im Namen)
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+rm -f "$WORK"/p2d2-geoserver-config_v1_*.howto.md
+run_script --dry-run --url "$URL" --ns "$NS" >/dev/null 2>&1
+run_script --dry-run --uninstall --url "$URL" --ns "$NS" >/dev/null 2>&1
+check "R3 zwei How-To-Dateien" "2" "$(find "$WORK" -maxdepth 1 -name 'p2d2-geoserver-config_v1_*.howto.md' -type f 2>/dev/null | awk 'END{print NR}')"
+check "R3 install-dry-run im Namen" "yes" "$(find "$WORK" -maxdepth 1 -name 'p2d2-geoserver-config_v1_install-dry-run_*.howto.md' -type f 2>/dev/null | grep -q . && echo yes || echo no)"
+check "R3 uninstall-dry-run im Namen" "yes" "$(find "$WORK" -maxdepth 1 -name 'p2d2-geoserver-config_v1_uninstall-dry-run_*.howto.md' -type f 2>/dev/null | grep -q . && echo yes || echo no)"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (53) R7: WMS-Dienstprüfung hart (503 → Exit 1)
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+export GS_WMS_FAIL=1
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "R7 WMS 503 Exit 1"             "1" "$rc"
+check "R7 WMS GetCapabilities Meldung" "yes" "$(grep -q 'WMS GetCapabilities' "$T/err.log" && echo yes || echo no)"
+unset GS_WMS_FAIL
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (54) R4: abweichender Datastore-Parameter nennt erwartet/vorhanden
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+export GS_DS_BAD_PARAM=1
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "R4 DS-Bad-Param Exit 1"       "1" "$rc"
+check "R4 DS-Diagnose user"          "yes" "$(grep -q 'user(erwartet P2D2-MAIN, vorhanden WRONG)' "$T/err.log" && echo yes || echo no)"
+unset GS_DS_BAD_PARAM
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (55) D: FeatureTypes Erstlauf (25 Stück, Umlaut-Titel, Default-Styles)
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "D Erstlauf Exit 0"                "0" "$rc"
+check "D Erstlauf 25 FeatureTypes"       "25" "$(find "$GS_STATE_DIR/ft" -name '*.json' -type f 2>/dev/null | awk 'END{print NR}')"
+check "D graeber Titel Umlaut"           "Gräber (main)" "$(jq -r '.featureType.title' "$GS_STATE_DIR/ft/main/main_pg/graeber.json" 2>/dev/null)"
+check "D graeber Default-Style generic"  "generic" "$(cat "$GS_STATE_DIR/layers/main/graeber.style" 2>/dev/null)"
+check "D geo-containers Style polygon"   "polygon" "$(cat "$GS_STATE_DIR/layers/main/geo-containers.style" 2>/dev/null)"
+check "D Erstlauf 25 Layer-PUT"          "25" "$(grep 'layers/' "$CURL_BODY_LOG" | grep -c 'METHOD=PUT')"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (56) D: Zweitlauf ohne Abweichung → kein POST/PUT auf FeatureTypes/Layer
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+clear_logs
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "D Zweitlauf Exit 0"             "0" "$rc"
+check "D Zweitlauf kein FeatureType POST" "0" "$(grep 'featuretypes' "$CURL_BODY_LOG" | grep -c 'METHOD=POST')"
+check "D Zweitlauf kein FeatureType PUT"  "0" "$(grep 'featuretypes' "$CURL_BODY_LOG" | grep -c 'METHOD=PUT')"
+check "D Zweitlauf kein Layer PUT"       "0" "$(grep 'layers/' "$CURL_BODY_LOG" | grep -c 'METHOD=PUT')"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (57) D: abweichender Titel → PUT (nur bei Abweichung)
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+jq '.featureType.title = "X-Titel"' "$GS_STATE_DIR/ft/main/main_pg/graeber.json" > "$GS_STATE_DIR/ft/main/main_pg/graeber.json.tmp" 2>/dev/null
+mv "$GS_STATE_DIR/ft/main/main_pg/graeber.json.tmp" "$GS_STATE_DIR/ft/main/main_pg/graeber.json"
+clear_logs
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "D Titel-Abweichung Exit 0"           "0" "$rc"
+check "D Titel-Abweichung 1 PUT auf graeber" "1" "$(grep -c 'featuretypes/graeber METHOD=PUT' "$CURL_BODY_LOG")"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (58) D: fehlender Native-Name → Exit 1, kein POST für den betroffenen FeatureType
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+export GS_LIST_AVAILABLE_MISSING_NATIVE=1
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "D fehlender Native Exit 1"     "1" "$rc"
+check "D fehlender Native kein graeber" "0" "$(test -f "$GS_STATE_DIR/ft/main/main_pg/graeber.json" && echo 1 || echo 0)"
+check "D fehlender Native 20 übrige"   "20" "$(find "$GS_STATE_DIR/ft" -name '*.json' -type f 2>/dev/null | awk 'END{print NR}')"
+unset GS_LIST_AVAILABLE_MISSING_NATIVE
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (59) D: fehlender Stil → Exit 2, keine Mutation
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+export GS_STYLE_POLYGON_MISSING=1
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "D fehlender Stil Exit 2"          "2" "$rc"
+check "D fehlender Stil keine FeatureTypes" "0" "$(find "$GS_STATE_DIR/ft" -name '*.json' -type f 2>/dev/null | awk 'END{print NR}')"
+check "D fehlender Stil keine Secrets"    "0" "$(count_secrets)"
+unset GS_STYLE_POLYGON_MISSING
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (60) D: Dry-run → kein Schreibaufruf (FeatureTypes)
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+rc="$(run_script --dry-run --url "$URL" --ns "$NS")"
+check "D Dry-Run Exit 0"                  "0" "$rc"
+check "D Dry-Run kein FeatureType POST/PUT" "0" "$(grep 'featuretypes' "$CURL_BODY_LOG" | grep -c 'METHOD=POST\|METHOD=PUT')"
+check "D Dry-Run keine FeatureTypes"       "0" "$(find "$GS_STATE_DIR/ft" -name '*.json' -type f 2>/dev/null | awk 'END{print NR}')"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (61) D: Uninstall Reihenfolge Layer → FeatureType → Datastore, ohne recurse
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+clear_logs
+rc="$(run_script --uninstall --url "$URL" --ns "$NS")"
+check "D Uninstall Exit 0"          "0" "$rc"
+check "D Uninstall ohne recurse"    "0" "$(grep -c 'recurse' "$CURL_LOG" || true)"
+check "D Uninstall keine FeatureTypes" "0" "$(find "$GS_STATE_DIR/ft" -name '*.json' -type f 2>/dev/null | awk 'END{print NR}')"
+layer_line="$(grep -n -- '-X DELETE' "$CURL_LOG" | grep 'layers/' | head -1 | cut -d: -f1)"
+ft_line="$(grep -n -- '-X DELETE' "$CURL_LOG" | grep 'featuretypes/' | head -1 | cut -d: -f1)"
+ds_line="$(grep -n -- '-X DELETE' "$CURL_LOG" | grep 'datastores/[^/]*$' | head -1 | cut -d: -f1)"
+check "D Uninstall Layer vor FeatureType" "yes" "$([ -n "$layer_line" ] && [ -n "$ft_line" ] && [ "$layer_line" -lt "$ft_line" ] && echo yes || echo no)"
+check "D Uninstall FeatureType vor Datastore" "yes" "$([ -n "$ft_line" ] && [ -n "$ds_line" ] && [ "$ft_line" -lt "$ds_line" ] && echo yes || echo no)"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (62) D: WFS-Antwort mit ExceptionReport → Verifikationsfehler Exit 1
+# ═══════════════════════════════════════════════════════════════════════════
+reset_state
+export GS_WFS_EXCEPTION=1
+rc="$(run_script --url "$URL" --ns "$NS")"
+check "D WFS-Exception Exit 1"        "1" "$rc"
+check "D WFS-Exception Meldung"       "yes" "$(grep -q 'DescribeFeatureType' "$T/err.log" && echo yes || echo no)"
+unset GS_WFS_EXCEPTION
 
 rm -rf "$T"
