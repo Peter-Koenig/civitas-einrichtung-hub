@@ -320,19 +320,19 @@ _ft_title() {
 }
 
 _ft_body() {
-  local name="$1" native="$2" ws="$3" title="$4" cache="$5" out="$6"
+  local name="$1" native="$2" ws="$3" title="$4" abstract="$5" kw="$6" cache="$7" out="$8"
   if [[ "$cache" == "false" ]]; then
-    jq -n --arg ws "$ws" --arg name "$name" --arg native "$native" --arg title "$title" \
-      '{featureType:{name:$name,nativeName:$native,namespace:{name:$ws},title:$title,
-        keywords:{string:["features",$native]},srs:"EPSG:4326",projectionPolicy:"FORCE_DECLARED",
+    jq -n --arg ws "$ws" --arg name "$name" --arg native "$native" --arg title "$title" --arg abstract "$abstract" --argjson kw "$kw" \
+      '{featureType:{name:$name,nativeName:$native,namespace:{name:$ws},title:$title,abstract:$abstract,
+        keywords:{string:$kw},srs:"EPSG:4326",projectionPolicy:"FORCE_DECLARED",
         enabled:true,advertised:true,
         nativeBoundingBox:{minx:-10,maxx:40,miny:35,maxy:71,crs:"EPSG:4326"},
         latLonBoundingBox:{minx:-10,maxx:40,miny:35,maxy:71,crs:"EPSG:4326"},
         metadata:{entry:{"@key":"cachingEnabled","$":"false"}}}}' > "$out"
   else
-    jq -n --arg ws "$ws" --arg name "$name" --arg native "$native" --arg title "$title" \
-      '{featureType:{name:$name,nativeName:$native,namespace:{name:$ws},title:$title,
-        keywords:{string:["features",$native]},srs:"EPSG:4326",projectionPolicy:"FORCE_DECLARED",
+    jq -n --arg ws "$ws" --arg name "$name" --arg native "$native" --arg title "$title" --arg abstract "$abstract" --argjson kw "$kw" \
+      '{featureType:{name:$name,nativeName:$native,namespace:{name:$ws},title:$title,abstract:$abstract,
+        keywords:{string:$kw},srs:"EPSG:4326",projectionPolicy:"FORCE_DECLARED",
         enabled:true,advertised:true,
         nativeBoundingBox:{minx:-10,maxx:40,miny:35,maxy:71,crs:"EPSG:4326"},
         latLonBoundingBox:{minx:-10,maxx:40,miny:35,maxy:71,crs:"EPSG:4326"}}}' > "$out"
@@ -340,11 +340,15 @@ _ft_body() {
 }
 
 _ft_cmp() {
-  local f="$1" ws="$2" name="$3" native="$4" title="$5" cache="$6" dev=0 v
+  local f="$1" ws="$2" name="$3" native="$4" title="$5" abstract="$6" kw="$7" cache="$8" dev=0 v
   v="$(jq -r '.featureType.nativeName // empty' "$f" 2>/dev/null)"
   [[ "$v" == "$native" ]] || { log "  FeatureType $ws/$name: nativeName weicht ab (erwartet $native, vorhanden $v) — wird per PUT angepasst"; dev=1; }
   v="$(jq -r '.featureType.title // empty' "$f" 2>/dev/null)"
   [[ "$v" == "$title" ]] || { log "  FeatureType $ws/$name: title weicht ab (erwartet $title, vorhanden $v) — wird per PUT angepasst"; dev=1; }
+  v="$(jq -r '.featureType.abstract // empty' "$f" 2>/dev/null)"
+  [[ "$v" == "$abstract" ]] || { log "  FeatureType $ws/$name: abstract weicht ab — wird per PUT angepasst"; dev=1; }
+  jq -e --argjson kw "$kw" '(.featureType.keywords.string // []) == $kw' "$f" >/dev/null 2>&1 \
+    || { log "  FeatureType $ws/$name: keywords weicht ab — wird per PUT angepasst"; dev=1; }
   v="$(jq -r '.featureType.srs // empty' "$f" 2>/dev/null)"
   [[ "$v" == "EPSG:4326" ]] || { log "  FeatureType $ws/$name: srs weicht ab (erwartet EPSG:4326, vorhanden $v) — wird per PUT angepasst"; dev=1; }
   v="$(jq -r '.featureType.projectionPolicy // empty' "$f" 2>/dev/null)"
@@ -401,7 +405,7 @@ _ensure_default_style() {
 
 install_featuretypes() {
   local -a existing avail
-  local key ws ds schema uservar secret name native tpl cache style title code rc=0 f tmp dsp
+  local key ws ds schema uservar secret name native tpl cache style title abstract kw code rc=0 f tmp dsp
   log "== FeatureTypes =="
   while IFS='|' read -r key ws ds schema uservar secret; do
     [[ -n "$key" ]] || continue
@@ -436,7 +440,9 @@ install_featuretypes() {
     mapfile -t existing < "$tmp"; rm -f "$tmp"
     while IFS='|' read -r name native tpl cache style; do
       [[ -n "$name" ]] || continue
-      title="$(_ft_title "$tpl" "$ws")"
+      title="$(_resolve_tpl "$(_meta ".layers[\"$name\"].title // empty")" "$ws" "")"
+      abstract="$(_meta ".layers[\"$name\"].abstract // empty")"
+      kw="$(printf '%s' "$_GS_METADATA" | jq -c ".layers[\"$name\"].keywords // []" 2>/dev/null)"
       if ! _has "$native" "${avail[@]}" && ! _has "$name" "${existing[@]}"; then
         log_error "FeatureType $ws/$name: Native-Name $native nicht in list=available"
         rc=1
@@ -448,7 +454,7 @@ install_featuretypes() {
           howto_step "POST workspaces/$ws/datastores/$ds/featuretypes" "201" "-" "FeatureType $ws/$name (native=$native)"
         else
           f="$(mktemp)"; chmod 600 "$f"
-          _ft_body "$name" "$native" "$ws" "$title" "$cache" "$f"
+          _ft_body "$name" "$native" "$ws" "$title" "$abstract" "$kw" "$cache" "$f"
           _gs_write_body POST "workspaces/${ws}/datastores/${ds}/featuretypes" "$f" 'application/json'
           code="$_GS_CODE"; rm -f "$f"
           howto_step "POST workspaces/$ws/datastores/$ds/featuretypes" "201" "$code" "FeatureType $ws/$name"
@@ -464,13 +470,13 @@ install_featuretypes() {
         else
           _gs_get "workspaces/${ws}/datastores/${ds}/featuretypes/${name}.json"
           if [[ "$_GS_CODE" == "200" ]]; then
-            if _ft_cmp "$_GS_BODY_FILE" "$ws" "$name" "$native" "$title" "$cache"; then
+            if _ft_cmp "$_GS_BODY_FILE" "$ws" "$name" "$native" "$title" "$abstract" "$kw" "$cache"; then
               rm -f "$_GS_BODY_FILE"
               log "  $ws/$name vorhanden, unverändert"
             else
               rm -f "$_GS_BODY_FILE"
               f="$(mktemp)"; chmod 600 "$f"
-              _ft_body "$name" "$native" "$ws" "$title" "$cache" "$f"
+              _ft_body "$name" "$native" "$ws" "$title" "$abstract" "$kw" "$cache" "$f"
               _gs_write_body PUT "workspaces/${ws}/datastores/${ds}/featuretypes/${name}" "$f" 'application/json'
               code="$_GS_CODE"; rm -f "$f"
               howto_step "PUT workspaces/$ws/datastores/$ds/featuretypes/$name" "200" "$code" "FeatureType $ws/$name"
@@ -483,31 +489,36 @@ install_featuretypes() {
         fi
       fi
       _ensure_default_style "$ws" "$name" "$style" || rc=1
+      _ensure_layer_attribution "$ws" "$name" || rc=1
     done <<< "$FT_TABLE"
   done <<< "$DS_TABLE"
   return "$rc"
 }
 
 verify_featuretypes() {
-  local key ws ds schema uservar secret name native tpl cache style title code rc=0
+  local key ws ds schema uservar secret name native tpl cache style title abstract kw code rc=0
   log "== Verifikation FeatureTypes =="
   while IFS='|' read -r key ws ds schema uservar secret; do
     [[ -n "$key" ]] || continue
     while IFS='|' read -r name native tpl cache style; do
       [[ -n "$name" ]] || continue
-      title="$(_ft_title "$tpl" "$ws")"
+      title="$(_resolve_tpl "$(_meta ".layers[\"$name\"].title // empty")" "$ws" "")"
+      abstract="$(_meta ".layers[\"$name\"].abstract // empty")"
+      kw="$(printf '%s' "$_GS_METADATA" | jq -c ".layers[\"$name\"].keywords // []" 2>/dev/null)"
       _gs_get "workspaces/${ws}/datastores/${ds}/featuretypes/${name}.json"
       code="$_GS_CODE"
       if [[ "$code" == "200" ]]; then
-        local en adv nn tt ss
+        local en adv nn tt ss ab
         en="$(jq -r '.featureType.enabled // empty' "$_GS_BODY_FILE" 2>/dev/null)"
         adv="$(jq -r '.featureType.advertised // empty' "$_GS_BODY_FILE" 2>/dev/null)"
         nn="$(jq -r '.featureType.nativeName // empty' "$_GS_BODY_FILE" 2>/dev/null)"
         tt="$(jq -r '.featureType.title // empty' "$_GS_BODY_FILE" 2>/dev/null)"
         ss="$(jq -r '.featureType.srs // empty' "$_GS_BODY_FILE" 2>/dev/null)"
+        ab="$(jq -r '.featureType.abstract // empty' "$_GS_BODY_FILE" 2>/dev/null)"
+        kw_ok="no"; jq -e --argjson kw "$kw" '(.featureType.keywords.string // []) == $kw' "$_GS_BODY_FILE" >/dev/null 2>&1 && kw_ok="yes"
         rm -f "$_GS_BODY_FILE"
         howto_step "GET workspaces/$ws/datastores/$ds/featuretypes/$name.json" "200" "200" "verifizieren $ws/$name"
-        if [[ "$en" == "true" && "$adv" == "true" && "$nn" == "$native" && "$tt" == "$title" && "$ss" == "EPSG:4326" ]]; then
+        if [[ "$en" == "true" && "$adv" == "true" && "$nn" == "$native" && "$tt" == "$title" && "$ss" == "EPSG:4326" && "$ab" == "$abstract" && "$kw_ok" == "yes" ]]; then
           log_ok "  $ws/$name: FeatureType ok"
         else
           log_error "Verifikation $ws/$name: FeatureType weicht ab"; rc=1

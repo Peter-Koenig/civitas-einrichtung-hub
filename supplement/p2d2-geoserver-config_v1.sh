@@ -100,7 +100,7 @@ GS_CONFIG_LIB_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/geoserver-config" 
   printf '%s\n' 'FEHLER: GeoServer-Konfigurationsdateien fehlen' >&2
   exit 2
 }
-for part in core catalog security; do
+for part in core catalog security settings; do
   [[ -r "$GS_CONFIG_LIB_DIR/$part.sh" ]] || {
     printf "FEHLER: Konfigurationsdatei fehlt: %s\n" "$part.sh" >&2
     exit 2
@@ -112,6 +112,12 @@ source "$GS_CONFIG_LIB_DIR/core.sh" || exit 2
 source "$GS_CONFIG_LIB_DIR/catalog.sh" || exit 2
 # shellcheck source=./geoserver-config/security.sh
 source "$GS_CONFIG_LIB_DIR/security.sh" || exit 2
+# shellcheck source=./geoserver-config/settings.sh
+source "$GS_CONFIG_LIB_DIR/settings.sh" || exit 2
+
+# Metadaten-Datei (YAML-Block) liegt neben dem Einstieg im supplement/-Ordner.
+GS_METADATA_FILE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/geoserver-metadata.md"
+export GS_METADATA_FILE
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -132,7 +138,7 @@ source "$GS_CONFIG_LIB_DIR/security.sh" || exit 2
 # Argumente
 # ═══════════════════════════════════════════════════════════════════════════
 usage() {
-  printf 'Usage: bash ./%s [--dry-run] [--uninstall] [--url BASE] [--ns NAMESPACE] [--help|-h]\n' "$SCRIPT_NAME" >&2
+  printf 'Usage: bash ./%s [--dry-run] [--uninstall] [--allow-incomplete-metadata] [--url BASE] [--ns NAMESPACE] [--help|-h]\n' "$SCRIPT_NAME" >&2
   exit 2
 }
 
@@ -145,9 +151,14 @@ Usage: bash ./${SCRIPT_NAME} [--dry-run] [--uninstall] [--url BASE] [--ns NAMESP
 Optionen:
   --dry-run      Nur planen: keine Änderung an GeoServer oder Kubernetes.
   --uninstall    Genau die angelegten Benutzer/Rollen/Secrets/Workspaces/Datastores/FeatureTypes wieder entfernen.
+  --allow-incomplete-metadata  Unvollständige Metadaten (TODO/leer) nur als WARN akzeptieren (nur Dev).
   --url BASE     GeoServer-Basis-URL (z. B. https://geoportal.<domain>/geoserver).
   --ns NAMESPACE Kubernetes-Namespace (Standard: ADDON_NS bzw. cc-prd-geodata-stack).
   --help, -h     Diese Hilfe.
+
+Die Dienst-/Layer-Metadaten (Titel, Abstract, Kontakt, Attribution, Genauigkeit)
+werden aus supplement/geoserver-metadata.md gelesen und über
+geoserver-config/settings.sh angewendet.
 
 Umgebungsvariablen:
   GS_ADMIN_USER, GS_ADMIN_PW   Admin-Zugang für GeoServer-REST. Nur GEMEINSAM setzen;
@@ -161,6 +172,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) DRY_RUN=1; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
+    --allow-incomplete-metadata) _GS_ALLOW_INCOMPLETE=1; shift ;;
     --url)
       [[ $# -ge 2 ]] || usage
       GS_BASE="${2%/}"; shift 2 ;;
@@ -423,6 +435,10 @@ do_install() {
   # Workspaces anlegen (Schritt 2, nach Benutzern/Rollen/Zuordnungen)
   install_workspaces || return 1
 
+  # Workspace-Einstellungen + Dienst-Metadaten (nach Workspaces, vor Datastores)
+  install_workspace_settings || return 1
+  install_service_metadata || return 1
+
   # Datastores anlegen (Schritt 3)
   install_datastores || return 1
 
@@ -441,6 +457,8 @@ do_install() {
   else
     verify_install || return 1
     verify_workspaces || return 1
+    verify_workspace_settings || return 1
+    verify_service_metadata || return 1
     verify_datastores || return 1
     verify_featuretypes || return 1
     verify_attr_mapping || return 1
@@ -749,6 +767,7 @@ do_uninstall() {
 main() {
   warn_legacy_vars
   preflight
+  load_metadata || exit 2
   _load_inventory || exit 2
 
   # How-To-Datei vorbereiten (R3: Modus im Namen, damit Install/Uninstall nicht kollidieren)
