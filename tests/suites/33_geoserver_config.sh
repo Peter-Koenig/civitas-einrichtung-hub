@@ -371,7 +371,9 @@ case "$url" in
     name="${url##*/layers/}"; name="${name%.json}"
     if [ -f "$S/layers/$ws/$name.style" ]; then
       s="$(cat "$S/layers/$ws/$name.style")"
-      body="{\"layer\":{\"name\":\"$name\",\"defaultStyle\":{\"name\":\"$s\"}}}"
+      attr="null"
+      [ -f "$S/layers/$ws/$name.attr.json" ] && attr="$(cat "$S/layers/$ws/$name.attr.json")"
+      body="$(jq -nc --arg n "$name" --arg s "$s" --argjson attr "$attr" '{layer:{name:$n,defaultStyle:{name:$s},attribution:$attr}}' 2>/dev/null)"
       code=200
     else code=404; fi ;;
   *"/rest/workspaces/"*"/layers/"*)
@@ -382,6 +384,9 @@ case "$url" in
         if [ -n "$body_file" ] && [ -f "$body_file" ] && [ -f "$S/layers/$ws/$name.style" ]; then
           s="$(jq -r '.layer.defaultStyle.name // empty' "$body_file" 2>/dev/null)"
           [ -n "$s" ] && printf '%s' "$s" > "$S/layers/$ws/$name.style"
+          if jq -e '.layer.attribution != null' "$body_file" >/dev/null 2>&1; then
+            jq -c '.layer.attribution' "$body_file" > "$S/layers/$ws/$name.attr.json"
+          fi
           code=200
         else code=404; fi ;;
       DELETE)
@@ -450,6 +455,46 @@ case "$url" in
       [ "${GS_WS_VERIFY_BAD:-0}" = "1" ] && u="${u}BAD"
       body="$(jq -nc --arg p "$ws" --arg u "$u" '{namespace:{prefix:$p,uri:$u}}')"
     else code=404; fi ;;
+  *"/rest/workspaces/"*"/settings.json")
+    ws="${url#*/rest/workspaces/}"; ws="${ws%%/*}"
+    if [ -f "$S/settings/$ws.json" ]; then body="$(cat "$S/settings/$ws.json")"
+    else body='{"settings":{"contact":{"id":"contact"},"charset":"UTF-8","numDecimals":4,"verbose":false,"verboseExceptions":false,"localWorkspaceIncludesPrefix":false,"showCreatedTimeColumnsInAdminList":false,"showModifiedTimeColumnsInAdminList":false}}'; fi
+    code=200 ;;
+  *"/rest/workspaces/"*"/settings")
+    ws="${url#*/rest/workspaces/}"; ws="${ws%%/*}"
+    case "$method" in
+      PUT)
+        if [ -n "$body_file" ] && [ -f "$body_file" ]; then
+          mkdir -p "$S/settings"
+          if [ -n "${GS_SETTINGS_PUT_DROPS_KEY:-}" ]; then
+            jq --arg k "$GS_SETTINGS_PUT_DROPS_KEY" '.settings |= del(.[$k])' "$body_file" > "$S/settings/$ws.json" 2>/dev/null
+          else
+            cp "$body_file" "$S/settings/$ws.json"
+          fi
+          code=200
+        else code=500; fi ;;
+      *) code=500 ;;
+    esac ;;
+  *"/rest/services/"*"/workspaces/"*"/settings.json")
+    svc="${url#*/rest/services/}"; svc="${svc%%/*}"
+    ws="${url#*/workspaces/}"; ws="${ws%%/*}"
+    if [ -f "$S/service/$ws/$svc.json" ]; then body="$(cat "$S/service/$ws/$svc.json")"; code=200
+    else code=404; fi ;;
+  *"/rest/services/"*"/workspaces/"*"/settings")
+    svc="${url#*/rest/services/}"; svc="${svc%%/*}"
+    ws="${url#*/workspaces/}"; ws="${ws%%/*}"
+    case "$method" in
+      PUT)
+        if [ "${GS_SERVICE_PUT_405:-0}" = "1" ] && [ ! -f "$S/service/$ws/$svc.json" ]; then code=405
+        elif [ -n "$body_file" ] && [ -f "$body_file" ]; then
+          mkdir -p "$S/service/$ws"; cp "$body_file" "$S/service/$ws/$svc.json"; code=200
+        else code=500; fi ;;
+      POST)
+        if [ -n "$body_file" ] && [ -f "$body_file" ]; then
+          mkdir -p "$S/service/$ws"; cp "$body_file" "$S/service/$ws/$svc.json"; code=201
+        else code=500; fi ;;
+      *) code=500 ;;
+    esac ;;
   *"/rest/workspaces/"*".json")
     ws="${url##*/rest/workspaces/}"; ws="${ws%.json}"
     has_ws "$ws" && body="{\"workspace\":{\"name\":\"$ws\"}}" || code=404 ;;
@@ -493,6 +538,32 @@ case "$url" in
     [ "${GS_STYLE_POLYGON_MISSING:-0}" = "1" ] && code=404 || code=200 ;;
   *"/styles/generic.json")
     [ "${GS_STYLE_GENERIC_MISSING:-0}" = "1" ] && code=404 || code=200 ;;
+  *"GetFeature"*"outputFormat=application/json"*)
+    u="${url#*/geoserver/}"; ws="${u%%/*}"
+    dec=4
+    [ -f "$S/settings/$ws.json" ] && dec="$(jq -r '.settings.numDecimals // 4' "$S/settings/$ws.json" 2>/dev/null)"
+    case "$dec" in ''|null) dec=4 ;; esac
+    ftdec="$(find "$S/ft/$ws" -name 'geo-containers.json' -exec jq -r '.featureType.numDecimals // 0' {} \; 2>/dev/null | head -1)"
+    if [ -n "$ftdec" ] && [ "$ftdec" -gt 0 ] 2>/dev/null; then dec="$ftdec"; fi
+    if [ "${GS_IGNORE_SETTINGS:-0}" = "1" ]; then dec=4; fi
+    x="$(LC_NUMERIC=C printf '%.*f' "$dec" 6.98874485)"
+    y="$(LC_NUMERIC=C printf '%.*f' "$dec" 50.92184755)"
+    body="{\"type\":\"FeatureCollection\",\"features\":[{\"type\":\"Feature\",\"geometry\":{\"type\":\"Point\",\"coordinates\":[$x,$y]},\"properties\":{}}]}"
+    code=200 ;;
+  *"GetCapabilities"*)
+    if [ "${GS_WMS_FAIL:-0}" = "1" ]; then
+      code=503
+    else
+      u="${url#*/geoserver/}"; ws="${u%%/*}"
+      svc="${u#*/}"; svc="${svc%%\?*}"
+      title=""
+      [ -f "$S/service/$ws/$svc.json" ] && title="$(jq -r ".$svc.title // empty" "$S/service/$ws/$svc.json" 2>/dev/null)"
+      email=""
+      [ -f "$S/settings/$ws.json" ] && email="$(jq -r '.settings.contact.contactEmail // empty' "$S/settings/$ws.json" 2>/dev/null)"
+      if [ "${GS_CAPS_NO_TITLE:-0}" = "1" ]; then title=""; fi
+      body="<Capabilities><Service><Title>${title}</Title><ContactInformation><ElectronicMailAddress>${email}</ElectronicMailAddress></ContactInformation></Service></Capabilities>"
+      code=200
+    fi ;;
   *"DescribeFeatureType"*)
     if [ "${GS_WFS_EXCEPTION:-0}" = "1" ]; then body='<ExceptionReport><Exception>error</Exception></ExceptionReport>'
     else body='<xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema"/>'; fi
@@ -611,15 +682,40 @@ STUB
 chmod +x "$STUBS/kubectl"
 
 # ── jq-Wrapper (zeichnet Argumente auf, delegiert an das echte jq) ─────────────────
+# Nur bei JQ_LOG_ARGS=1 aktiv (Szenario 51 prüft den Argumentverlauf).
 cat > "$STUBS/jq" <<'STUB'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >> "${JQ_LOG:?}"
+if [ "${JQ_LOG_ARGS:-0}" = "1" ]; then
+  printf '%s\n' "$*" >> "${JQ_LOG:?}"
+fi
 exec /usr/bin/jq "$@"
 STUB
 chmod +x "$STUBS/jq"
 
+# ── yq-Stub: emuliert mikefarah `yq -o=json <filter>` (Ausgabe ist JSON) ───────
+# -o=json ist hier ein No-op; der Filter wird an das echte yq (kislyuk/PyYAML)
+# delegiert, das YAML von stdin nach JSON wandelt.
+cat > "$STUBS/yq" <<'STUB'
+#!/usr/bin/env bash
+set -u
+args=()
+for a in "$@"; do
+  case "$a" in
+    -o=json|-ojson|--output-format=json) continue ;;
+    *) args+=("$a") ;;
+  esac
+done
+exec /usr/bin/yq "${args[@]:-.}"
+STUB
+chmod +x "$STUBS/yq"
+
 # ── Helfer ─────────────────────────────────────────────────────────────────────
 clear_logs() { : > "$CURL_LOG"; : > "$CURL_BODY_LOG"; : > "$CURL_STDIN_LOG"; : > "$KUBECTL_LOG"; : > "$JQ_LOG"; }
+
+# Stub-Schalter zurücksetzen (reset_state und restore_state).
+unset_stub_switches() {
+  unset GS_OFF GS_NEG200 GS_PREFLIGHT_FAIL GS_DELETE_FAIL GS_LAYER_DELETE_FAIL GS_USERS_500 GS_USERS_EMPTY GS_USERS_FAIL_ON GS_USERS_EMPTY_ON GS_ROLES_EMPTY_ON GS_WS_NONEMPTY GS_WS_DELETE_404 GS_WS_EMPTY_FORM GS_WS_VERIFY_BAD GS_DS_NONEMPTY GS_DS_BAD_PARAM GS_403_BODY GS_LIST_AVAILABLE_FAIL GS_LIST_AVAILABLE_FAIL_ON GS_LIST_AVAILABLE_MISSING_NATIVE GS_FT_LIST_FAIL GS_STYLE_POLYGON_MISSING GS_STYLE_GENERIC_MISSING GS_WFS_EXCEPTION GS_WMS_FAIL GS_DEFAULT_STYLE GS_ACL_GET_FAIL GS_ACL_POST_FAIL GS_ACL_DELETE_FAIL GS_SETTINGS_PUT_DROPS_KEY GS_SERVICE_PUT_405 GS_CAPS_NO_TITLE GS_IGNORE_SETTINGS KUBECTL_NO_NS KUBECTL_APPLY_FAIL JQ_LOG_ARGS 2>/dev/null || true
+}
 
 reset_state() {
   rm -rf "$GS_STATE_DIR" "$KUBE_STATE_DIR"
@@ -632,15 +728,21 @@ reset_state() {
     seed_db_secret "$n" "$DB_PW_B64"
   done
   clear_logs
-  unset GS_OFF GS_NEG200 GS_PREFLIGHT_FAIL GS_DELETE_FAIL GS_LAYER_DELETE_FAIL GS_USERS_500 GS_USERS_EMPTY GS_USERS_FAIL_ON GS_USERS_EMPTY_ON GS_ROLES_EMPTY_ON GS_WS_NONEMPTY GS_WS_DELETE_404 GS_WS_EMPTY_FORM GS_WS_VERIFY_BAD GS_DS_NONEMPTY GS_DS_BAD_PARAM GS_403_BODY GS_LIST_AVAILABLE_FAIL GS_LIST_AVAILABLE_FAIL_ON GS_LIST_AVAILABLE_MISSING_NATIVE GS_FT_LIST_FAIL GS_STYLE_POLYGON_MISSING GS_STYLE_GENERIC_MISSING GS_WFS_EXCEPTION GS_WMS_FAIL GS_DEFAULT_STYLE GS_ACL_GET_FAIL GS_ACL_POST_FAIL GS_ACL_DELETE_FAIL KUBECTL_NO_NS KUBECTL_APPLY_FAIL 2>/dev/null || true
+  unset_stub_switches
 }
 
 run_script() { run_script_in "$WORK" "$@"; }
 
 run_script_in() {
   local dir="$1"; shift
+  local t0 t1 rc dur
+  t0="${EPOCHREALTIME:-0}"
   ( cd "$dir" && bash "$SCRIPT" "$@" >"$T/out.log" 2>"$T/err.log" )
-  printf '%s' "$?"
+  rc="$?"
+  t1="${EPOCHREALTIME:-0}"
+  dur="$(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.3f", b-a}')"
+  printf '%s\t%s\n' "$dur" "$*" >> "${TIMING_LOG:-/dev/null}"
+  printf '%s' "$rc"
 }
 
 count_lines()  { awk 'END{print NR}' "$1" 2>/dev/null || printf '0'; }
@@ -663,15 +765,29 @@ seed_workspace() { # <ws> [uri]
   [ -n "${2:-}" ] && printf '%s' "$2" > "$GS_STATE_DIR/namespaces/$1.uri"
 }
 
+# ── Schnellpfad-Helfer (GEOSERVER_ONLY/GEOSERVER_SCENARIOS) ─────────────────
+want() { [ -z "${GEOSERVER_SCENARIOS:-}" ] || [[ " ${GEOSERVER_SCENARIOS} " == *" $1 "* ]]; }
+snapshot_state() { rm -rf "$T/snap"; mkdir -p "$T/snap"; cp -a "$GS_STATE_DIR" "$T/snap/gs"; cp -a "$KUBE_STATE_DIR" "$T/snap/kube"; }
+restore_state()  { rm -rf "$GS_STATE_DIR" "$KUBE_STATE_DIR"; cp -a "$T/snap/gs" "$GS_STATE_DIR"; cp -a "$T/snap/kube" "$KUBE_STATE_DIR"; clear_logs; unset_stub_switches; }
+ensure_snap_installed() { [ -d "$T/snap" ] || { reset_state; rc="$(run_script --url "$URL" --ns "$NS")"; check "Snapshot-Install Exit 0" "0" "$rc"; snapshot_state; }; }
+# Bundle-Kopie (Einstieg + geoserver-config/ + Metadaten) für Mutationstests (z. B. TODO).
+bundle_copy() { local d="$1"; mkdir -p "$d"; cp "$REPO/supplement/p2d2-geoserver-config_v1.sh" "$d/"; cp -r "$REPO/supplement/geoserver-config" "$d/"; cp "$REPO/supplement/geoserver-metadata.md" "$d/"; }
+run_bundle() { local d="$1"; shift; ( cd "$WORK" && bash "$d/p2d2-geoserver-config_v1.sh" "$@" >"$T/out.log" 2>"$T/err.log" ); printf '%s' "$?"; }
+
 NS="cc-prd-geodata-stack"
 URL="https://geo.example/geoserver"
 PASS_VALID="abcdefghijklmnop123456"
 PASS_VALID_B64="YWJjZGVmZ2hpamtsbW5vcDEyMzQ1Ng=="
 PASS_INVALID_B64="a3Vyeg=="   # base64("kurz")
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
+# Alte Szenarien 1–84 (Bestand). Nur eingehüllt, Inhalt unverändert.
+# ═══════════════════════════════════════════════════════════════════════════
+scenarios_legacy() {
+
+# ═══════════════════════════════════════════════════════════════════════════
 # (1) Erstlauf legt sechs Secrets + sechs Benutzer an
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 reset_state
 rc="$(run_script --url "$URL" --ns "$NS")"
 check "Erstlauf Exit 0"          "0" "$rc"
@@ -1253,12 +1369,13 @@ unset GS_LIST_AVAILABLE_FAIL_ON
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (51) Datastores: kein DB-Passwort in Argumentlisten von curl/kubectl/jq
-# ═══════════════════════════════════════════════════════════════════════════
 reset_state
+export JQ_LOG_ARGS=1
 run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
 check "DS kein DB-Passwort in curl-Args"    "0" "$(grep -c "$DB_PW" "$CURL_LOG" || true)"
 check "DS kein DB-Passwort in kubectl-Args" "0" "$(grep -c "$DB_PW" "$KUBECTL_LOG" || true)"
 check "DS kein DB-Passwort in jq-Args"      "0" "$(grep -c "$DB_PW" "$JQ_LOG" || true)"
+unset JQ_LOG_ARGS
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (52) R3: zwei Läufe unterschiedlichen Modus → zwei How-To-Dateien (Modus im Namen)
@@ -1301,7 +1418,8 @@ check "D Erstlauf 25 FeatureTypes"       "25" "$(find "$GS_STATE_DIR/ft" -name '
 check "D graeber Titel Umlaut"           "Gräber (main)" "$(jq -r '.featureType.title' "$GS_STATE_DIR/ft/main/main_pg/graeber.json" 2>/dev/null)"
 check "D graeber Default-Style generic"  "generic" "$(cat "$GS_STATE_DIR/layers/main/graeber.style" 2>/dev/null)"
 check "D geo-containers Style polygon"   "polygon" "$(cat "$GS_STATE_DIR/layers/main/geo-containers.style" 2>/dev/null)"
-check "D Erstlauf kein Layer-PUT"        "0" "$(grep 'layers/' "$CURL_BODY_LOG" | grep -c 'METHOD=PUT')"
+check "D Erstlauf kein Default-Style-PUT"  "0" "$(grep -c 'defaultStyle' "$CURL_BODY_LOG" || true)"
+check "D Erstlauf 5 Attribution-PUTs"       "5" "$(grep -c 'attribution' "$CURL_BODY_LOG" || true)"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (55a) D: abweichender Default-Style -> PUT-Reparatur
@@ -1310,7 +1428,7 @@ reset_state
 export GS_DEFAULT_STYLE=point
 rc="$(run_script --url "$URL" --ns "$NS")"
 check "D Style-Reparatur Exit 0"        "0" "$rc"
-check "D Style-Reparatur 25 Layer-PUT"  "25" "$(grep 'layers/' "$CURL_BODY_LOG" | grep -c 'METHOD=PUT')"
+check "D Style-Reparatur 25 Default-Style-PUT"  "25" "$(grep -c 'defaultStyle' "$CURL_BODY_LOG" || true)"
 unset GS_DEFAULT_STYLE
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1641,5 +1759,155 @@ check "B ACL Layer bleibt Rolle bleibt"     "yes" "$(grep -q 'P2D2_IMPORT_ROLE' 
 check "B ACL Layer bleibt FeatureType weg"  "0" "$(find "$GS_STATE_DIR/ft" -name '*.json' -type f 2>/dev/null | awk 'END{print NR}')"
 check "B ACL Layer bleibt WFS-USER weg"    "yes" "$(grep -qx 'WFS-USER' "$GS_STATE_DIR/roles.list" && echo no || echo yes)"
 unset GS_LAYER_DELETE_FAIL
+
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Gate: alte Szenarien nur laufen lassen, wenn GEOSERVER_ONLY nicht "new" ist.
+# ═══════════════════════════════════════════════════════════════════════════
+[ "${GEOSERVER_ONLY:-all}" = "new" ] || scenarios_legacy
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Neue Szenarien 85–96 (Metadaten, Workspace-/Dienst-Einstellungen, Layer)
+# ═══════════════════════════════════════════════════════════════════════════
+
+# (85) leerer Zustand, Install: Einstellungen + Dienst-Metadaten + 8 Stellen
+if want 85; then
+  reset_state
+  rc="$(run_script --url "$URL" --ns "$NS")"
+  check "S85 Exit 0" "0" "$rc"
+  check "S85 numDecimals 8 (5 WS)" "5" "$(for ws in main dev de1 de2 fv; do jq -r '.settings.numDecimals // empty' "$GS_STATE_DIR/settings/$ws.json" 2>/dev/null; done | grep -c '^8$')"
+  check "S85 charset UTF-8 (5 WS)" "5" "$(for ws in main dev de1 de2 fv; do jq -r '.settings.charset // empty' "$GS_STATE_DIR/settings/$ws.json" 2>/dev/null; done | grep -c '^UTF-8$')"
+  check "S85 Kontakt main" "info@data-dna.eu" "$(jq -r '.settings.contact.contactEmail // empty' "$GS_STATE_DIR/settings/main.json" 2>/dev/null)"
+  check "S85 10 Dienst-Einstellungen" "10" "$(find "$GS_STATE_DIR/service" -name '*.json' -type f 2>/dev/null | awk 'END{print NR}')"
+  check "S85 GetFeature 8 Stellen" "5" "$(grep -c 'mit 8 Nachkommastellen' "$T/out.log")"
+fi
+
+# (86) Snapshot, zweiter Lauf: idempotent, keine settings PUT/POST
+if want 86; then
+  ensure_snap_installed
+  restore_state
+  clear_logs
+  rc="$(run_script --url "$URL" --ns "$NS")"
+  check "S86 Exit 0" "0" "$rc"
+  check "S86 kein settings PUT/POST" "0" "$(grep -c '/settings' "$CURL_BODY_LOG" || true)"
+fi
+
+# (87) Snapshot, dev lokal auf 4: genau ein Reparatur-PUT auf dev
+if want 87; then
+  ensure_snap_installed
+  restore_state
+  jq '.settings.numDecimals = 4' "$GS_STATE_DIR/settings/dev.json" > "$GS_STATE_DIR/settings/dev.json.tmp" 2>/dev/null
+  mv "$GS_STATE_DIR/settings/dev.json.tmp" "$GS_STATE_DIR/settings/dev.json"
+  clear_logs
+  rc="$(run_script --url "$URL" --ns "$NS")"
+  check "S87 Exit 0" "0" "$rc"
+  check "S87 genau 1 settings PUT dev" "1" "$(grep -c 'workspaces/dev/settings METHOD=PUT' "$CURL_BODY_LOG")"
+  check "S87 Info weicht ab" "yes" "$(grep -q 'weichen ab' "$T/out.log" && echo yes || echo no)"
+fi
+
+# (88) Snapshot: charset und contact.id bleiben (Ersetzen-Falle)
+if want 88; then
+  ensure_snap_installed
+  restore_state
+  clear_logs
+  rc="$(run_script --url "$URL" --ns "$NS")"
+  check "S88 Exit 0" "0" "$rc"
+  check "S88 charset bleibt" "UTF-8" "$(jq -r '.settings.charset // empty' "$GS_STATE_DIR/settings/main.json" 2>/dev/null)"
+  check "S88 contact.id bleibt" "contact" "$(jq -r '.settings.contact.id // empty' "$GS_STATE_DIR/settings/main.json" 2>/dev/null)"
+fi
+
+# (89) GS_SETTINGS_PUT_DROPS_KEY=charset: Exit 1, verlorener Schlüssel gemeldet
+if want 89; then
+  ensure_snap_installed
+  restore_state
+  export GS_SETTINGS_PUT_DROPS_KEY=charset
+  jq '.settings.numDecimals = 3' "$GS_STATE_DIR/settings/dev.json" > "$GS_STATE_DIR/settings/dev.json.tmp" 2>/dev/null
+  mv "$GS_STATE_DIR/settings/dev.json.tmp" "$GS_STATE_DIR/settings/dev.json"
+  clear_logs
+  rc="$(run_script --url "$URL" --ns "$NS")"
+  check "S89 Exit 1" "1" "$rc"
+  check "S89 Meldung verlorener Schlüssel" "yes" "$(grep -q 'charset' "$T/err.log" && echo yes || echo no)"
+  unset GS_SETTINGS_PUT_DROPS_KEY
+fi
+
+# (90) YAML mit TODO: Exit 2 ohne Mutation; mit --allow-incomplete-metadata: Exit 0 + WARN
+if want 90; then
+  reset_state
+  bundle_copy "$T/todo"
+  sed 's|license: "ODbL-1.0"|license: "TODO"|' "$REPO/supplement/geoserver-metadata.md" > "$T/todo/geoserver-metadata.md"
+  rc="$(run_bundle "$T/todo" --url "$URL" --ns "$NS")"
+  check "S90 TODO Exit 2" "2" "$rc"
+  check "S90 TODO keine Mutation" "0" "$(grep -cE 'METHOD=(POST|PUT|DELETE)' "$CURL_BODY_LOG" || true)"
+  clear_logs
+  rc="$(run_bundle "$T/todo" --allow-incomplete-metadata --url "$URL" --ns "$NS")"
+  check "S90 allow Exit 0" "0" "$rc"
+  check "S90 allow WARN" "yes" "$(grep -q 'unvollständig' "$T/err.log" && echo yes || echo no)"
+fi
+
+# (91) Snapshot: Titel/Abstract je Workspace korrekt aufgelöst
+if want 91; then
+  ensure_snap_installed
+  check "S91 dev WMS-Titel" "p2d2 Karten – dev" "$(jq -r '.wms.title // empty' "$GS_STATE_DIR/service/dev/wms.json" 2>/dev/null)"
+  check "S91 de1 WFS-Abstract Team-Staging DE1" "yes" "$(jq -r '.wfs.abstrct // empty' "$GS_STATE_DIR/service/de1/wfs.json" 2>/dev/null | grep -q 'Team-Staging DE1' && echo yes || echo no)"
+fi
+
+# (92) GS_CAPS_NO_TITLE=1: Exit 1 aus der Capabilities-Verifikation
+if want 92; then
+  ensure_snap_installed
+  restore_state
+  export GS_CAPS_NO_TITLE=1
+  clear_logs
+  rc="$(run_script --url "$URL" --ns "$NS")"
+  check "S92 Exit 1" "1" "$rc"
+  unset GS_CAPS_NO_TITLE
+fi
+
+# (93) GS_IGNORE_SETTINGS=1: Exit 1, Koordinaten auf 4 Stellen gerundet
+if want 93; then
+  ensure_snap_installed
+  restore_state
+  export GS_IGNORE_SETTINGS=1
+  clear_logs
+  rc="$(run_script --url "$URL" --ns "$NS")"
+  check "S93 Exit 1" "1" "$rc"
+  check "S93 Meldung 4 Stellen" "yes" "$(grep -q 'auf 4 Stellen gerundet' "$T/err.log" && echo yes || echo no)"
+  unset GS_IGNORE_SETTINGS
+fi
+
+# (94) --dry-run: Exit 0, keine Mutation, How-To im Dry-run-Modus
+if want 94; then
+  ensure_snap_installed
+  restore_state
+  clear_logs
+  rc="$(run_script --dry-run --url "$URL" --ns "$NS")"
+  check "S94 Exit 0" "0" "$rc"
+  check "S94 keine Mutation" "0" "$(grep -cE 'METHOD=(POST|PUT|DELETE)' "$CURL_BODY_LOG" || true)"
+  howto_file="$(latest_howto)"
+  check "S94 How-To dry-run" "yes" "$(grep -q 'dry-run' "$howto_file" && echo yes || echo no)"
+fi
+
+# (95) GS_SERVICE_PUT_405=1: Anlage per POST, HowTo nennt die Methode
+if want 95; then
+  reset_state
+  export GS_SERVICE_PUT_405=1
+  rc="$(run_script --url "$URL" --ns "$NS")"
+  check "S95 Exit 0" "0" "$rc"
+  check "S95 Service-POST" "yes" "$(grep -q 'services/wms/workspaces/main/settings METHOD=POST' "$CURL_BODY_LOG" && echo yes || echo no)"
+  howto_file="$(latest_howto)"
+  check "S95 How-To nennt POST" "yes" "$(grep -q 'POST services/wms/workspaces/main/settings' "$howto_file" && echo yes || echo no)"
+  unset GS_SERVICE_PUT_405
+fi
+
+# (96) Snapshot: Attribution nur bei Abweichung (Zweitlauf keiner)
+if want 96; then
+  ensure_snap_installed
+  restore_state
+  clear_logs
+  rc="$(run_script --url "$URL" --ns "$NS")"
+  check "S96 Exit 0" "0" "$rc"
+  check "S96 kein Layer-PUT im Zweitlauf" "0" "$(grep -c '/layers/' "$CURL_BODY_LOG" || true)"
+  check "S96 Attribution gesetzt" "© OpenStreetMap-Mitwirkende" "$(jq -r '.title // empty' "$GS_STATE_DIR/layers/main/geo-containers.attr.json" 2>/dev/null)"
+fi
 
 rm -rf "$T"
