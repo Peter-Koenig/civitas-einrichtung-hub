@@ -26,6 +26,8 @@ supplement/*
 # Geoserver-Konfigurations-Bundle (in mehrere Dateien aufgeteilter Code)
 !supplement/geoserver-config/
 !supplement/geoserver-config/**
+# GeoServer-Metadaten (YAML-Block, wird vom Konfigurationsskript gelesen)
+!supplement/geoserver-metadata.md
 
 # Lokale Secrets-Dateien (die Vorlagen *.example sind versioniert)
 .env.local
