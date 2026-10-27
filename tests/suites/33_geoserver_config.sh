@@ -877,8 +877,8 @@ check "Dry-Run keine Secrets angelegt" "0" "$(count_secrets)"
 # (7) --uninstall entfernt nur exakt benannte Objekte
 scenario "7"
 # ═══════════════════════════════════════════════════════════════════════════════
-reset_state
-run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+ensure_snap_installed
+restore_state
 # Fremde Objekte hinzufügen (nie anzufassen). admin/ADMIN sind bereits als Baseline gesetzt.
 printf '%s\n' ROLE_X >> "$GS_STATE_DIR/roles.list"
 seed_secret "unrelated-secret" "YWJjZA=="
@@ -895,8 +895,8 @@ check "Uninstall Fremd-Secret bleibt" "1" "$(count_secrets)"
 # (8) GeoServer-Teilfehler beim Uninstall lässt Secrets stehen
 scenario "8"
 # ═══════════════════════════════════════════════════════════════════════════════
-reset_state
-run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+ensure_snap_installed
+restore_state
 export GS_DELETE_FAIL=1
 clear_logs
 rc="$(run_script --uninstall --url "$URL" --ns "$NS")"
@@ -940,8 +940,8 @@ check "K1 Dry-Run-Install Exit 0"   "0" "$rc"
 check "K1 Verifikation übersprungen" "0" "$(grep -c 'kein Passwort' "$T/err.log" || true)"
 
 # K2: erst real anlegen, dann Dry-Run-Uninstall (Objekte bleiben, Verifikation übersprungen).
-reset_state
-run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+ensure_snap_installed
+restore_state
 clear_logs
 rc="$(run_script --dry-run --uninstall --url "$URL" --ns "$NS")"
 check "K2 Dry-Run-Uninstall Exit 0" "0" "$rc"
@@ -960,8 +960,8 @@ check "K3 leerer Uninstall kein DELETE" "0" "$(grep -c '\-X DELETE' "$CURL_LOG" 
 # (13) Teilzustand (ein Benutzer fehlt, ein Secret fehlt) sauber aufgeräumt
 scenario "13"
 # ═══════════════════════════════════════════════════════════════════════════════
-reset_state
-run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+ensure_snap_installed
+restore_state
 grep -vx 'p2d2_wfst_de2' "$GS_STATE_DIR/users.list" > "$GS_STATE_DIR/users.list.tmp" 2>/dev/null || true
 mv "$GS_STATE_DIR/users.list.tmp" "$GS_STATE_DIR/users.list"
 rm -f "$KUBE_STATE_DIR/secrets/p2d2-geoserver-wfst-de2.b64"
@@ -1054,8 +1054,8 @@ unset GS_USERS_500
 # (21) K8: Uninstall-Schlussverifikation Lesefehler -> Exit 1, keine Erfolgsmeldung
 scenario "21"
 # ═══════════════════════════════════════════════════════════════════════════
-reset_state
-run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+ensure_snap_installed
+restore_state
 export GS_USERS_FAIL_ON=2
 rc="$(run_script --uninstall --url "$URL" --ns "$NS")"
 check "K8 Schlussverifikation Lesefehler Exit 1" "1" "$rc"
@@ -1129,8 +1129,8 @@ check "WS kein Passwort in kubectl-Args" "0" "$(grep -c "$PASS_VALID" "$KUBECTL_
 # (27) Workspaces: Zweitlauf idempotent
 scenario "27"
 # ═══════════════════════════════════════════════════════════════════════════
-reset_state
-run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+ensure_snap_installed
+restore_state
 clear_logs
 rc="$(run_script --url "$URL" --ns "$NS")"
 check "WS Zweitlauf Exit 0"               "0" "$rc"
@@ -1191,8 +1191,8 @@ check "WS Dry-Run keine Workspaces"     "0" "$(count_lines "$GS_STATE_DIR/worksp
 # (32) Workspaces: Uninstall löscht nur Soll, ohne recurse
 scenario "32"
 # ═══════════════════════════════════════════════════════════════════════════
-reset_state
-run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+ensure_snap_installed
+restore_state
 seed_workspace "foreign_ws" "urn:data-dna:govdata:foreign"
 clear_logs
 rc="$(run_script --uninstall --url "$URL" --ns "$NS")"
@@ -1204,8 +1204,8 @@ check "WS Uninstall ohne recurse"    "0" "$(grep -c 'recurse' "$CURL_LOG" || tru
 # (33) Workspaces: DELETE 404 gilt als schon weg
 scenario "33"
 # ═══════════════════════════════════════════════════════════════════════════
-reset_state
-run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+ensure_snap_installed
+restore_state
 export GS_WS_DELETE_404=1
 clear_logs
 rc="$(run_script --uninstall --url "$URL" --ns "$NS")"
@@ -1217,8 +1217,8 @@ unset GS_WS_DELETE_404
 # (34) Workspaces: nicht-leerer Workspace (403) -> Exit 1, Secrets bleiben
 scenario "34"
 # ═══════════════════════════════════════════════════════════════════════════
-reset_state
-run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+ensure_snap_installed
+restore_state
 export GS_WS_NONEMPTY=1
 clear_logs
 rc="$(run_script --uninstall --url "$URL" --ns "$NS")"
@@ -1253,8 +1253,8 @@ check "WS Startprüfung Meldung" "yes" "$(grep -q 'fehlt in WS_TABLE' "$T/err.lo
 # (37) A1: Uninstall-Schlussverifikation mit leerer Liste -> Exit 1
 scenario "37"
 # ═══════════════════════════════════════════════════════════════════════════
-reset_state
-run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+ensure_snap_installed
+restore_state
 export GS_USERS_EMPTY_ON=2
 clear_logs
 rc="$(run_script --uninstall --url "$URL" --ns "$NS")"
@@ -1311,8 +1311,8 @@ check "R1 WFS GetCapabilities sichtbar" "yes" "$(grep -q 'WFS GetCapabilities 20
 # (42) R2: Antworttext erscheint gekürzt in der Fehlermeldung
 scenario "42"
 # ═══════════════════════════════════════════════════════════════════════════
-reset_state
-run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+ensure_snap_installed
+restore_state
 LONG="$(head -c 240 /dev/zero | tr '\0' 'A')TAIL"
 export GS_WS_NONEMPTY=1
 export GS_403_BODY="$LONG"
@@ -1339,8 +1339,8 @@ check "DS Payload user korrekt"   "P2D2-MAIN" "$(jq -r '.dataStore.connectionPar
 # (44) Datastores: Zweitlauf setzt per PUT
 scenario "44"
 # ═══════════════════════════════════════════════════════════════════════════
-reset_state
-run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+ensure_snap_installed
+restore_state
 clear_logs
 rc="$(run_script --url "$URL" --ns "$NS")"
 check "DS Zweitlauf Exit 0"     "0" "$rc"
@@ -1383,8 +1383,8 @@ check "DS Dry-Run keine Datastores" "0" "$(find "$GS_STATE_DIR/ds" -name '*.json
 # (48) Datastores: Uninstall löscht Datastores vor Workspaces, ohne recurse
 scenario "48"
 # ═══════════════════════════════════════════════════════════════════════════
-reset_state
-run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+ensure_snap_installed
+restore_state
 clear_logs
 rc="$(run_script --uninstall --url "$URL" --ns "$NS")"
 check "DS Uninstall Exit 0"           "0" "$rc"
@@ -1398,8 +1398,8 @@ check "DS Uninstall Datastores vor Workspaces" "yes" "$([ -n "$ds_line" ] && [ -
 # (49) Datastores: 403 beim Löschen -> Exit 1, Secrets bleiben
 scenario "49"
 # ═══════════════════════════════════════════════════════════════════════════
-reset_state
-run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+ensure_snap_installed
+restore_state
 export GS_DS_NONEMPTY=1
 clear_logs
 rc="$(run_script --uninstall --url "$URL" --ns "$NS")"
@@ -1493,8 +1493,8 @@ unset GS_DEFAULT_STYLE
 # (56) D: Zweitlauf ohne Abweichung → kein POST/PUT auf FeatureTypes/Layer
 scenario "56"
 # ═══════════════════════════════════════════════════════════════════════════
-reset_state
-run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+ensure_snap_installed
+restore_state
 clear_logs
 rc="$(run_script --url "$URL" --ns "$NS")"
 check "D Zweitlauf Exit 0"             "0" "$rc"
@@ -1506,8 +1506,8 @@ check "D Zweitlauf kein Layer PUT"       "0" "$(grep 'layers/' "$CURL_BODY_LOG" 
 # (57) D: abweichender Titel → PUT (nur bei Abweichung)
 scenario "57"
 # ═══════════════════════════════════════════════════════════════════════════
-reset_state
-run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+ensure_snap_installed
+restore_state
 jq '.featureType.title = "X-Titel"' "$GS_STATE_DIR/ft/main/main_pg/graeber.json" > "$GS_STATE_DIR/ft/main/main_pg/graeber.json.tmp" 2>/dev/null
 mv "$GS_STATE_DIR/ft/main/main_pg/graeber.json.tmp" "$GS_STATE_DIR/ft/main/main_pg/graeber.json"
 clear_logs
@@ -1553,8 +1553,8 @@ check "D Dry-Run keine FeatureTypes"       "0" "$(find "$GS_STATE_DIR/ft" -name 
 # (61) D: Uninstall Reihenfolge Layer → FeatureType → Datastore, ohne recurse
 scenario "61"
 # ═══════════════════════════════════════════════════════════════════════════
-reset_state
-run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+ensure_snap_installed
+restore_state
 clear_logs
 rc="$(run_script --uninstall --url "$URL" --ns "$NS")"
 check "D Uninstall Exit 0"          "0" "$rc"
@@ -1581,8 +1581,8 @@ unset GS_WFS_EXCEPTION
 # (63) B1: Uninstall nach Install — kein 500, „Uninstall verifiziert"
 scenario "63"
 # ═══════════════════════════════════════════════════════════════════════════
-reset_state
-run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+ensure_snap_installed
+restore_state
 clear_logs
 rc="$(run_script --uninstall --url "$URL" --ns "$NS")"
 check "B1 Uninstall Exit 0"                 "0" "$rc"
@@ -1593,8 +1593,8 @@ check "B1 Uninstall verifiziert"            "yes" "$(grep -q 'Uninstall verifizi
 # (64) B2: zweiter Uninstall idempotent
 scenario "64"
 # ═══════════════════════════════════════════════════════════════════════════
-reset_state
-run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+ensure_snap_installed
+restore_state
 run_script --uninstall --url "$URL" --ns "$NS" >/dev/null 2>&1
 clear_logs
 rc="$(run_script --uninstall --url "$URL" --ns "$NS")"
@@ -1626,8 +1626,8 @@ check "B3 Dry-Run leer Uninstall keine FEHLER" "0" "$(grep -c 'FEHLER' "$T/err.l
 # (67) B1: echter Lesefehler (500 für vorhandenen Datastore) bleibt Fehler
 scenario "67"
 # ═══════════════════════════════════════════════════════════════════════════
-reset_state
-run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+ensure_snap_installed
+restore_state
 export GS_FT_LIST_FAIL=1
 clear_logs
 rc="$(run_script --uninstall --url "$URL" --ns "$NS")"
@@ -1648,8 +1648,8 @@ check "B4 Präfix main/graeber DescribeFeatureType"  "yes" "$(grep -q 'main/grae
 # (69) B5: numerische Bounding-Box (-10.0 == -10) → unverändert
 scenario "69"
 # ═══════════════════════════════════════════════════════════════════════════
-reset_state
-run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+ensure_snap_installed
+restore_state
 sed 's/"minx": -10,/"minx": -10.0,/g' "$GS_STATE_DIR/ft/main/main_pg/geo-containers.json" > "$GS_STATE_DIR/ft/main/main_pg/geo-containers.json.tmp"
 mv "$GS_STATE_DIR/ft/main/main_pg/geo-containers.json.tmp" "$GS_STATE_DIR/ft/main/main_pg/geo-containers.json"
 clear_logs
@@ -1661,8 +1661,8 @@ check "B5 numerische BBox kein PUT" "0" "$(grep -c 'featuretypes/geo-containers 
 # (70) B5: metadata.entry als Array → unverändert
 scenario "70"
 # ═══════════════════════════════════════════════════════════════════════════
-reset_state
-run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+ensure_snap_installed
+restore_state
 jq '.featureType.metadata.entry = [.featureType.metadata.entry]' "$GS_STATE_DIR/ft/main/main_pg/grabflure.json" > "$GS_STATE_DIR/ft/main/main_pg/grabflure.json.tmp" 2>/dev/null
 mv "$GS_STATE_DIR/ft/main/main_pg/grabflure.json.tmp" "$GS_STATE_DIR/ft/main/main_pg/grabflure.json"
 clear_logs
@@ -1674,8 +1674,8 @@ check "B5 metadata-Array kein PUT" "0" "$(grep -c 'featuretypes/grabflure METHOD
 # (71) B5: Titel-Abweichung → PUT mit Info-Zeile statt FEHLER
 scenario "71"
 # ═══════════════════════════════════════════════════════════════════════════
-reset_state
-run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+ensure_snap_installed
+restore_state
 jq '.featureType.title = "X-Titel"' "$GS_STATE_DIR/ft/main/main_pg/graeber.json" > "$GS_STATE_DIR/ft/main/main_pg/graeber.json.tmp" 2>/dev/null
 mv "$GS_STATE_DIR/ft/main/main_pg/graeber.json.tmp" "$GS_STATE_DIR/ft/main/main_pg/graeber.json"
 clear_logs
@@ -1692,8 +1692,8 @@ scenario "72"
 rc="$(run_script --help)"
 check "B6 --help nennt FeatureTypes" "yes" "$(grep -q 'FeatureTypes' "$T/out.log" && echo yes || echo no)"
 
-reset_state
-run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+ensure_snap_installed
+restore_state
 howto_file="$(latest_howto)"
 check "B7 How-To Ausgeführte Schritte" "yes" "$(grep -q '## Ausgeführte Schritte' "$howto_file" && echo yes || echo no)"
 check "B7 How-To Body-Skelett"         "yes" "$(grep -q 'nativeBoundingBox' "$howto_file" && echo yes || echo no)"
@@ -1714,8 +1714,8 @@ check "A Mapping 5 PUTs"                    "5" "$(grep -c 'featuretypes/geo-con
 # (74) A: Zweitlauf ohne Mapping-PUT
 scenario "74"
 # ═══════════════════════════════════════════════════════════════════════════
-reset_state
-run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+ensure_snap_installed
+restore_state
 clear_logs
 rc="$(run_script --url "$URL" --ns "$NS")"
 check "A Mapping Zweitlauf Exit 0"   "0" "$rc"
@@ -1725,8 +1725,8 @@ check "A Mapping Zweitlauf kein PUT" "0" "$(grep -c 'featuretypes/geo-containers
 # (75) A: Konflikt doppeltes Attribut (name und osm_name)
 scenario "75"
 # ═══════════════════════════════════════════════════════════════════════════
-reset_state
-run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+ensure_snap_installed
+restore_state
 jq '.featureType.attributes.attribute = [{"name":"name","minOccurs":0,"maxOccurs":1,"nillable":true,"binding":"java.lang.String"},{"name":"osm_name","minOccurs":0,"maxOccurs":1,"nillable":true,"binding":"java.lang.String"}]' "$GS_STATE_DIR/ft/main/main_pg/geo-containers.json" > "$GS_STATE_DIR/ft/main/main_pg/geo-containers.json.tmp" 2>/dev/null
 mv "$GS_STATE_DIR/ft/main/main_pg/geo-containers.json.tmp" "$GS_STATE_DIR/ft/main/main_pg/geo-containers.json"
 clear_logs
@@ -1738,8 +1738,8 @@ check "A Mapping doppelt Meldung"  "yes" "$(grep -q 'doppeltes Attribut' "$T/err
 # (76) A: Konflikt fehlende Quelle (kein name und kein osm_name)
 scenario "76"
 # ═══════════════════════════════════════════════════════════════════════════
-reset_state
-run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+ensure_snap_installed
+restore_state
 jq '.featureType.attributes.attribute = []' "$GS_STATE_DIR/ft/main/main_pg/geo-containers.json" > "$GS_STATE_DIR/ft/main/main_pg/geo-containers.json.tmp" 2>/dev/null
 mv "$GS_STATE_DIR/ft/main/main_pg/geo-containers.json.tmp" "$GS_STATE_DIR/ft/main/main_pg/geo-containers.json"
 clear_logs
@@ -1764,8 +1764,8 @@ check "B ACL grabflure write"              "ADMIN" "$(jq -r '."main.grabflure.w"
 # (78) B: Zweitlauf ohne unnötige Mutation
 scenario "78"
 # ═══════════════════════════════════════════════════════════════════════════
-reset_state
-run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+ensure_snap_installed
+restore_state
 clear_logs
 rc="$(run_script --url "$URL" --ns "$NS")"
 check "B ACL Zweitlauf Exit 0"     "0" "$rc"
@@ -1817,8 +1817,8 @@ check "B ACL Dry-Run keine Regeln" "0" "$(jq 'length' "$GS_STATE_DIR/acl.map" 2>
 # (83) B: Uninstall entfernt eigene Regeln, fremde bleiben (nicht exakt 50 DELETEs)
 scenario "83"
 # ═══════════════════════════════════════════════════════════════════════════
-reset_state
-run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+ensure_snap_installed
+restore_state
 # Fremde Regel nach dem Install dazulegen (bleibt bei Uninstall erhalten).
 printf '%s' '{"foreign.layer.r":"ROLE_X"}' > "$GS_STATE_DIR/acl.add"
 jq -s '.[0] * .[1]' "$GS_STATE_DIR/acl.map" "$GS_STATE_DIR/acl.add" > "$GS_STATE_DIR/acl.map.new" 2>/dev/null
@@ -1835,8 +1835,8 @@ check "B ACL Uninstall nur fremde"    "1" "$(jq 'length' "$GS_STATE_DIR/acl.map"
 # (84) B: Teilfehler — nur ein Layer-DELETE scheitert; ACL/Rolle bleiben, Rest räumt auf
 scenario "84"
 # ═══════════════════════════════════════════════════════════════════════════
-reset_state
-run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+ensure_snap_installed
+restore_state
 export GS_LAYER_DELETE_FAIL=1
 clear_logs
 rc="$(run_script --uninstall --url "$URL" --ns "$NS")"
