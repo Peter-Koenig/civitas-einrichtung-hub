@@ -741,7 +741,7 @@ run_script_in() {
   rc="$?"
   t1="${EPOCHREALTIME:-0}"
   dur="$(LC_ALL=C awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.3f", b-a}')"
-  printf '%s\t%s\n' "$dur" "$*" >> "${TIMING_LOG:-/dev/null}"
+  printf '%s\t%s\t%s\n' "$dur" "${_GS_SCENARIO:-}" "$*" >> "${TIMING_LOG:-/dev/null}"
   printf '%s' "$rc"
 }
 
@@ -767,6 +767,8 @@ seed_workspace() { # <ws> [uri]
 
 # ── Schnellpfad-Helfer (GEOSERVER_ONLY/GEOSERVER_SCENARIOS) ─────────────────
 want() { [ -z "${GEOSERVER_SCENARIOS:-}" ] || [[ " ${GEOSERVER_SCENARIOS} " == *" $1 "* ]]; }
+_GS_SCENARIO=""
+scenario() { _GS_SCENARIO="$1"; }
 snapshot_state() { rm -rf "$T/snap"; mkdir -p "$T/snap"; cp -a "$GS_STATE_DIR" "$T/snap/gs"; cp -a "$KUBE_STATE_DIR" "$T/snap/kube"; }
 restore_state()  { rm -rf "$GS_STATE_DIR" "$KUBE_STATE_DIR"; cp -a "$T/snap/gs" "$GS_STATE_DIR"; cp -a "$T/snap/kube" "$KUBE_STATE_DIR"; clear_logs; unset_stub_switches; }
 ensure_snap_installed() { [ -d "$T/snap" ] || { reset_state; rc="$(run_script --url "$URL" --ns "$NS")"; check "Snapshot-Install Exit 0" "0" "$rc"; snapshot_state; }; }
@@ -787,6 +789,7 @@ scenarios_legacy() {
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (1) Erstlauf legt sechs Secrets + sechs Benutzer an
+scenario "1"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 rc="$(run_script --url "$URL" --ns "$NS")"
@@ -798,6 +801,7 @@ check "Erstlauf 6 Secret-Applys" "6" "$(grep -c 'apply' "$KUBECTL_LOG")"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # (2) Zweiter Lauf idempotent (kein neues Secret, kein Apply, nichts doppelt)
+scenario "2"
 # ═══════════════════════════════════════════════════════════════════════════════
 clear_logs
 rc="$(run_script --url "$URL" --ns "$NS")"
@@ -809,6 +813,7 @@ check "Zweitlauf kein Secret-Apply" "0" "$(grep -c 'apply' "$KUBECTL_LOG")"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # (3) Vorhandener gültiger Secret-Wert wird wiederverwendet; kein Passwort in Args
+scenario "3"
 # ═══════════════════════════════════════════════════════════════════════════════
 reset_state
 for n in p2d2-geoserver-wfst-main p2d2-geoserver-wfst-develop p2d2-geoserver-wfst-de1 \
@@ -826,6 +831,7 @@ check "Reuse kein base64 in kubectl-Args"   "0" "$(grep -c "$PASS_VALID_B64" "$K
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # (4) Ungültiger Secret-Wert wird ersetzt
+scenario "4"
 # ═══════════════════════════════════════════════════════════════════════════════
 reset_state
 seed_secret "p2d2-geoserver-wfst-main" "$PASS_INVALID_B64"
@@ -837,6 +843,7 @@ check "Invalid neuer Wert >= 16 Zeichen" "0" "$( [ "$newlen" -ge 16 ] 2>/dev/nul
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # (5) Legacy-Variablen: nur Namen melden, nie Werte
+scenario "5"
 # ═══════════════════════════════════════════════════════════════════════════════
 reset_state
 export P2D2_MAIN_WFST_PASSWORD="secretvalue-a"
@@ -856,6 +863,7 @@ unset P2D2_MAIN_WFST_PASSWORD WFST_PW_FOO WFS_RO_PW WFS_PW
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # (6) --dry-run: kein POST/PUT/DELETE und kein kubectl apply
+scenario "6"
 # ═══════════════════════════════════════════════════════════════════════════════
 reset_state
 rc="$(run_script --dry-run --url "$URL" --ns "$NS")"
@@ -867,6 +875,7 @@ check "Dry-Run keine Secrets angelegt" "0" "$(count_secrets)"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # (7) --uninstall entfernt nur exakt benannte Objekte
+scenario "7"
 # ═══════════════════════════════════════════════════════════════════════════════
 reset_state
 run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
@@ -884,6 +893,7 @@ check "Uninstall Fremd-Secret bleibt" "1" "$(count_secrets)"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # (8) GeoServer-Teilfehler beim Uninstall lässt Secrets stehen
+scenario "8"
 # ═══════════════════════════════════════════════════════════════════════════════
 reset_state
 run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
@@ -896,6 +906,7 @@ unset GS_DELETE_FAIL
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # (9) Unbekanntes Argument -> Exit 2; --url gewinnt über ADDON_DOMAIN
+scenario "9"
 # ═══════════════════════════════════════════════════════════════════════════════
 reset_state
 rc="$(run_script --bogus)"
@@ -910,6 +921,7 @@ unset ADDON_DOMAIN
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # (10) Negativtest liefert 200 -> WARN
+scenario "10"
 # ═══════════════════════════════════════════════════════════════════════════════
 reset_state
 export GS_NEG200=1
@@ -920,6 +932,7 @@ unset GS_NEG200
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # (11) Dry-Run Install/Uninstall: Exit 0, keine Verifikationsfehler (K1/K2)
+scenario "11"
 # ═══════════════════════════════════════════════════════════════════════════════
 reset_state
 rc="$(run_script --dry-run --url "$URL" --ns "$NS")"
@@ -936,6 +949,7 @@ check "K2 Verifikation übersprungen" "0" "$(grep -c 'noch vorhanden' "$T/err.lo
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # (12) Zweiter --uninstall auf leerem GeoServer -> Exit 0, kein DELETE (K3)
+scenario "12"
 # ═══════════════════════════════════════════════════════════════════════════════
 reset_state
 rc="$(run_script --uninstall --url "$URL" --ns "$NS")"
@@ -944,6 +958,7 @@ check "K3 leerer Uninstall kein DELETE" "0" "$(grep -c '\-X DELETE' "$CURL_LOG" 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # (13) Teilzustand (ein Benutzer fehlt, ein Secret fehlt) sauber aufgeräumt
+scenario "13"
 # ═══════════════════════════════════════════════════════════════════════════════
 reset_state
 run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
@@ -959,6 +974,7 @@ check "Teilzustand keine Secrets übrig"  "0" "$(count_secrets)"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # (14) GS_BASE leer -> Exit 2 mit Hinweis (K4)
+scenario "14"
 # ═══════════════════════════════════════════════════════════════════════════════
 reset_state
 rc="$(run_script --ns "$NS")"
@@ -967,6 +983,7 @@ check "K4 GS_BASE leer Hinweis" "yes" "$(grep -q 'GS_BASE leer' "$T/err.log" && 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # (15) .env.p2d2-addon zwei Ebenen höher wird gefunden (K4)
+scenario "15"
 # ═══════════════════════════════════════════════════════════════════════════════
 reset_state
 ENV_TREE="$T/envtree/p2d2-addon/supplement"
@@ -978,6 +995,7 @@ check "K4 env Domain gefunden" "yes" "$(grep -q 'udp.envtest.example' "$T/out.lo
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # (16) Modify-Body enthält <enabled>true</enabled> (K5)
+scenario "16"
 # ═══════════════════════════════════════════════════════════════════════════════
 reset_state
 printf '%s\n' p2d2_wfst_main >> "$GS_STATE_DIR/users.list"
@@ -989,6 +1007,7 @@ check "K5 <enabled>true</enabled>" "yes" "$(grep -q '<enabled>true</enabled>' "$
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # (17) _secret_apply schlägt fehl -> Exit 1, Meldung, kein User-POST (K7)
+scenario "17"
 # ═══════════════════════════════════════════════════════════════════════════════
 reset_state
 export KUBECTL_APPLY_FAIL=1
@@ -1000,6 +1019,7 @@ unset KUBECTL_APPLY_FAIL
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # (18) --help/-h -> Exit 0, Hilfe auf stdout (K6)
+scenario "18"
 # ═══════════════════════════════════════════════════════════════════════════════
 rc="$(run_script --help)"
 check "--help Exit 0" "0" "$rc"
@@ -1009,6 +1029,7 @@ check "-h Exit 0" "0" "$rc"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (19) K8: users.json leer -> Plausibilität schlägt fehl -> Exit 2 (Install + Uninstall)
+scenario "19"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 export GS_USERS_EMPTY=1
@@ -1021,6 +1042,7 @@ unset GS_USERS_EMPTY
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (20) K8: users.json HTTP 500 -> Exit 2
+scenario "20"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 export GS_USERS_500=1
@@ -1030,6 +1052,7 @@ unset GS_USERS_500
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (21) K8: Uninstall-Schlussverifikation Lesefehler -> Exit 1, keine Erfolgsmeldung
+scenario "21"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
@@ -1041,6 +1064,7 @@ unset GS_USERS_FAIL_ON
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (22) K8: anderer Admin-Name per GS_ADMIN_USER funktioniert
+scenario "22"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 printf '%s\n' customadmin > "$GS_STATE_DIR/users.list"
@@ -1051,6 +1075,7 @@ unset GS_ADMIN_USER
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (23) How-To: enthält keinen Passwortwert
+scenario "23"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 for n in p2d2-geoserver-wfst-main p2d2-geoserver-wfst-develop p2d2-geoserver-wfst-de1 \
@@ -1065,6 +1090,7 @@ check "How-To kein base64"       "0" "$(grep -c "$PASS_VALID_B64" "$howto_file" 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (24) How-To: Struktur-Abschnitte, erhaltene Codes, Modus
+scenario "24"
 # ═══════════════════════════════════════════════════════════════════════════
 check "How-To Konventionen"      "yes" "$(grep -q '## Konventionen' "$howto_file" && echo yes || echo no)"
 check "How-To Lesende Schritte"  "yes" "$(grep -q '## Lesende Schritte' "$howto_file" && echo yes || echo no)"
@@ -1077,6 +1103,7 @@ check "How-To Workspaces Abschnitt" "yes" "$(grep -q '## Workspaces' "$howto_fil
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (25) How-To Dry-Run: Modus geplant
+scenario "25"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 run_script --dry-run --url "$URL" --ns "$NS" >/dev/null 2>&1
@@ -1085,6 +1112,7 @@ check "How-To Dry-Run geplant" "yes" "$(grep -q 'Modus: dry-run (geplant)' "$how
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (26) Workspaces: Erstlauf legt sechs Workspaces mit korrektem Payload an
+scenario "26"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 rc="$(run_script --url "$URL" --ns "$NS")"
@@ -1099,6 +1127,7 @@ check "WS kein Passwort in kubectl-Args" "0" "$(grep -c "$PASS_VALID" "$KUBECTL_
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (27) Workspaces: Zweitlauf idempotent
+scenario "27"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
@@ -1110,6 +1139,7 @@ check "WS Zweitlauf kein namespaces POST" "0" "$(grep -c 'rest/namespaces' "$CUR
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (28) Workspaces: Konflikt (abweichende URI) -> Exit 1, keine Änderung, Rest läuft
+scenario "28"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 seed_workspace "main" "urn:data-dna:govdata:WRONG"
@@ -1121,6 +1151,7 @@ check "WS Konflikt 5 weitere angelegt"   "5" "$(grep -c 'rest/namespaces' "$CURL
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (29) Workspaces: leere Liste als "" und als []
+scenario "29"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 export GS_WS_EMPTY_FORM=str
@@ -1137,6 +1168,7 @@ unset GS_WS_EMPTY_FORM
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (30) Workspaces: Workspace ohne Namespace -> Exit 1, übrige laufen weiter
+scenario "30"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 seed_workspace "dev"
@@ -1147,6 +1179,7 @@ check "WS ohne Namespace Meldung" "yes" "$(grep -q 'Namespace nicht lesbar' "$T/
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (31) Workspaces: Dry-run ohne POST
+scenario "31"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 rc="$(run_script --dry-run --url "$URL" --ns "$NS")"
@@ -1156,6 +1189,7 @@ check "WS Dry-Run keine Workspaces"     "0" "$(count_lines "$GS_STATE_DIR/worksp
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (32) Workspaces: Uninstall löscht nur Soll, ohne recurse
+scenario "32"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
@@ -1168,6 +1202,7 @@ check "WS Uninstall ohne recurse"    "0" "$(grep -c 'recurse' "$CURL_LOG" || tru
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (33) Workspaces: DELETE 404 gilt als schon weg
+scenario "33"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
@@ -1180,6 +1215,7 @@ unset GS_WS_DELETE_404
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (34) Workspaces: nicht-leerer Workspace (403) -> Exit 1, Secrets bleiben
+scenario "34"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
@@ -1192,6 +1228,7 @@ unset GS_WS_NONEMPTY
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (35) Workspaces: aggregierter Verifikationsfehler -> Exit 1
+scenario "35"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 export GS_WS_VERIFY_BAD=1
@@ -1202,6 +1239,7 @@ unset GS_WS_VERIFY_BAD
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (36) Workspaces: Startprüfung SOL/WS (tampered copy)
+scenario "36"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 sed 's/main|urn:data-dna:govdata:main//' "$SCRIPT" > "$T/script-ws-missing.sh"
@@ -1213,6 +1251,7 @@ check "WS Startprüfung Meldung" "yes" "$(grep -q 'fehlt in WS_TABLE' "$T/err.lo
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (37) A1: Uninstall-Schlussverifikation mit leerer Liste -> Exit 1
+scenario "37"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
@@ -1225,6 +1264,7 @@ unset GS_USERS_EMPTY_ON
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (38) A2: Credential-Escaping (Anführungszeichen + Backslash)
+scenario "38"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 export GS_ADMIN_PW='ab"cd\ef'
@@ -1235,6 +1275,7 @@ unset GS_ADMIN_PW
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (39) A2: Passwort mit Zeilenumbruch -> Exit 2
+scenario "39"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 export GS_ADMIN_PW=$'secret\nline2'
@@ -1244,6 +1285,7 @@ unset GS_ADMIN_PW
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (40) A3: Lesefehler hinterlässt keine Temp-Datei
+scenario "40"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 mkdir -p "$T/tmpdir"
@@ -1256,6 +1298,7 @@ unset GS_USERS_500 TMPDIR
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (41) R1: Workspace-Verifikation sichtbar (log_ok + howto_step)
+scenario "41"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 rc="$(run_script --url "$URL" --ns "$NS")"
@@ -1266,6 +1309,7 @@ check "R1 WFS GetCapabilities sichtbar" "yes" "$(grep -q 'WFS GetCapabilities 20
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (42) R2: Antworttext erscheint gekürzt in der Fehlermeldung
+scenario "42"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
@@ -1281,6 +1325,7 @@ unset GS_WS_NONEMPTY GS_403_BODY
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (43) Datastores: Erstlauf legt fünf Datastores mit 20 Einträgen an
+scenario "43"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 rc="$(run_script --url "$URL" --ns "$NS")"
@@ -1292,6 +1337,7 @@ check "DS Payload user korrekt"   "P2D2-MAIN" "$(jq -r '.dataStore.connectionPar
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (44) Datastores: Zweitlauf setzt per PUT
+scenario "44"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
@@ -1303,6 +1349,7 @@ check "DS Zweitlauf kein POST"  "0" "$(grep 'datastores' "$CURL_BODY_LOG" | grep
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (45) Datastores: fehlender ENV-Schlüssel -> Exit 2 ohne Mutation
+scenario "45"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 unset P2D2_BASE_DB_NAME
@@ -1313,6 +1360,7 @@ export P2D2_BASE_DB_NAME="p2d2"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (46) Datastores: fehlendes Secret -> Fehler der Stage, übrige laufen, Exit 1
+scenario "46"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 rm -f "$KUBE_STATE_DIR/secrets/p2d2-main-secret.dbpw"
@@ -1323,6 +1371,7 @@ check "DS fehlendes Secret kein main POST" "0" "$(grep -c 'workspaces/main/datas
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (47) Datastores: Dry-run ohne POST/PUT
+scenario "47"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 rc="$(run_script --dry-run --url "$URL" --ns "$NS")"
@@ -1332,6 +1381,7 @@ check "DS Dry-Run keine Datastores" "0" "$(find "$GS_STATE_DIR/ds" -name '*.json
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (48) Datastores: Uninstall löscht Datastores vor Workspaces, ohne recurse
+scenario "48"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
@@ -1346,6 +1396,7 @@ check "DS Uninstall Datastores vor Workspaces" "yes" "$([ -n "$ds_line" ] && [ -
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (49) Datastores: 403 beim Löschen -> Exit 1, Secrets bleiben
+scenario "49"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
@@ -1358,6 +1409,7 @@ unset GS_DS_NONEMPTY
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (50) Datastores: Verifikationsfehler (list=available ungleich 200) -> Exit 1
+scenario "50"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 export GS_LIST_AVAILABLE_FAIL_ON=6
@@ -1369,6 +1421,7 @@ unset GS_LIST_AVAILABLE_FAIL_ON
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (51) Datastores: kein DB-Passwort in Argumentlisten von curl/kubectl/jq
+scenario "51"
 reset_state
 export JQ_LOG_ARGS=1
 run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
@@ -1379,6 +1432,7 @@ unset JQ_LOG_ARGS
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (52) R3: zwei Läufe unterschiedlichen Modus → zwei How-To-Dateien (Modus im Namen)
+scenario "52"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 rm -f "$WORK"/p2d2-geoserver-config_v1_*.howto.md
@@ -1390,6 +1444,7 @@ check "R3 uninstall-dry-run im Namen" "yes" "$(find "$WORK" -maxdepth 1 -name 'p
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (53) R7: WMS-Dienstprüfung hart (503 → Exit 1)
+scenario "53"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 export GS_WMS_FAIL=1
@@ -1400,6 +1455,7 @@ unset GS_WMS_FAIL
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (54) R4: abweichender Datastore-Parameter nennt erwartet/vorhanden
+scenario "54"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 export GS_DS_BAD_PARAM=1
@@ -1410,6 +1466,7 @@ unset GS_DS_BAD_PARAM
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (55) D: FeatureTypes Erstlauf (25 Stück, Umlaut-Titel, Default-Styles)
+scenario "55"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 rc="$(run_script --url "$URL" --ns "$NS")"
@@ -1423,6 +1480,7 @@ check "D Erstlauf 5 Attribution-PUTs"       "5" "$(grep -c 'attribution' "$CURL_
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (55a) D: abweichender Default-Style -> PUT-Reparatur
+scenario "55a"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 export GS_DEFAULT_STYLE=point
@@ -1433,6 +1491,7 @@ unset GS_DEFAULT_STYLE
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (56) D: Zweitlauf ohne Abweichung → kein POST/PUT auf FeatureTypes/Layer
+scenario "56"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
@@ -1445,6 +1504,7 @@ check "D Zweitlauf kein Layer PUT"       "0" "$(grep 'layers/' "$CURL_BODY_LOG" 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (57) D: abweichender Titel → PUT (nur bei Abweichung)
+scenario "57"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
@@ -1457,6 +1517,7 @@ check "D Titel-Abweichung 1 PUT auf graeber" "1" "$(grep -c 'featuretypes/graebe
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (58) D: fehlender Native-Name → Exit 1, kein POST für den betroffenen FeatureType
+scenario "58"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 export GS_LIST_AVAILABLE_MISSING_NATIVE=1
@@ -1468,6 +1529,7 @@ unset GS_LIST_AVAILABLE_MISSING_NATIVE
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (59) D: fehlender Stil → Exit 2, keine Mutation
+scenario "59"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 export GS_STYLE_POLYGON_MISSING=1
@@ -1479,6 +1541,7 @@ unset GS_STYLE_POLYGON_MISSING
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (60) D: Dry-run → kein Schreibaufruf (FeatureTypes)
+scenario "60"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 rc="$(run_script --dry-run --url "$URL" --ns "$NS")"
@@ -1488,6 +1551,7 @@ check "D Dry-Run keine FeatureTypes"       "0" "$(find "$GS_STATE_DIR/ft" -name 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (61) D: Uninstall Reihenfolge Layer → FeatureType → Datastore, ohne recurse
+scenario "61"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
@@ -1504,6 +1568,7 @@ check "D Uninstall FeatureType vor Datastore" "yes" "$([ -n "$ft_line" ] && [ -n
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (62) D: WFS-Antwort mit ExceptionReport → Verifikationsfehler Exit 1
+scenario "62"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 export GS_WFS_EXCEPTION=1
@@ -1514,6 +1579,7 @@ unset GS_WFS_EXCEPTION
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (63) B1: Uninstall nach Install — kein 500, „Uninstall verifiziert"
+scenario "63"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
@@ -1525,6 +1591,7 @@ check "B1 Uninstall verifiziert"            "yes" "$(grep -q 'Uninstall verifizi
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (64) B2: zweiter Uninstall idempotent
+scenario "64"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
@@ -1536,6 +1603,7 @@ check "B2 zweiter Uninstall verifiziert" "yes" "$(grep -q 'Uninstall verifiziert
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (65) B3: Dry-run Install auf leerem System
+scenario "65"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 clear_logs
@@ -1546,6 +1614,7 @@ check "B3 Dry-Run leer würde angelegt"       "yes" "$(grep -q 'main/geo-contain
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (66) B3: Dry-run Uninstall auf leerem System
+scenario "66"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 clear_logs
@@ -1555,6 +1624,7 @@ check "B3 Dry-Run leer Uninstall keine FEHLER" "0" "$(grep -c 'FEHLER' "$T/err.l
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (67) B1: echter Lesefehler (500 für vorhandenen Datastore) bleibt Fehler
+scenario "67"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
@@ -1567,6 +1637,7 @@ unset GS_FT_LIST_FAIL
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (68) B4: Meldungen mit <ws>/<name>-Präfix
+scenario "68"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
@@ -1575,6 +1646,7 @@ check "B4 Präfix main/graeber DescribeFeatureType"  "yes" "$(grep -q 'main/grae
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (69) B5: numerische Bounding-Box (-10.0 == -10) → unverändert
+scenario "69"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
@@ -1587,6 +1659,7 @@ check "B5 numerische BBox kein PUT" "0" "$(grep -c 'featuretypes/geo-containers 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (70) B5: metadata.entry als Array → unverändert
+scenario "70"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
@@ -1599,6 +1672,7 @@ check "B5 metadata-Array kein PUT" "0" "$(grep -c 'featuretypes/grabflure METHOD
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (71) B5: Titel-Abweichung → PUT mit Info-Zeile statt FEHLER
+scenario "71"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
@@ -1613,6 +1687,7 @@ check "B5 Titel-Abweichung kein FEHLER title" "0" "$(grep -c 'FEHLER.*title weic
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (72) B6/B7: Hilfe und How-To
+scenario "72"
 # ═══════════════════════════════════════════════════════════════════════════
 rc="$(run_script --help)"
 check "B6 --help nennt FeatureTypes" "yes" "$(grep -q 'FeatureTypes' "$T/out.log" && echo yes || echo no)"
@@ -1626,6 +1701,7 @@ check "B7 How-To FT_TABLE"             "yes" "$(grep -q 'geo-containers|p2d2_con
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (73) A: Erstlauf Attribut-Mapping geo-containers (osm_name -> name)
+scenario "73"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 rc="$(run_script --url "$URL" --ns "$NS")"
@@ -1636,6 +1712,7 @@ check "A Mapping 5 PUTs"                    "5" "$(grep -c 'featuretypes/geo-con
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (74) A: Zweitlauf ohne Mapping-PUT
+scenario "74"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
@@ -1646,6 +1723,7 @@ check "A Mapping Zweitlauf kein PUT" "0" "$(grep -c 'featuretypes/geo-containers
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (75) A: Konflikt doppeltes Attribut (name und osm_name)
+scenario "75"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
@@ -1658,6 +1736,7 @@ check "A Mapping doppelt Meldung"  "yes" "$(grep -q 'doppeltes Attribut' "$T/err
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (76) A: Konflikt fehlende Quelle (kein name und kein osm_name)
+scenario "76"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
@@ -1670,6 +1749,7 @@ check "A Mapping quelle fehlt Meldung" "yes" "$(grep -q 'weder' "$T/err.log" && 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (77) B: Erstlauf 50 Layer-ACLs mit Stage-Trennung
+scenario "77"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 rc="$(run_script --url "$URL" --ns "$NS")"
@@ -1682,6 +1762,7 @@ check "B ACL grabflure write"              "ADMIN" "$(jq -r '."main.grabflure.w"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (78) B: Zweitlauf ohne unnötige Mutation
+scenario "78"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
@@ -1692,6 +1773,7 @@ check "B ACL Zweitlauf kein POST"  "0" "$(grep -c 'security/acl/layers' "$CURL_B
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (79) B: fremde Regeln bleiben unverändert
+scenario "79"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 printf '%s' '{"foreign.layer.r":"ROLE_X"}' > "$GS_STATE_DIR/acl.map"
@@ -1702,6 +1784,7 @@ check "B ACL fremd + 50 eigene" "51" "$(jq 'length' "$GS_STATE_DIR/acl.map" 2>/d
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (80) B: Konflikt (gleiche Regel, andere Rollen) -> Exit 1, keine Änderung
+scenario "80"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 printf '%s' '{"main.geo-containers.r":"SOMETHING_ELSE"}' > "$GS_STATE_DIR/acl.map"
@@ -1712,6 +1795,7 @@ check "B ACL Konflikt unverändert" "SOMETHING_ELSE" "$(jq -r '."main.geo-contai
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (81) B: Lesefehler (GET acl) -> Exit 1
+scenario "81"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 export GS_ACL_GET_FAIL=1
@@ -1721,6 +1805,7 @@ unset GS_ACL_GET_FAIL
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (82) B: Dry-run ohne ACL-POST
+scenario "82"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 rc="$(run_script --dry-run --url "$URL" --ns "$NS")"
@@ -1730,6 +1815,7 @@ check "B ACL Dry-Run keine Regeln" "0" "$(jq 'length' "$GS_STATE_DIR/acl.map" 2>
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (83) B: Uninstall entfernt eigene Regeln, fremde bleiben (nicht exakt 50 DELETEs)
+scenario "83"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
@@ -1747,6 +1833,7 @@ check "B ACL Uninstall nur fremde"    "1" "$(jq 'length' "$GS_STATE_DIR/acl.map"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (84) B: Teilfehler — nur ein Layer-DELETE scheitert; ACL/Rolle bleiben, Rest räumt auf
+scenario "84"
 # ═══════════════════════════════════════════════════════════════════════════
 reset_state
 run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
@@ -1773,6 +1860,7 @@ unset GS_LAYER_DELETE_FAIL
 
 # (85) leerer Zustand, Install: Einstellungen + Dienst-Metadaten + 8 Stellen
 if want 85; then
+scenario "85"
   reset_state
   rc="$(run_script --url "$URL" --ns "$NS")"
   check "S85 Exit 0" "0" "$rc"
@@ -1785,6 +1873,7 @@ fi
 
 # (86) Snapshot, zweiter Lauf: idempotent, keine settings PUT/POST
 if want 86; then
+scenario "86"
   ensure_snap_installed
   restore_state
   clear_logs
@@ -1795,6 +1884,7 @@ fi
 
 # (87) Snapshot, dev lokal auf 4: genau ein Reparatur-PUT auf dev
 if want 87; then
+scenario "87"
   ensure_snap_installed
   restore_state
   jq '.settings.numDecimals = 4' "$GS_STATE_DIR/settings/dev.json" > "$GS_STATE_DIR/settings/dev.json.tmp" 2>/dev/null
@@ -1808,6 +1898,7 @@ fi
 
 # (88) Snapshot: charset und contact.id bleiben (Ersetzen-Falle)
 if want 88; then
+scenario "88"
   ensure_snap_installed
   restore_state
   clear_logs
@@ -1819,6 +1910,7 @@ fi
 
 # (89) GS_SETTINGS_PUT_DROPS_KEY=charset: Exit 1, verlorener Schlüssel gemeldet
 if want 89; then
+scenario "89"
   ensure_snap_installed
   restore_state
   export GS_SETTINGS_PUT_DROPS_KEY=charset
@@ -1833,6 +1925,7 @@ fi
 
 # (90) YAML mit TODO: Exit 2 ohne Mutation; mit --allow-incomplete-metadata: Exit 0 + WARN
 if want 90; then
+scenario "90"
   reset_state
   bundle_copy "$T/todo"
   sed 's|license: "ODbL-1.0"|license: "TODO"|' "$REPO/supplement/geoserver-metadata.md" > "$T/todo/geoserver-metadata.md"
@@ -1847,6 +1940,7 @@ fi
 
 # (91) Snapshot: Titel/Abstract je Workspace korrekt aufgelöst
 if want 91; then
+scenario "91"
   ensure_snap_installed
   check "S91 dev WMS-Titel" "p2d2 Karten – dev" "$(jq -r '.wms.title // empty' "$GS_STATE_DIR/service/dev/wms.json" 2>/dev/null)"
   check "S91 de1 WFS-Abstract Team-Staging DE1" "yes" "$(jq -r '.wfs.abstrct // empty' "$GS_STATE_DIR/service/de1/wfs.json" 2>/dev/null | grep -q 'Team-Staging DE1' && echo yes || echo no)"
@@ -1854,6 +1948,7 @@ fi
 
 # (92) GS_CAPS_NO_TITLE=1: Exit 1 aus der Capabilities-Verifikation
 if want 92; then
+scenario "92"
   ensure_snap_installed
   restore_state
   export GS_CAPS_NO_TITLE=1
@@ -1865,6 +1960,7 @@ fi
 
 # (93) GS_IGNORE_SETTINGS=1: Exit 1, Koordinaten auf 4 Stellen gerundet
 if want 93; then
+scenario "93"
   ensure_snap_installed
   restore_state
   export GS_IGNORE_SETTINGS=1
@@ -1877,6 +1973,7 @@ fi
 
 # (94) --dry-run: Exit 0, keine Mutation, How-To im Dry-run-Modus
 if want 94; then
+scenario "94"
   ensure_snap_installed
   restore_state
   clear_logs
@@ -1889,6 +1986,7 @@ fi
 
 # (95) GS_SERVICE_PUT_405=1: Anlage per POST, HowTo nennt die Methode
 if want 95; then
+scenario "95"
   reset_state
   export GS_SERVICE_PUT_405=1
   rc="$(run_script --url "$URL" --ns "$NS")"
@@ -1901,6 +1999,7 @@ fi
 
 # (96) Snapshot: Attribution nur bei Abweichung (Zweitlauf keiner)
 if want 96; then
+scenario "96"
   ensure_snap_installed
   restore_state
   clear_logs
