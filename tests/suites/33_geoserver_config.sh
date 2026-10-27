@@ -740,7 +740,7 @@ run_script_in() {
   ( cd "$dir" && bash "$SCRIPT" "$@" >"$T/out.log" 2>"$T/err.log" )
   rc="$?"
   t1="${EPOCHREALTIME:-0}"
-  dur="$(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.3f", b-a}')"
+  dur="$(LC_ALL=C awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.3f", b-a}')"
   printf '%s\t%s\n' "$dur" "$*" >> "${TIMING_LOG:-/dev/null}"
   printf '%s' "$rc"
 }
