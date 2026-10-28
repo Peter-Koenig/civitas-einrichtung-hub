@@ -4,9 +4,6 @@
 # catalog.sh - Workspaces, Datastores, FeatureTypes (anlegen/verifizieren/loeschen).
 # Wird vom Einstieg genau einmal gesourct.
 
-# Im Dry-run des Uninstall geplante Layer-Deletes (für uninstall_acls).
-_PLANNED_LAYER_DEL=()
-
 install_workspaces() {
   local -a existing
   local ws uri cur code rc=0 f

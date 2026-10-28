@@ -75,9 +75,6 @@ _curl_user_cfg() {
   printf 'user = "%s"\n' "$s"
 }
 
-# Zentrale Timeouts fuer alle GeoServer-curl-Aufrufe (GS_CURL_MAX_TIME ueberschreibbar).
-GS_CURL_TMO=(--connect-timeout 10 --max-time "${GS_CURL_MAX_TIME:-60}")
-
 _gs_http_code() {
   local method="$1" path="$2" payload="${3:-}" ctype="${4:-application/json}" code
   if [[ -n "$payload" ]]; then
@@ -304,7 +301,7 @@ _ws_uri() {
 }
 
 check_ds_table() {
-  local key ws ds schema uservar secret w want
+  local key ws ds schema uservar secret w want k
   while IFS='|' read -r key ws ds schema uservar secret; do
     [[ -n "$key" ]] || continue
     want=0

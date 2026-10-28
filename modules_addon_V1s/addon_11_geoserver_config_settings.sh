@@ -5,11 +5,6 @@
 # Workspace-Einstellungen, Dienst-Metadaten (WMS/WFS), Layer-Metadaten.
 # Wird vom Einstieg genau einmal gesourct; kein eigenstaendig ausfuehrbares Programm.
 
-# Kompaktes JSON der geparsten Metadaten (von load_metadata gesetzt).
-_GS_METADATA=""
-# --allow-incomplete-metadata (nur Dev): unvollständige Metadaten nur als WARN.
-_GS_ALLOW_INCOMPLETE=0
-
 # _metadata_extract — gibt den YAML-Block (ohne Fences) der Metadaten-Datei aus.
 _metadata_extract() {
   awk '/^```yaml$/ {f=1; next} /^```$/ {f=0} f' "$GS_METADATA_FILE"

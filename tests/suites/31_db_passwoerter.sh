@@ -209,4 +209,17 @@ check "WFST leer allow_empty ok" "0" "$?"
 addon_validate_nonempty "P2D2_MAIN_WFST_PASSWORD"
 check "WFST leer Pflicht Fehler" "1" "$?"
 
+# ── Phase 2: die vier Lib-Dateien setzen beim Sourcen keine Variablen ──────
+rc="$( bash -c '
+set -euo pipefail
+before="$(compgen -v | sort)"
+for f in core catalog security settings; do
+  source "$1/modules_addon_V1s/addon_11_geoserver_config_${f}.sh"
+done
+after="$(compgen -v | sort)"
+new="$(comm -13 <(printf "%s\n" "$before") <(printf "%s\n" "$after") | grep -vE "^(f|before|after|new)$" || true)"
+[[ -z "$new" ]] && echo OK || echo "LECK: $new"
+' _ "$REPO" )"
+check "addon_11 Libs sourcen ohne Variablen" "OK" "$rc"
+
 rm -rf "$T"
