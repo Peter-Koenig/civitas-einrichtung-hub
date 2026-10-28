@@ -20,6 +20,13 @@ _meta() {
   printf '%s' "$_GS_METADATA" | jq -r "$1" 2>/dev/null
 }
 
+# _xml_esc <wert> — XML-Escape fuer Capabilities-Vergleich (grep -qF).
+_xml_esc() {
+  local s="$1"
+  s="${s//&/\&amp;}"; s="${s//</\&lt;}"; s="${s//>/\&gt;}"
+  printf '%s' "$s"
+}
+
 # _resolve_tpl <wert> <ws> <stage_beschreibung> — Platzhalter per Bash-Ersetzung.
 _resolve_tpl() {
   local v="$1" ws="$2" desc="$3"
@@ -227,7 +234,11 @@ install_service_metadata() {
         _gs_write_body PUT "services/${svc}/workspaces/${ws}/settings" "$f" 'application/json'
         code="$_GS_CODE"; rm -f "$f" "$cur"
         howto_step "PUT services/$svc/workspaces/$ws/settings" "200" "$code" "Dienst-Metadaten $ws/$svc"
-        [[ "$code" == "200" ]] || { log_gs_error "Dienst-Metadaten $ws/$svc setzen fehlgeschlagen (HTTP $code)"; rc=1; }
+        if [[ "$code" == "200" ]]; then
+          log_ok "  $ws/$svc: Dienst-Metadaten aktualisiert"
+        else
+          log_gs_error "Dienst-Metadaten $ws/$svc setzen fehlgeschlagen (HTTP $code)"; rc=1
+        fi
       elif [[ "$code" == "404" ]]; then
         rm -f "$_GS_BODY_FILE"
         if [[ "$DRY_RUN" -eq 1 ]]; then
@@ -256,7 +267,7 @@ install_service_metadata() {
 }
 
 verify_service_metadata() {
-  local key ws svc title email code rc=0 maxdec or cap_ok
+  local key ws svc title email code rc=0 maxdec or cap_ok name abstract
   log "== Verifikation Dienst-Metadaten =="
 
   # HEAD auf service.onlineResource: einmal, ohne Credentials, mit Timeouts (C5).
@@ -289,13 +300,15 @@ verify_service_metadata() {
           cap_ok=0
           log_error "Verifikation $ws/$svc: Capabilities enthält ExceptionReport"; rc=1
         fi
+        title="$(_xml_esc "$title")"; email="$(_xml_esc "$email")"
         if ! grep -qF "$title" "$_GS_BODY_FILE" 2>/dev/null || ! grep -qF "$email" "$_GS_BODY_FILE" 2>/dev/null; then
           cap_ok=0
           log_error "Verifikation $ws/$svc: Capabilities unvollständig (Titel/Kontakt)"; rc=1
         fi
         while IFS='|' read -r name _; do
           [[ -n "$name" ]] || continue
-          abstract="$(_meta ".layers[\"$name\"].abstract // empty")"
+          abstract="$(_xml_esc "$(_meta ".layers[\"$name\"].abstract // empty")")"
+          [[ -n "$abstract" ]] || continue
           if ! grep -qF "$abstract" "$_GS_BODY_FILE" 2>/dev/null; then
             cap_ok=0
             log_error "Verifikation $ws/$svc: Abstract für Layer $name fehlt"; rc=1

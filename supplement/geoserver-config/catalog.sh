@@ -495,7 +495,7 @@ install_featuretypes() {
 }
 
 verify_featuretypes() {
-  local key ws ds schema uservar secret name native tpl cache style title abstract kw code rc=0
+  local key ws ds schema uservar secret name native tpl cache style title abstract kw code rc=0 kw_ok
   log "== Verifikation FeatureTypes =="
   while IFS='|' read -r key ws ds schema uservar secret; do
     [[ -n "$key" ]] || continue

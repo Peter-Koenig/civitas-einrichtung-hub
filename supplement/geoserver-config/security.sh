@@ -196,7 +196,7 @@ install_acls() {
 }
 
 verify_acls() {
-  local key ws ds _ _ _ layer rroles wroles stage_rule rule roles cur rc=0 tmp
+  local key ws ds _ _ _ layer rroles wroles stage_rule rule roles cur rc=0 tmp mode
   tmp="$(mktemp)"; chmod 600 "$tmp"
   if ! _acl_get "$tmp"; then rm -f "$tmp"; return 1; fi
   log "== Verifikation Layer-ACLs =="
@@ -223,7 +223,7 @@ verify_acls() {
 }
 
 uninstall_acls() {
-  local key ws ds _ _ _ layer rroles wroles stage_rule rule roles cur code rc=0 tmp
+  local key ws ds _ _ _ layer rroles wroles stage_rule rule roles cur code rc=0 tmp mode
   tmp="$(mktemp)"; chmod 600 "$tmp"
   if ! _acl_get "$tmp"; then rm -f "$tmp"; return 1; fi
   log "== Layer-ACLs entfernen =="
