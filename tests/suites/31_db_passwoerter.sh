@@ -159,9 +159,54 @@ before_sum3="$(sha256sum "$T/env3" | awk '{print $1}')"
 _p2d2_env_mirror "$T/env3" "P2D2_MAIN_DB_PASSWORD" "new-value" >/dev/null 2>&1
 check "D3 idempotent (Kommentar)" "$before_sum3" "$(sha256sum "$T/env3" | awk '{print $1}')"
 
-# ── D5 umask bleibt unverändert ───────────────────────────────────────────────
+# ── D5 umask bleibt unverändert ──────────────────────────────────────────────
 u0="$(umask)"
 _p2d2_secret_apply ns p2d2-x-secret "DB_PASSWORD=abcdefghijklmnop" >/dev/null 2>&1
 check "D5 umask unverändert" "$u0" "$(umask)"
+
+# ── Phase 1 (D1): _p2d2_managed_vars enthält WFST-Passwörter ───────────────
+managed="$( _p2d2_managed_vars )"
+check "WFST managed 5 Stages" "5" "$(printf '%s\n' "$managed" | grep -cE '^P2D2_(MAIN|DEVELOP|DE1|DE2|FV)_WFST_PASSWORD$')"
+check "WFST managed MAIN enthalten" "yes" "$(printf '%s\n' "$managed" | grep -qx 'P2D2_MAIN_WFST_PASSWORD' && echo yes || echo no)"
+
+# ── Phase 1 (B6): _p2d2_secret_apply base64 korrekt (Manifest-Vergleich) ────
+cat > "$T/kube.sh" <<'EOF'
+if [[ "$*" == *"get secret"* ]]; then
+  echo '{"apiVersion":"v1","kind":"Secret","metadata":{"name":"x","namespace":"ns"},"type":"Opaque","data":{}}'
+  exit 0
+fi
+if [[ "$*" == *"apply"* ]]; then
+  manifest=""; args=("$@"); i=0
+  while [ "$i" -lt "${#args[@]}" ]; do
+    if [ "${args[$i]}" = "-f" ]; then manifest="${args[$((i+1))]}"; break; fi
+    i=$((i+1))
+  done
+  if [ -n "$manifest" ] && [ -f "$manifest" ]; then cp "$manifest" "$KUBECTL_MANIFEST_OUT"; fi
+  exit 0
+fi
+exit 0
+EOF
+export KUBECTL_SCRIPT="$T/kube.sh"
+export KUBECTL_MANIFEST_OUT="$T/manifest.json"
+export PATH="$REPO/tests/stubs:$PATH"
+_p2d2_secret_apply ns p2d2-x-secret "WFST_PASSWORD=abcdefghijklmnop" >/dev/null 2>&1
+check "WFST secret apply rc=0" "0" "$?"
+expected_b64="$(printf '%s' 'abcdefghijklmnop' | base64 -w0)"
+check "WFST secret base64 korrekt" "$expected_b64" "$(jq -r '.data.WFST_PASSWORD // empty' "$T/manifest.json" 2>/dev/null)"
+
+# ── Phase 1: ungültiger WFST-Wert bricht früh ab ────────────────────────────
+export P2D2_MAIN_WFST_PASSWORD="tooshort"
+_p2d2_pw_validate_env >/dev/null 2>&1
+check "WFST ungültig bricht ab" "1" "$?"
+unset P2D2_MAIN_WFST_PASSWORD
+
+# ── Phase 1 (D1): allow_empty für WFST in addon_validate_nonempty ────────────
+# shellcheck disable=SC1090,SC1091
+source "$REPO/modules_addon_V1s/addon_01_config.sh"
+unset P2D2_MAIN_WFST_PASSWORD
+addon_validate_nonempty "P2D2_MAIN_WFST_PASSWORD" 1
+check "WFST leer allow_empty ok" "0" "$?"
+addon_validate_nonempty "P2D2_MAIN_WFST_PASSWORD"
+check "WFST leer Pflicht Fehler" "1" "$?"
 
 rm -rf "$T"
