@@ -117,6 +117,21 @@ _secret_apply() {
   return 0
 }
 
+_wait_gs_ready() {
+  local tries=$(( (${GS_WAIT_SECONDS:-120} + 4) / 5 )) code i
+  [ "$tries" -ge 1 ] || tries=1
+  for (( i=1 ; i<=tries ; i++ )) ; do
+    code="$(_gs_http_code GET 'security/roles.json')"
+    case "$code" in
+      200) return 0 ;;
+      000|502|503|504) ;;
+      *) return 1 ;;
+    esac
+    (( i < tries )) && { log "  GeoServer noch nicht bereit (HTTP $code) - warte 5 s"; sleep 5; }
+  done
+  return 1
+}
+
 _pw_gen() { openssl rand -hex 24; }
 
 _pw_is_valid() {
@@ -131,12 +146,15 @@ _curl_user_cfg() {
   printf 'user = "%s"\n' "$s"
 }
 
+# Zentrale Timeouts fuer alle GeoServer-curl-Aufrufe (GS_CURL_MAX_TIME ueberschreibbar).
+GS_CURL_TMO=(--connect-timeout 10 --max-time "${GS_CURL_MAX_TIME:-60}")
+
 _gs_http_code() {
   local method="$1" path="$2" payload="${3:-}" ctype="${4:-application/json}" code
   if [[ -n "$payload" ]]; then
-    code="$( _curl_user_cfg "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - -X "$method" -H "Content-Type: $ctype" --data-binary "@$payload" -o /dev/null -w '%{http_code}' "$GS_REST/$path" 2>/dev/null )" || code="000"
+    code="$( _curl_user_cfg "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - "${GS_CURL_TMO[@]}" -X "$method" -H "Content-Type: $ctype" --data-binary "@$payload" -o /dev/null -w '%{http_code}' "$GS_REST/$path" 2>/dev/null )" || code="000"
   else
-    code="$( _curl_user_cfg "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - -X "$method" -H "Content-Type: $ctype" -o /dev/null -w '%{http_code}' "$GS_REST/$path" 2>/dev/null )" || code="000"
+    code="$( _curl_user_cfg "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - "${GS_CURL_TMO[@]}" -X "$method" -H "Content-Type: $ctype" -o /dev/null -w '%{http_code}' "$GS_REST/$path" 2>/dev/null )" || code="000"
   fi
   printf '%s' "$code"
 }
@@ -146,9 +164,9 @@ _gs_write_body() {
   _GS_ERR_BODY=""
   tmp="$(mktemp)"; chmod 600 "$tmp"
   if [[ -n "$payload" ]]; then
-    _GS_CODE="$( _curl_user_cfg "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - -X "$method" -H "Content-Type: $ctype" --data-binary "@$payload" -o "$tmp" -w '%{http_code}' "$GS_REST/$path" 2>/dev/null )" || _GS_CODE="000"
+    _GS_CODE="$( _curl_user_cfg "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - "${GS_CURL_TMO[@]}" -X "$method" -H "Content-Type: $ctype" --data-binary "@$payload" -o "$tmp" -w '%{http_code}' "$GS_REST/$path" 2>/dev/null )" || _GS_CODE="000"
   else
-    _GS_CODE="$( _curl_user_cfg "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - -X "$method" -H "Content-Type: $ctype" -o "$tmp" -w '%{http_code}' "$GS_REST/$path" 2>/dev/null )" || _GS_CODE="000"
+    _GS_CODE="$( _curl_user_cfg "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - "${GS_CURL_TMO[@]}" -X "$method" -H "Content-Type: $ctype" -o "$tmp" -w '%{http_code}' "$GS_REST/$path" 2>/dev/null )" || _GS_CODE="000"
   fi
   _GS_ERR_BODY="$(head -1 "$tmp" 2>/dev/null | cut -c1-200)"
   rm -f "$tmp"
@@ -187,10 +205,8 @@ preflight() {
   load_ds_config || exit 2
   check_styles || exit 2
 
-  local code
-  code="$(_gs_http_code GET 'security/roles.json')"
-  if [[ "$code" != "200" ]]; then
-    log_error "GeoServer nicht erreichbar (GET security/roles.json -> $code, Benutzer $GS_ADMIN_USER, Passwort aus $pw_src): $GS_REST"
+  if ! _wait_gs_ready; then
+    log_error "GeoServer nicht erreichbar (GET security/roles.json, Benutzer $GS_ADMIN_USER, Passwort aus $pw_src): $GS_REST"
     exit 2
   fi
   log_ok "Preflight ok (Namespace ${NAMESPACE}, GeoServer ${GS_BASE})"
@@ -199,7 +215,7 @@ preflight() {
 _gs_get() {
   local path="$1"
   _GS_BODY_FILE="$(mktemp)"; chmod 600 "$_GS_BODY_FILE"
-  _GS_CODE="$( _curl_user_cfg "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - -X GET -H "Content-Type: application/json" -o "$_GS_BODY_FILE" -w '%{http_code}' "$GS_REST/$path" 2>/dev/null )" || _GS_CODE="000"
+  _GS_CODE="$( _curl_user_cfg "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - "${GS_CURL_TMO[@]}" -X GET -H "Content-Type: application/json" -o "$_GS_BODY_FILE" -w '%{http_code}' "$GS_REST/$path" 2>/dev/null )" || _GS_CODE="000"
 }
 
 read_users() {
@@ -317,14 +333,14 @@ _ds_present() {
 
 _http_code_url() {
   local url="$1" code
-  code="$( _curl_user_cfg "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - -o /dev/null -w '%{http_code}' "$url" 2>/dev/null )" || code="000"
+  code="$( _curl_user_cfg "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - "${GS_CURL_TMO[@]}" -o /dev/null -w '%{http_code}' "$url" 2>/dev/null )" || code="000"
   printf '%s' "$code"
 }
 
 _gs_get_url() {
   local url="$1"
   _GS_BODY_FILE="$(mktemp)"; chmod 600 "$_GS_BODY_FILE"
-  _GS_CODE="$( _curl_user_cfg "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - -X GET -o "$_GS_BODY_FILE" -w '%{http_code}' "$url" 2>/dev/null )" || _GS_CODE="000"
+  _GS_CODE="$( _curl_user_cfg "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - "${GS_CURL_TMO[@]}" -X GET -o "$_GS_BODY_FILE" -w '%{http_code}' "$url" 2>/dev/null )" || _GS_CODE="000"
 }
 
 _read_user_roles_into() {

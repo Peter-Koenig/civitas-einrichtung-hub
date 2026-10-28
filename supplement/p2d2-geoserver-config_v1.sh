@@ -484,10 +484,10 @@ verify_install() {
     [[ -n "$password" ]] || { log_error "Verifikation $key: kein Passwort im Secret"; return 1; }
 
     # Positivtest (authentifizierter GetCapabilities) — Credentials via curl -K - (stdin)
-    code="$( _curl_user_cfg "$user" "$password" | curl -sS -K - -o /dev/null -w '%{http_code}' "$GS_BASE/ows?service=WFS&version=2.0.0&request=GetCapabilities" 2>/dev/null )" || code="000"
+    code="$( _curl_user_cfg "$user" "$password" | curl -sS -K - "${GS_CURL_TMO[@]}" -o /dev/null -w '%{http_code}' "$GS_BASE/ows?service=WFS&version=2.0.0&request=GetCapabilities" 2>/dev/null )" || code="000"
 
     # Negativtest (falsches Passwort muss 401 liefern)
-    neg="$( _curl_user_cfg "$user" "falsch_${password}" | curl -sS -K - -o /dev/null -w '%{http_code}' "$GS_BASE/ows?service=WFS&version=2.0.0&request=GetCapabilities" 2>/dev/null )" || neg="000"
+    neg="$( _curl_user_cfg "$user" "falsch_${password}" | curl -sS -K - "${GS_CURL_TMO[@]}" -o /dev/null -w '%{http_code}' "$GS_BASE/ows?service=WFS&version=2.0.0&request=GetCapabilities" 2>/dev/null )" || neg="000"
 
     if [[ "$code" != "200" ]]; then
       log_error "Verifikation $key: GetCapabilities HTTP $code (erwartet 200)"
