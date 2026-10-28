@@ -767,8 +767,77 @@ want() { [ -z "${GEOSERVER_SCENARIOS:-}" ] || [[ " ${GEOSERVER_SCENARIOS} " == *
 _GS_SCENARIO=""
 scenario() { _GS_SCENARIO="$1"; }
 snapshot_state() { rm -rf "$T/snap"; mkdir -p "$T/snap"; cp -a "$GS_STATE_DIR" "$T/snap/gs"; cp -a "$KUBE_STATE_DIR" "$T/snap/kube"; }
-restore_state()  { rm -rf "$GS_STATE_DIR" "$KUBE_STATE_DIR"; cp -a "$T/snap/gs" "$GS_STATE_DIR"; cp -a "$T/snap/kube" "$KUBE_STATE_DIR"; clear_logs; unset_stub_switches; }
+restore_state()  { rm -rf "$GS_STATE_DIR" "$KUBE_STATE_DIR"; cp -a "$T/snap/gs" "$GS_STATE_DIR"; cp -a "$T/snap/kube" "$KUBE_STATE_DIR"; clear_logs; unset_stub_switches; [ "${GS_VERIFY_SNAP:-0}" = "1" ] && gs_verify_snapshot_equivalence; }
 ensure_snap_installed() { [ -d "$T/snap" ] || { reset_state; rc="$(run_script --url "$URL" --ns "$NS")"; [ "$rc" = "0" ] || { echo "FEHLER: Snapshot-Install (Exit $rc)" >&2; exit 1; }; snapshot_state; }; }
+
+# ── Snapshot-Äquivalenz (GS_VERIFY_SNAP=1, Aufgabe A) ─────────────────────
+# normalize_state <GS_STATE_DIR> <KUBE_STATE_DIR> — deterministische Ausgabe.
+# Secret-/Passwortwerte werden maskiert (Länge + Klasse), Listen sortiert, JSON kanonisiert.
+normalize_state() {
+  normalize_dir "$1" "gs"
+  normalize_dir "$2" "kube"
+}
+
+normalize_dir() {
+  local d="$1" label="$2" f
+  [ -d "$d" ] || return 0
+  ( cd "$d" && find . -type f -print 2>/dev/null | LC_ALL=C sort ) | while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    printf '== %s/%s ==\n' "$label" "$f"
+    normalize_file "$d/$f"
+    printf '\n'
+  done
+}
+
+normalize_file() {
+  local f="$1" n
+  case "$f" in
+    *.b64|*.dbpw)
+      n="$(wc -c < "$f" 2>/dev/null | tr -d '[:space:]')"
+      printf '<MASK len=%s class=base64>\n' "${n:-0}"
+      ;;
+    *.list)
+      LC_ALL=C sort "$f" 2>/dev/null
+      ;;
+    *.json|*/acl.map)
+      jq -S . "$f" 2>/dev/null || cat "$f" 2>/dev/null
+      ;;
+    *)
+      cat "$f" 2>/dev/null
+      ;;
+  esac
+}
+
+gs_verify_snapshot_equivalence() {
+  local vdir="$T/verify"
+  local vgs="$vdir/gs" vkube="$vdir/kube" vwork="$vdir/work"
+  local s_gs="$GS_STATE_DIR" s_kube="$KUBE_STATE_DIR"
+  local s_curl="$CURL_LOG" s_curlb="$CURL_BODY_LOG" s_stdin="$CURL_STDIN_LOG" s_kctl="$KUBECTL_LOG" s_jq="$JQ_LOG"
+  local rc a b
+  rm -rf "$vdir"; mkdir -p "$vgs" "$vkube" "$vwork"
+
+  # Stubs auf isolierte Verify-State-Dirs und -Logs umlenken.
+  export GS_STATE_DIR="$vgs" KUBE_STATE_DIR="$vkube"
+  export CURL_LOG="$vdir/curl.log" CURL_BODY_LOG="$vdir/curl-body.log" CURL_STDIN_LOG="$vdir/curl-stdin.log" KUBECTL_LOG="$vdir/kubectl.log" JQ_LOG="$vdir/jq.log"
+
+  reset_state
+  ( cd "$vwork" && bash "$SCRIPT" --url "$URL" --ns "$NS" > "$vdir/out.log" 2> "$vdir/err.log" )
+  rc="$?"
+
+  export GS_STATE_DIR="$s_gs" KUBE_STATE_DIR="$s_kube"
+  export CURL_LOG="$s_curl" CURL_BODY_LOG="$s_curlb" CURL_STDIN_LOG="$s_stdin" KUBECTL_LOG="$s_kctl" JQ_LOG="$s_jq"
+
+  [ "$rc" = "0" ] || { echo "VERIFY-FEHLER: Snapshot-Äquivalenz-Install Exit $rc" >&2; return 1; }
+
+  a="$vdir/fresh.norm"; b="$vdir/restored.norm"
+  normalize_state "$vgs" "$vkube" > "$a"
+  normalize_state "$s_gs" "$s_kube" > "$b"
+  if ! diff -u "$b" "$a" > "$vdir/equiv.diff"; then
+    echo "SNAPSHOT-ABWEICHUNG (diff: $vdir/equiv.diff)" >&2
+    return 1
+  fi
+  return 0
+}
 # Bundle-Kopie (Einstieg + geoserver-config/ + Metadaten) für Mutationstests (z. B. TODO).
 bundle_copy() { local d="$1"; mkdir -p "$d"; cp "$REPO/supplement/p2d2-geoserver-config_v1.sh" "$d/"; cp -r "$REPO/supplement/geoserver-config" "$d/"; cp "$REPO/supplement/geoserver-metadata.md" "$d/"; }
 run_bundle() { local d="$1"; shift; ( cd "$WORK" && bash "$d/p2d2-geoserver-config_v1.sh" "$@" >"$T/out.log" 2>"$T/err.log" ); printf '%s' "$?"; }
