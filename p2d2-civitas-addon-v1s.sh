@@ -372,6 +372,7 @@ fi
 # VM-Lauf beim Sourcen ab.
 source "${SCRIPT_DIR}/modules_addon_V1s/addon_00_postgresql.sh"
 source "${SCRIPT_DIR}/modules_addon_V1s/addon_10_geoserver.sh"
+source "${SCRIPT_DIR}/modules_addon_V1s/addon_11_geoserver_config.sh"
 source "${SCRIPT_DIR}/modules_addon_V1s/addon_20_mapproxy.sh"
 source "${SCRIPT_DIR}/modules_addon_V1s/addon_25_iam.sh"
 source "${SCRIPT_DIR}/modules_addon_V1s/addon_30_frontend.sh"
@@ -395,7 +396,7 @@ log "============================================"
 # ── Bausteine in Reihenfolge ──────────────────────────────────────────────────
 ADDON_EXIT_CODE=0
 if [[ "${1:-}" == "--uninstall" ]]; then
-  log "Modus: Uninstall (portal -> frontend -> iam -> mapproxy -> geoserver -> postgresql)"
+  log "Modus: Uninstall (portal -> frontend -> iam -> mapproxy -> geoserver-config -> geoserver -> postgresql)"
   # Fehleraggregation analog zum Install-Zweig: ein Fehler in einem Modul soll die
   # übrigen Module nicht überspringen. Rückgabewerte sammeln, am Ende ehrlich melden.
   if ! portal_remove; then
@@ -405,11 +406,14 @@ if [[ "${1:-}" == "--uninstall" ]]; then
   uninstall_addon_frontend   || ADDON_EXIT_CODE=1
   uninstall_addon_iam        || ADDON_EXIT_CODE=1
   uninstall_addon_mapproxy   || ADDON_EXIT_CODE=1
+  uninstall_addon_geoserver_config || ADDON_EXIT_CODE=1
   uninstall_addon_geoserver  || ADDON_EXIT_CODE=1
   uninstall_addon_postgresql || ADDON_EXIT_CODE=1
 else
   install_addon_postgresql
   install_addon_geoserver
+  install_addon_geoserver_config
+  verify_addon_geoserver_config || ADDON_EXIT_CODE=1
   install_addon_mapproxy
   install_addon_iam
   install_addon_frontend_build

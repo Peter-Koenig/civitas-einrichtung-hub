@@ -19,6 +19,7 @@ env_load_line="$(lnum 'source "${ADDON_ENV_FILE}"')"
 ssh_line="$(lnum 'addon_05_ssh.sh')"
 config_line="$(lnum 'addon_01_config.sh')"
 geo_line="$(lnum 'addon_10_geoserver.sh')"
+geo11_line="$(lnum 'addon_11_geoserver_config.sh')"
 iam_line="$(lnum 'addon_25_iam.sh')"
 portal_line="$(lnum 'addon_35_portal.sh')"
 
@@ -27,6 +28,7 @@ check "SSH/Config vor Host-Block" "yes" \
 check "Fachmodule nach Host-Block" "yes" \
   "$([[ "${geo_line}" -gt "${host_line}" && "${iam_line}" -gt "${host_line}" && "${portal_line}" -gt "${host_line}" ]] && echo yes || echo no)"
 check "Fachmodule nach addon_derive_domain" "yes" "$([[ "${geo_line}" -gt "${derive_line}" ]] && echo yes || echo no)"
+check "addon_11 nach addon_10 geladen" "yes" "$([[ "${geo11_line}" -gt "${geo_line}" ]] && echo yes || echo no)"
 check "addon_validate_config vor Fachmodulen" "yes" "$([[ "${validate_line}" -lt "${geo_line}" ]] && echo yes || echo no)"
 check ".env vor Fachmodulen geladen" "yes" "$([[ "${env_load_line}" -lt "${geo_line}" ]] && echo yes || echo no)"
 

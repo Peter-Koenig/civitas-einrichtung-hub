@@ -113,6 +113,7 @@ run_uninstall_branch() {
   uninstall_addon_frontend()   { calls="${calls} frontend"; [[ "$fail" == "frontend" ]] && return 1; return 0; }
   uninstall_addon_iam()        { calls="${calls} iam"; [[ "$fail" == "iam" ]] && return 1; return 0; }
   uninstall_addon_mapproxy()   { calls="${calls} mapproxy"; [[ "$fail" == "mapproxy" ]] && return 1; return 0; }
+  uninstall_addon_geoserver_config() { calls="${calls} geoserver_config"; [[ "$fail" == "geoserver_config" ]] && return 1; return 0; }
   uninstall_addon_geoserver()  { calls="${calls} geoserver"; [[ "$fail" == "geoserver" ]] && return 1; return 0; }
   uninstall_addon_postgresql() { calls="${calls} postgresql"; [[ "$fail" == "postgresql" ]] && return 1; return 0; }
   portal_remove() { calls="${calls} portal"; return 0; }
@@ -125,7 +126,37 @@ run_uninstall_branch() {
 
 check "N2e kein Fehler: exit=0" "0" "$(run_uninstall_branch none)"
 check "N2e frontend fehlt: exit=1" "1" "$(run_uninstall_branch frontend)"
+check "N2e geoserver_config fehlt: exit=1" "1" "$(run_uninstall_branch geoserver_config)"
 check "N2e postgresql fehlt: exit=1" "1" "$(run_uninstall_branch postgresql)"
+
+# ── Phase 3: Install-Zweig Reihenfolge + D6 (verify nicht-abbrechend) ────────
+extract_install_branch() {
+  awk '/^  install_addon_postgresql$/ {f=1} f {print; if (/addon_export_tls_backup/) exit}' "$MAIN"
+}
+
+run_install_branch() {
+  local fail="$1"
+  local calls=""
+  install_addon_postgresql()     { calls="${calls} postgresql"; [[ "$fail" == "postgresql" ]] && return 1; return 0; }
+  install_addon_geoserver()      { calls="${calls} geoserver"; [[ "$fail" == "geoserver" ]] && return 1; return 0; }
+  install_addon_geoserver_config() { calls="${calls} geoserver_config"; [[ "$fail" == "geoserver_config" ]] && return 1; return 0; }
+  verify_addon_geoserver_config() { calls="${calls} verify_geoserver_config"; [[ "$fail" == "verify_geoserver_config" ]] && return 1; return 0; }
+  install_addon_mapproxy()       { calls="${calls} mapproxy"; [[ "$fail" == "mapproxy" ]] && return 1; return 0; }
+  install_addon_iam()            { calls="${calls} iam"; [[ "$fail" == "iam" ]] && return 1; return 0; }
+  install_addon_frontend_build() { calls="${calls} frontend_build"; [[ "$fail" == "frontend_build" ]] && return 1; return 0; }
+  install_addon_frontend()       { calls="${calls} frontend"; [[ "$fail" == "frontend" ]] && return 1; return 0; }
+  portal_apply()                 { calls="${calls} portal_apply"; return 0; }
+  portal_verify()                { calls="${calls} portal_verify"; return 0; }
+  addon_export_tls_backup()      { calls="${calls} tls_backup"; return 0; }
+  log()      { :; }
+  log_warn() { :; }
+  ADDON_EXIT_CODE=0
+  eval "$(extract_install_branch)"
+  printf '%s' "${ADDON_EXIT_CODE}|${calls}"
+}
+
+check "Install-Reihenfolge" "0| postgresql geoserver geoserver_config verify_geoserver_config mapproxy iam frontend_build frontend portal_apply portal_verify tls_backup" "$(run_install_branch none)"
+check "Install verify-Geoserver-Fehler nicht-abbrechend" "1| postgresql geoserver geoserver_config verify_geoserver_config mapproxy iam frontend_build frontend portal_apply portal_verify tls_backup" "$(run_install_branch verify_geoserver_config)"
 
 # ── A2: addon_remove_frontend_images (Stub-Zustand) ───────────────────────────
 # shellcheck disable=SC1090,SC1091
