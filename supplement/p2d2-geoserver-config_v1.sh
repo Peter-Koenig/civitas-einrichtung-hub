@@ -20,6 +20,11 @@
 # Aufruf:  bash ./p2d2-geoserver-config_v1.sh [--dry-run] [--uninstall]
 #          [--url BASE] [--ns NAMESPACE] [--help|-h]
 # Exit:    0 = ok, 1 = Fehler, 2 = Aufruf-/Voraussetzungsfehler.
+#
+# P2D2_IMPORT_ROLE entfernt (Legacy). Geplant, nicht Teil dieses Skripts: Rolle
+# P2D2_OSM_IMPORT, Benutzer p2d2_osm_import, Secret p2d2-geoserver-osm-import,
+# Schreibrecht auf geo-containers in allen Stages (Benennung nach dem Muster
+# P2D2_WFST_<KEY>).
 
 set -euo pipefail
 
@@ -30,7 +35,7 @@ set -euo pipefail
 # Hinweis DEVELOP: Das Secret heißt laut VARIABLES.md `p2d2-geoserver-wfst-develop`
 # (nicht `-dev`); siehe Rückfrage im Bericht.
 # ═══════════════════════════════════════════════════════════════════════════
-SOL_TABLE='MAIN|main|p2d2_wfst_main|P2D2_WFST_MAIN,P2D2_IMPORT_ROLE|p2d2-geoserver-wfst-main
+SOL_TABLE='MAIN|main|p2d2_wfst_main|P2D2_WFST_MAIN|p2d2-geoserver-wfst-main
 DEVELOP|dev|p2d2_wfst_develop|P2D2_WFST_DEVELOP|p2d2-geoserver-wfst-develop
 DE1|de1|p2d2_wfst_de1|P2D2_WFST_DE1|p2d2-geoserver-wfst-de1
 DE2|de2|p2d2_wfst_de2|P2D2_WFST_DE2|p2d2-geoserver-wfst-de2
@@ -73,7 +78,7 @@ ATTR_MAP_TABLE='geo-containers|osm_name|name'
 
 # Layer-ACL-Soll-Tabelle (Schritt 5): Layer | Lesen (.r) | Schreiben (.w).
 # %stage% wird durch die P2D2_WFST_<KEY>-Rolle der Stage ersetzt (aus SOL_TABLE, KEY nicht Workspace).
-ACL_LAYER_TABLE='geo-containers|ROLE_ANONYMOUS,ROLE_AUTHENTICATED,ADMIN|P2D2_IMPORT_ROLE,ADMIN
+ACL_LAYER_TABLE='geo-containers|ROLE_ANONYMOUS,ROLE_AUTHENTICATED,ADMIN|ADMIN
 grabflure|ROLE_ANONYMOUS,ROLE_AUTHENTICATED,ADMIN|ADMIN
 graeber|ROLE_ANONYMOUS,ROLE_AUTHENTICATED,ADMIN|ADMIN
 grabflure_versionen|ROLE_ANONYMOUS,ROLE_AUTHENTICATED,ADMIN|%stage%,ADMIN

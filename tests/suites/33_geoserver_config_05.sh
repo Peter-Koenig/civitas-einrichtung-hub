@@ -73,7 +73,7 @@ clear_logs
 rc="$(run_script --uninstall --url "$URL" --ns "$NS")"
 check "B ACL Layer bleibt Exit 1"           "1" "$rc"
 check "B ACL Layer bleibt Regel bleibt"     "yes" "$(jq -e 'has("main.geo-containers.r")' "$GS_STATE_DIR/acl.map" >/dev/null 2>&1 && echo yes || echo no)"
-check "B ACL Layer bleibt Rolle bleibt"     "yes" "$(grep -q 'P2D2_IMPORT_ROLE' "$GS_STATE_DIR/roles.list" && echo yes || echo no)"
+check "B ACL Layer bleibt Rolle bleibt"     "yes" "$(grep -q 'P2D2_WFST_MAIN' "$GS_STATE_DIR/roles.list" && echo yes || echo no)"
 check "B ACL Layer bleibt FeatureType weg"  "0" "$(find "$GS_STATE_DIR/ft" -name '*.json' -type f 2>/dev/null | awk 'END{print NR}')"
 check "B ACL Layer bleibt WFS-USER weg"    "yes" "$(grep -qx 'WFS-USER' "$GS_STATE_DIR/roles.list" && echo no || echo yes)"
 unset GS_LAYER_DELETE_FAIL

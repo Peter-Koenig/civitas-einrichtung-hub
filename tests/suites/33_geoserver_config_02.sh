@@ -12,7 +12,7 @@ rc="$(run_script --url "$URL" --ns "$NS")"
 check "Erstlauf Exit 0"          "0" "$rc"
 check "Erstlauf 6 Secrets"       "6" "$(count_secrets)"
 check "Erstlauf 7 Benutzer (admin + 6)" "7" "$(count_lines "$GS_STATE_DIR/users.list")"
-check "Erstlauf 8 Rollen (ADMIN + 7)"   "8" "$(count_lines "$GS_STATE_DIR/roles.list")"
+check "Erstlauf 7 Rollen (ADMIN + 6)"   "7" "$(count_lines "$GS_STATE_DIR/roles.list")"
 check "Erstlauf 6 Secret-Applys" "6" "$(grep -c 'apply' "$KUBECTL_LOG")"
 
 scenario "2"
@@ -21,7 +21,7 @@ rc="$(run_script --url "$URL" --ns "$NS")"
 check "Zweitlauf Exit 0"            "0" "$rc"
 check "Zweitlauf weiterhin 6 Secrets" "6" "$(count_secrets)"
 check "Zweitlauf weiterhin 7 Benutzer" "7" "$(count_lines "$GS_STATE_DIR/users.list")"
-check "Zweitlauf weiterhin 8 Rollen"   "8" "$(count_lines "$GS_STATE_DIR/roles.list")"
+check "Zweitlauf weiterhin 7 Rollen"   "7" "$(count_lines "$GS_STATE_DIR/roles.list")"
 check "Zweitlauf kein Secret-Apply" "0" "$(grep -c 'apply' "$KUBECTL_LOG")"
 
 # (62) D: WFS-Antwort mit ExceptionReport → Verifikationsfehler Exit 1

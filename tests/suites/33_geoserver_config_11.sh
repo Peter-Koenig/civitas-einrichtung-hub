@@ -38,7 +38,7 @@ check "B ACL Erstlauf Exit 0"             "0" "$rc"
 check "B ACL 50 Regeln"                    "50" "$(jq 'length' "$GS_STATE_DIR/acl.map" 2>/dev/null)"
 check "B ACL 50 POSTs"                     "50" "$(grep -c 'security/acl/layers' "$CURL_BODY_LOG")"
 check "B ACL Stage-Trennung (de1)"         "P2D2_WFST_DE1,ADMIN" "$(jq -r '."de1.grabflure_versionen.w"' "$GS_STATE_DIR/acl.map" 2>/dev/null)"
-check "B ACL geo-containers write"         "P2D2_IMPORT_ROLE,ADMIN" "$(jq -r '."main.geo-containers.w"' "$GS_STATE_DIR/acl.map" 2>/dev/null)"
+check "B ACL geo-containers write"         "ADMIN" "$(jq -r '."main.geo-containers.w"' "$GS_STATE_DIR/acl.map" 2>/dev/null)"
 check "B ACL grabflure write"              "ADMIN" "$(jq -r '."main.grabflure.w"' "$GS_STATE_DIR/acl.map" 2>/dev/null)"
 
 # (64) B2: zweiter Uninstall idempotent
