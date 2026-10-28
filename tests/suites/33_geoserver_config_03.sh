@@ -92,4 +92,122 @@ unset GS_USERS_EMPTY
 
 [ "${GEOSERVER_ONLY:-all}" = "new" ] || scenarios_legacy
 
+# (97) Dry-run auf sauberem Stand (L1): vollstaendiger Plan, keine Mutation
+if want 97; then
+scenario "97"
+  reset_state
+  rc="$(run_script --dry-run --url "$URL" --ns "$NS")"
+  check "S97 Dry-run Exit 0" "0" "$rc"
+  check "S97 keine Mutation" "0" "$(grep -cE 'METHOD=(POST|PUT|DELETE)' "$CURL_BODY_LOG" || true)"
+  check "S97 Plan Workspace-Einstellungen" "yes" "$(grep -q 'Workspace-Einstellungen' "$T/out.log" && echo yes || echo no)"
+  check "S97 Plan Dienst-Metadaten" "yes" "$(grep -q 'Dienst-Metadaten' "$T/out.log" && echo yes || echo no)"
+  check "S97 Plan Datastores" "yes" "$(grep -q 'Datastores' "$T/out.log" && echo yes || echo no)"
+  check "S97 Plan FeatureTypes" "yes" "$(grep -q 'FeatureTypes' "$T/out.log" && echo yes || echo no)"
+  check "S97 Plan Attribut-Mapping" "yes" "$(grep -q 'Attribut-Mapping' "$T/out.log" && echo yes || echo no)"
+  check "S97 Plan Layer-ACLs" "yes" "$(grep -q 'Layer-ACLs' "$T/out.log" && echo yes || echo no)"
+  check "S97 kein FEHLER" "0" "$(grep -c 'FEHLER' "$T/err.log" || true)"
+fi
+
+# (98) Anlegen auf sauberem Stand (L2/L4): name/enabled gesetzt, kein POST-Fallback
+if want 98; then
+scenario "98"
+  reset_state
+  rc="$(run_script --url "$URL" --ns "$NS")"
+  check "S98 Exit 0" "0" "$rc"
+  check "S98 kein POST auf Dienst-Settings" "0" "$(grep -c 'services/.*/workspaces/.*/settings METHOD=POST' "$CURL_BODY_LOG" || true)"
+  check "S98 10 OK angelegt" "10" "$(grep -c 'Dienst-Metadaten.*angelegt' "$T/out.log")"
+  for ws in main dev de1 de2 fv; do
+    for svc in wms wfs; do
+      exp="$(printf '%s' "$svc" | tr 'a-z' 'A-Z')"
+      check "S98 $ws/$svc name" "$exp" "$(jq -r ".$svc.name // empty" "$GS_STATE_DIR/service/$ws/$svc.json" 2>/dev/null)"
+      check "S98 $ws/$svc enabled" "true" "$(jq -r ".$svc.enabled // empty" "$GS_STATE_DIR/service/$ws/$svc.json" 2>/dev/null)"
+    done
+  done
+fi
+
+# (99) Reparatur: enabled/name werden gesetzt (L4), Zweitlauf ohne PUT
+if want 99; then
+scenario "99"
+  ensure_snap_installed
+  restore_state
+  printf '%s' '{"wms":{"title":"alt","enabled":false}}' > "$GS_STATE_DIR/service/main/wms.json"
+  clear_logs
+  rc="$(run_script --url "$URL" --ns "$NS")"
+  check "S99 Reparatur Exit 0" "0" "$rc"
+  check "S99 main/wms name WMS" "WMS" "$(jq -r '.wms.name // empty' "$GS_STATE_DIR/service/main/wms.json" 2>/dev/null)"
+  check "S99 main/wms enabled true" "true" "$(jq -r '.wms.enabled // empty' "$GS_STATE_DIR/service/main/wms.json" 2>/dev/null)"
+  check "S99 genau 1 Dienst-PUT" "1" "$(grep -c 'services/wms/workspaces/main/settings METHOD=PUT' "$CURL_BODY_LOG" || true)"
+  clear_logs
+  rc="$(run_script --url "$URL" --ns "$NS")"
+  check "S99 Zweitlauf Exit 0" "0" "$rc"
+  check "S99 Zweitlauf 0 Dienst-PUT" "0" "$(grep -c 'services/wms/workspaces/main/settings METHOD=PUT' "$CURL_BODY_LOG" || true)"
+fi
+
+# (100) Capabilities-Ausnahme (L4/L7)
+if want 100; then
+scenario "100"
+  reset_state
+  export GS_CAPS_EXCEPTION=1
+  rc="$(run_script --url "$URL" --ns "$NS")"
+  check "S100 Exit 1" "1" "$rc"
+  check "S100 nennt ExceptionReport" "yes" "$(grep -q 'ExceptionReport' "$T/err.log" && echo yes || echo no)"
+  unset GS_CAPS_EXCEPTION
+fi
+
+# (101) Layer-Abstract fehlt
+if want 101; then
+scenario "101"
+  reset_state
+  export GS_CAPS_NO_ABSTRACT=1
+  rc="$(run_script --url "$URL" --ns "$NS")"
+  check "S101 Exit 1" "1" "$rc"
+  check "S101 nennt Abstract" "yes" "$(grep -q 'Abstract' "$T/err.log" && echo yes || echo no)"
+  unset GS_CAPS_NO_ABSTRACT
+fi
+
+# (102) GeoJSON-Genauigkeit
+if want 102; then
+scenario "102"
+  reset_state
+  export GS_GEOJSON_PROP_DECIMALS=1
+  export GS_IGNORE_SETTINGS=1
+  rc="$(run_script --url "$URL" --ns "$NS")"
+  check "S102 (a) Exit 1" "1" "$rc"
+  unset GS_GEOJSON_PROP_DECIMALS GS_IGNORE_SETTINGS
+  reset_state
+  export GS_GEOJSON_EMPTY=1
+  rc="$(run_script --url "$URL" --ns "$NS")"
+  check "S102 (b) Exit 0" "0" "$rc"
+  check "S102 (b) WARN keine Features" "yes" "$(grep -q 'keine Features' "$T/err.log" && echo yes || echo no)"
+  unset GS_GEOJSON_EMPTY
+fi
+
+# (103) HEAD auf onlineResource: einmal, ohne Credentials, mit --max-time
+if want 103; then
+scenario "103"
+  ensure_snap_installed
+  restore_state
+  clear_logs
+  rc="$(run_script --url "$URL" --ns "$NS")"
+  check "S103 Exit 0" "0" "$rc"
+  check "S103 genau 1 HEAD" "1" "$(grep -c ' -I ' "$CURL_LOG" || true)"
+  headline="$(paste -d '|' "$CURL_LOG" "$CURL_STDIN_LOG" 2>/dev/null | grep -- ' -I ' | head -1)"
+  check "S103 HEAD ohne Credentials" "no" "$(printf '%s' "$headline" | grep -q 'user =' && echo yes || echo no)"
+  check "S103 HEAD mit max-time" "yes" "$(printf '%s' "$headline" | grep -q -- '--max-time' && echo yes || echo no)"
+fi
+
+# (104) yq-Vorpruefung: mikefarah erforderlich
+if want 104; then
+scenario "104"
+  reset_state
+  export YQ_VERSION_OUT='yq 3.4.3'
+  rc="$(run_script --url "$URL" --ns "$NS")"
+  check "S104 (a) yq alt Exit 2" "2" "$rc"
+  check "S104 (a) nennt mikefarah" "yes" "$(grep -q 'mikefarah' "$T/err.log" && echo yes || echo no)"
+  unset YQ_VERSION_OUT
+  reset_state
+  rc="$(run_script --url "$URL" --ns "$NS")"
+  check "S104 (b) yq Standard Exit 0" "0" "$rc"
+fi
+
 gs_group_end
