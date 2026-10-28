@@ -80,4 +80,4 @@ check "K4 env Domain gefunden" "yes" "$(grep -q 'udp.envtest.example' "$T/out.lo
 
 [ "${GEOSERVER_ONLY:-all}" = "new" ] || scenarios_legacy
 
-rm -rf "$T"
+gs_group_end

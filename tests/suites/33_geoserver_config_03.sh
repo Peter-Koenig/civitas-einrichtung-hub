@@ -92,4 +92,4 @@ unset GS_USERS_EMPTY
 
 [ "${GEOSERVER_ONLY:-all}" = "new" ] || scenarios_legacy
 
-rm -rf "$T"
+gs_group_end

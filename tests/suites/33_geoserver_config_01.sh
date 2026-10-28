@@ -64,4 +64,4 @@ scenario "86"
   check "S86 kein settings PUT/POST" "0" "$(grep -c '/settings' "$CURL_BODY_LOG" || true)"
 fi
 
-rm -rf "$T"
+gs_group_end

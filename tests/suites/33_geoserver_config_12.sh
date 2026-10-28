@@ -197,4 +197,4 @@ scenario "91"
   check "S91 de1 WFS-Abstract Team-Staging DE1" "yes" "$(jq -r '.wfs.abstrct // empty' "$GS_STATE_DIR/service/de1/wfs.json" 2>/dev/null | grep -q 'Team-Staging DE1' && echo yes || echo no)"
 fi
 
-rm -rf "$T"
+gs_group_end

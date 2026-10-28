@@ -86,4 +86,4 @@ check "How-To Dry-Run geplant" "yes" "$(grep -q 'Modus: dry-run (geplant)' "$how
 
 [ "${GEOSERVER_ONLY:-all}" = "new" ] || scenarios_legacy
 
-rm -rf "$T"
+gs_group_end

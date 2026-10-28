@@ -80,4 +80,4 @@ check "D Dry-Run keine FeatureTypes"       "0" "$(find "$GS_STATE_DIR/ft" -name 
 
 [ "${GEOSERVER_ONLY:-all}" = "new" ] || scenarios_legacy
 
-rm -rf "$T"
+gs_group_end

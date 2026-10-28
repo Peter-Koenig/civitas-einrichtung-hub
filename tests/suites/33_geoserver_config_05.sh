@@ -92,4 +92,4 @@ check "WS Konflikt 5 weitere angelegt"   "5" "$(grep -c 'rest/namespaces' "$CURL
 
 [ "${GEOSERVER_ONLY:-all}" = "new" ] || scenarios_legacy
 
-rm -rf "$T"
+gs_group_end

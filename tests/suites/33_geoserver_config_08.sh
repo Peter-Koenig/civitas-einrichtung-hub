@@ -98,4 +98,4 @@ scenario "87"
   check "S87 Info weicht ab" "yes" "$(grep -q 'weichen ab' "$T/out.log" && echo yes || echo no)"
 fi
 
-rm -rf "$T"
+gs_group_end

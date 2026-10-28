@@ -93,4 +93,4 @@ scenario "92"
   unset GS_CAPS_NO_TITLE
 fi
 
-rm -rf "$T"
+gs_group_end

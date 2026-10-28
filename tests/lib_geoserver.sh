@@ -1,12 +1,23 @@
 #!/usr/bin/env bash
 # tests/lib_geoserver.sh - gemeinsame Teile der GeoServer-Suite-33 (Stubs, Zustand, Helfer).
 # Wird von jeder Gruppe gesourct; kein eigenstaendig ausfuehrbares Programm.
+# 'Snapshot-Install Exit 0' ist seit Turn 3 eine Setup-Invariante (ensure_snap_installed) und keine Assertion mehr.
 
 gs_init_group_env() {
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="${GEOSERVER_CONFIG_SCRIPT:-$REPO/supplement/p2d2-geoserver-config_v1.sh}"
 
-T="$(mktemp -d)"
+GS_GROUP_ID="$(basename "${BASH_SOURCE[1]:-}" 2>/dev/null | sed -E 's/^33_geoserver_config_([0-9]+)\.sh$/\1/' || true)"
+GS_GROUP_T0="${EPOCHREALTIME:-0}"
+GS_SNAP_BUILD_S=0
+GS_SCENARIO_COUNT=0
+
+T="$(mktemp -d)" || exit 1
+case "$T" in
+  /tmp/tmp.*) ;;
+  *) echo "unsicheres T: abgebrochen" >&2; exit 1 ;;
+esac
+trap gs_group_end EXIT
 WORK="$T/work"
 mkdir -p "$WORK"
 
@@ -707,6 +718,18 @@ chmod +x "$STUBS/yq"
 # ── Helfer ─────────────────────────────────────────────────────────────────────
 }
 
+gs_group_end() {
+  local rc=$?
+  if [ "${_GS_ENDED:-0}" != "1" ]; then
+    _GS_ENDED=1
+    local wall
+    wall="$(LC_ALL=C awk -v a="${GS_GROUP_T0:-0}" -v b="${EPOCHREALTIME:-0}" 'BEGIN{printf "%.3f", b-a}')"
+    printf '%s\t%s\t%s\t%s\n' "${GS_GROUP_ID:-?}" "$wall" "${GS_SNAP_BUILD_S:-0}" "${GS_SCENARIO_COUNT:-0}" >> "${GS_GROUP_LOG:-/dev/null}"
+  fi
+  [ -n "${T:-}" ] && [ -d "$T" ] && rm -rf -- "$T"
+  return "$rc"
+}
+
 clear_logs() { : > "$CURL_LOG"; : > "$CURL_BODY_LOG"; : > "$CURL_STDIN_LOG"; : > "$KUBECTL_LOG"; : > "$JQ_LOG"; }
 
 # Stub-Schalter zurücksetzen (reset_state und restore_state).
@@ -765,10 +788,25 @@ seed_workspace() { # <ws> [uri]
 # ── Schnellpfad-Helfer (GEOSERVER_ONLY/GEOSERVER_SCENARIOS) ─────────────────
 want() { [ -z "${GEOSERVER_SCENARIOS:-}" ] || [[ " ${GEOSERVER_SCENARIOS} " == *" $1 "* ]]; }
 _GS_SCENARIO=""
-scenario() { _GS_SCENARIO="$1"; }
+scenario() { _GS_SCENARIO="$1"; GS_SCENARIO_COUNT=$(( ${GS_SCENARIO_COUNT:-0} + 1 )); }
 snapshot_state() { rm -rf "$T/snap"; mkdir -p "$T/snap"; cp -a "$GS_STATE_DIR" "$T/snap/gs"; cp -a "$KUBE_STATE_DIR" "$T/snap/kube"; }
 restore_state()  { rm -rf "$GS_STATE_DIR" "$KUBE_STATE_DIR"; cp -a "$T/snap/gs" "$GS_STATE_DIR"; cp -a "$T/snap/kube" "$KUBE_STATE_DIR"; clear_logs; unset_stub_switches; [ "${GS_VERIFY_SNAP:-0}" = "1" ] && gs_verify_snapshot_equivalence; }
-ensure_snap_installed() { [ -d "$T/snap" ] || { reset_state; rc="$(run_script --url "$URL" --ns "$NS")"; [ "$rc" = "0" ] || { echo "FEHLER: Snapshot-Install (Exit $rc)" >&2; exit 1; }; snapshot_state; }; }
+ensure_snap_installed() {
+  [ -d "$T/snap" ] && return 0
+  local t0 t1 d rc
+  t0="${EPOCHREALTIME:-0}"
+  reset_state
+  rc="$(run_script --url "$URL" --ns "$NS")"
+  if [ "$rc" != "0" ]; then
+    printf 'SETUP-FEHLER: Snapshot-Install fehlgeschlagen (Gruppe %s, Exit %s)\n' "${GS_GROUP_ID:-?}" "$rc" >&2
+    [ -s "$T/err.log" ] && tail -n 20 "$T/err.log" >&2
+    exit 1
+  fi
+  snapshot_state
+  t1="${EPOCHREALTIME:-0}"
+  d="$(LC_ALL=C awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.3f", b-a}')"
+  GS_SNAP_BUILD_S="$(LC_ALL=C awk -v a="${GS_SNAP_BUILD_S:-0}" -v b="$d" 'BEGIN{printf "%.3f", a+b}')"
+}
 
 # ── Snapshot-Äquivalenz (GS_VERIFY_SNAP=1, Aufgabe A) ─────────────────────
 # normalize_state <GS_STATE_DIR> <KUBE_STATE_DIR> — deterministische Ausgabe.

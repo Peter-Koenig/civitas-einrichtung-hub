@@ -92,4 +92,4 @@ check "B3 Dry-Run leer Uninstall keine FEHLER" "0" "$(grep -c 'FEHLER' "$T/err.l
 
 [ "${GEOSERVER_ONLY:-all}" = "new" ] || scenarios_legacy
 
-rm -rf "$T"
+gs_group_end

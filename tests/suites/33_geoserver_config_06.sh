@@ -78,4 +78,4 @@ scenario "94"
   check "S94 How-To dry-run" "yes" "$(grep -q 'dry-run' "$howto_file" && echo yes || echo no)"
 fi
 
-rm -rf "$T"
+gs_group_end

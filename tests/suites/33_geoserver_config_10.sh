@@ -96,4 +96,4 @@ scenario "93"
   unset GS_IGNORE_SETTINGS
 fi
 
-rm -rf "$T"
+gs_group_end
