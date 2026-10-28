@@ -261,6 +261,8 @@ reset_wfst() {
   export GS_KUBECTL_WFST_VALUE=""
   export GS_KUBECTL_SECRET_PRESENT="0"
   export GS_KUBECTL_SECRET_ERROR="0"
+  export GS_KUBECTL_RECORD="0"
+  export GS_KUBECTL_RECORD_FILE=""
   export GS_CURL_DS_REST=""
 }
 
@@ -305,7 +307,18 @@ case "$args" in
     exit 0 ;;
   *"get secret"*) [ "${GS_KUBECTL_SECRET_PRESENT:-0}" = "1" ] && exit 0 || exit 1 ;;
   *"delete secret"*) exit 0 ;;
-  *"apply"*) exit 0 ;;
+  *"apply"*)
+    if [ "${GS_KUBECTL_RECORD:-0}" = "1" ]; then
+      manifest="$(printf '%s' "$args" | sed -nE 's/.* -f ([^ ]+).*/\1/p')"
+      if [ -n "$manifest" ] && [ -f "$manifest" ]; then
+        name="$(jq -r '.metadata.name // empty' "$manifest" 2>/dev/null)"
+        pw="$(jq -r '.data.password // empty' "$manifest" 2>/dev/null | base64 -d 2>/dev/null)"
+        if [ -n "$name" ] && [ -n "$pw" ]; then
+          printf '%s %s\n' "$name" "$pw" >> "${GS_KUBECTL_RECORD_FILE:-/dev/null}"
+        fi
+      fi
+    fi
+    exit 0 ;;
   *) exit 0 ;;
 esac
 K
@@ -384,6 +397,7 @@ leak="$(printf '%s\n' "$new" | grep -vE '^P2D2_(MAIN|DEVELOP|DE1|DE2|FV)_WFST_PA
 
 # ── e1: beide leer -> erzeugt -> gespiegelt ──────────────────────────────────
 reset_wfst
+rec="$(mktemp)"; export GS_KUBECTL_RECORD="1"; export GS_KUBECTL_RECORD_FILE="$rec"
 envf="$(mktemp)"; printf 'P2D2_MAIN_WFST_PASSWORD=""   # Kommentar\n' > "$envf"; chmod 600 "$envf"
 export ADDON_ENV_FILE="$envf"
 install_addon_geoserver_config >/dev/null 2>&1
@@ -392,11 +406,20 @@ val="$(_p2d2_env_read "$envf" "P2D2_MAIN_WFST_PASSWORD")"
 for k in MAIN DEVELOP DE1 DE2 FV; do
   v="$(_p2d2_env_read "$envf" "P2D2_${k}_WFST_PASSWORD")"
   [ "${#v}" -ge 16 ] || FAILS="$FAILS e1_alle"
+  case "$k" in
+    MAIN)    sec="p2d2-geoserver-wfst-main" ;;
+    DEVELOP) sec="p2d2-geoserver-wfst-develop" ;;
+    DE1)     sec="p2d2-geoserver-wfst-de1" ;;
+    DE2)     sec="p2d2-geoserver-wfst-de2" ;;
+    FV)      sec="p2d2-geoserver-wfst-fv" ;;
+  esac
+  sv="$(awk -v s="$sec" '$1==s {print $2}' "$rec")"
+  [ -n "$sv" ] && [ "$v" = "$sv" ] || FAILS="$FAILS e1_gleich"
 done
 grep -q '# Kommentar' "$envf" || FAILS="$FAILS e1_kommentar"
 [ "$(ls "$envf".bak* 2>/dev/null | wc -l)" -eq 1 ] || FAILS="$FAILS e1_bak"
 [ "$(stat -c %a "$envf")" = "600" ] || FAILS="$FAILS e1_rechte"
-rm -f "$envf" "$envf".bak*
+rm -f "$envf" "$envf".bak* "$rec"
 
 # ── e2: gesetzter gültiger Wert -> .env unverändert, kein .bak ───────────────
 reset_wfst
@@ -441,14 +464,19 @@ cnt="$(grep -cE 'P2D2_(MAIN|DEVELOP|DE1|DE2|FV)_WFST_PASSWORD=' "$envf")"
 [ "$cnt" -eq 5 ] || FAILS="$FAILS e5_anzahl"
 rm -f "$envf" "$envf".bak*
 
-# ── e6: _p2d2_env_merge_from übernimmt WFST_PASSWORD in die Ziel-.env ────────
+# ── e6: _p2d2_env_merge_from übernimmt alle fünf WFST_PASSWORD in die Ziel-.env ─
 _p2d2_env_backup_reset
 src="$(mktemp)"; dst="$(mktemp)"
-printf 'P2D2_MAIN_WFST_PASSWORD="mergevalue12345"\n' > "$src"
+: > "$src"
+for k in MAIN DEVELOP DE1 DE2 FV; do
+  printf 'P2D2_%s_WFST_PASSWORD="%s"\n' "$k" "mergevalue_${k}" >> "$src"
+done
 : > "$dst"
 _p2d2_env_merge_from "$src" "$dst" >/dev/null 2>&1
-val="$(_p2d2_env_read "$dst" "P2D2_MAIN_WFST_PASSWORD")"
-[ "$val" = "mergevalue12345" ] || FAILS="$FAILS e6_merge"
+for k in MAIN DEVELOP DE1 DE2 FV; do
+  val="$(_p2d2_env_read "$dst" "P2D2_${k}_WFST_PASSWORD")"
+  [ "$val" = "mergevalue_${k}" ] || FAILS="$FAILS e6_merge"
+done
 rm -f "$src" "$dst" "$dst".bak*
 
 # ── Auflage 9: Uninstall mit Rest (Secret + Datastore bleiben) ────────────────
