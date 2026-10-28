@@ -303,7 +303,7 @@ verify_service_metadata() {
         done <<< "$FT_TABLE"
       fi
       rm -f "$_GS_BODY_FILE"
-      [[ "$cap_ok" -eq 1 ]] && log_ok "  $ws/$svc: Capabilities ok (Titel + Kontakt + Layer)"
+      [[ "$cap_ok" -eq 1 ]] && log_ok "  $ws/$svc: ${svc^^} GetCapabilities 200 (Titel + Kontakt + Layer)"
     done
 
     # Wirksame Genauigkeit: GetFeature auf geo-containers (JSON), nur Koordinaten (C4).
