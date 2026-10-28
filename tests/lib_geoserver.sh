@@ -463,9 +463,9 @@ case "$url" in
     else code=404; fi ;;
   *"/rest/workspaces/"*"/settings.json")
     ws="${url#*/rest/workspaces/}"; ws="${ws%%/*}"
-    if [ -f "$S/settings/$ws.json" ]; then body="$(cat "$S/settings/$ws.json")"
-    else body='{"settings":{"contact":{"id":"contact"},"charset":"UTF-8","numDecimals":4,"verbose":false,"verboseExceptions":false,"localWorkspaceIncludesPrefix":false,"showCreatedTimeColumnsInAdminList":false,"showModifiedTimeColumnsInAdminList":false}}'; fi
-    code=200 ;;
+    if ! has_ws "$ws"; then code=404
+    elif [ -f "$S/settings/$ws.json" ]; then body="$(cat "$S/settings/$ws.json")"; code=200
+    else body='{"settings":{"contact":{"id":"contact"},"charset":"UTF-8","numDecimals":4,"verbose":false,"verboseExceptions":false,"localWorkspaceIncludesPrefix":false,"showCreatedTimeColumnsInAdminList":false,"showModifiedTimeColumnsInAdminList":false}}'; code=200; fi ;;
   *"/rest/workspaces/"*"/settings")
     ws="${url#*/rest/workspaces/}"; ws="${ws%%/*}"
     case "$method" in
@@ -486,19 +486,30 @@ case "$url" in
     ws="${url#*/workspaces/}"; ws="${ws%%/*}"
     if [ -f "$S/service/$ws/$svc.json" ]; then body="$(cat "$S/service/$ws/$svc.json")"; code=200
     else code=404; fi ;;
+  *"/rest/services/"*"/settings.json")
+    svc="${url#*/rest/services/}"; svc="${svc%%/*}"
+    SVC="$(printf '%s' "$svc" | tr 'a-z' 'A-Z')"
+    body="$(jq -nc --arg s "$svc" --arg n "$SVC" '{($s):{name:$n,enabled:true,id:null,title:null}}')"
+    code=200 ;;
   *"/rest/services/"*"/workspaces/"*"/settings")
     svc="${url#*/rest/services/}"; svc="${svc%%/*}"
     ws="${url#*/workspaces/}"; ws="${ws%%/*}"
     case "$method" in
       PUT)
-        if [ "${GS_SERVICE_PUT_405:-0}" = "1" ] && [ ! -f "$S/service/$ws/$svc.json" ]; then code=405
-        elif [ -n "$body_file" ] && [ -f "$body_file" ]; then
-          mkdir -p "$S/service/$ws"; cp "$body_file" "$S/service/$ws/$svc.json"; code=200
-        else code=500; fi ;;
+        # Stub ist strenger als der echte GeoServer (L4): ohne name wird NICHTS gespeichert.
+        nm="$(jq -r --arg s "$svc" '.[$s].name // empty' "$body_file" 2>/dev/null)"
+        if [ -z "$nm" ]; then
+          body='Cannot invoke String.equals(Object) because name is null'; code=500
+        else
+          mkdir -p "$S/service/$ws"
+          jq --arg s "$svc" '.[$s].enabled //= false' "$body_file" > "$S/service/$ws/$svc.json" 2>/dev/null
+          code=200
+        fi ;;
       POST)
-        if [ -n "$body_file" ] && [ -f "$body_file" ]; then
-          mkdir -p "$S/service/$ws"; cp "$body_file" "$S/service/$ws/$svc.json"; code=201
-        else code=500; fi ;;
+        code=405 ;;
+      DELETE)
+        if [ -f "$S/service/$ws/$svc.json" ]; then rm -f "$S/service/$ws/$svc.json"; code=200
+        else code=404; fi ;;
       *) code=500 ;;
     esac ;;
   *"/rest/workspaces/"*".json")
@@ -545,17 +556,25 @@ case "$url" in
   *"/styles/generic.json")
     [ "${GS_STYLE_GENERIC_MISSING:-0}" = "1" ] && code=404 || code=200 ;;
   *"GetFeature"*"outputFormat=application/json"*)
-    u="${url#*/geoserver/}"; ws="${u%%/*}"
-    dec=4
-    [ -f "$S/settings/$ws.json" ] && dec="$(jq -r '.settings.numDecimals // 4' "$S/settings/$ws.json" 2>/dev/null)"
-    case "$dec" in ''|null) dec=4 ;; esac
-    ftdec="$(find "$S/ft/$ws" -name 'geo-containers.json' -exec jq -r '.featureType.numDecimals // 0' {} \; 2>/dev/null | head -1)"
-    if [ -n "$ftdec" ] && [ "$ftdec" -gt 0 ] 2>/dev/null; then dec="$ftdec"; fi
-    if [ "${GS_IGNORE_SETTINGS:-0}" = "1" ]; then dec=4; fi
-    x="$(LC_NUMERIC=C printf '%.*f' "$dec" 6.98874485)"
-    y="$(LC_NUMERIC=C printf '%.*f' "$dec" 50.92184755)"
-    body="{\"type\":\"FeatureCollection\",\"features\":[{\"type\":\"Feature\",\"geometry\":{\"type\":\"Point\",\"coordinates\":[$x,$y]},\"properties\":{}}]}"
-    code=200 ;;
+    if [ "${GS_GEOJSON_EMPTY:-0}" = "1" ]; then
+      body='{"type":"FeatureCollection","features":[]}'; code=200
+    else
+      u="${url#*/geoserver/}"; ws="${u%%/*}"
+      dec=4
+      [ -f "$S/settings/$ws.json" ] && dec="$(jq -r '.settings.numDecimals // 4' "$S/settings/$ws.json" 2>/dev/null)"
+      case "$dec" in ''|null) dec=4 ;; esac
+      ftdec="$(find "$S/ft/$ws" -name 'geo-containers.json' -exec jq -r '.featureType.numDecimals // 0' {} \; 2>/dev/null | head -1)"
+      if [ -n "$ftdec" ] && [ "$ftdec" -gt 0 ] 2>/dev/null; then dec="$ftdec"; fi
+      if [ "${GS_IGNORE_SETTINGS:-0}" = "1" ]; then dec=4; fi
+      x="$(LC_NUMERIC=C printf '%.*f' "$dec" 6.98874485)"
+      y="$(LC_NUMERIC=C printf '%.*f' "$dec" 50.92184755)"
+      if [ "${GS_GEOJSON_PROP_DECIMALS:-0}" = "1" ]; then
+        body="{\"type\":\"FeatureCollection\",\"features\":[{\"type\":\"Feature\",\"geometry\":{\"type\":\"Point\",\"coordinates\":[$x,$y]},\"properties\":{\"area\":1234.56789012}}]}"
+      else
+        body="{\"type\":\"FeatureCollection\",\"features\":[{\"type\":\"Feature\",\"geometry\":{\"type\":\"Point\",\"coordinates\":[$x,$y]},\"properties\":{}}]}"
+      fi
+      code=200
+    fi ;;
   *"GetCapabilities"*)
     if [ "${GS_WMS_FAIL:-0}" = "1" ]; then
       code=503
@@ -567,8 +586,30 @@ case "$url" in
       email=""
       [ -f "$S/settings/$ws.json" ] && email="$(jq -r '.settings.contact.contactEmail // empty' "$S/settings/$ws.json" 2>/dev/null)"
       if [ "${GS_CAPS_NO_TITLE:-0}" = "1" ]; then title=""; fi
-      body="<Capabilities><Service><Title>${title}</Title><ContactInformation><ElectronicMailAddress>${email}</ElectronicMailAddress></ContactInformation></Service></Capabilities>"
-      code=200
+
+      nm=""; en="true"
+      if [ -f "$S/service/$ws/$svc.json" ]; then
+        nm="$(jq -r ".$svc.name // empty" "$S/service/$ws/$svc.json" 2>/dev/null)"
+        en="$(jq -r ".$svc.enabled // empty" "$S/service/$ws/$svc.json" 2>/dev/null)"
+      fi
+      if [ "${GS_CAPS_EXCEPTION:-0}" = "1" ] || { [ -f "$S/service/$ws/$svc.json" ] && { [ -z "$nm" ] || [ "$en" != "true" ]; }; }; then
+        body='<ows:ExceptionReport xmlns:ows="http://www.opengis.net/ows"><ows:Exception><ows:ExceptionText>java.lang.NullPointerException: ServiceInfo.getName() is null</ows:ExceptionText></ows:Exception></ows:ExceptionReport>'
+        code=200
+      else
+        root='WMS_Capabilities'; close='WMS_Capabilities'
+        [ "$svc" = "wfs" ] && { root='wfs:WFS_Capabilities'; close='wfs:WFS_Capabilities'; }
+        layers=""
+        for ft in "$S"/ft/"$ws"/*/*.json; do
+          [ -f "$ft" ] || continue
+          name="$(basename "$ft" .json)"
+          ft_title="$(jq -r '.featureType.title // empty' "$ft" 2>/dev/null)"
+          abstract="$(jq -r '.featureType.abstract // empty' "$ft" 2>/dev/null)"
+          [ "${GS_CAPS_NO_ABSTRACT:-0}" = "1" ] && abstract=""
+          layers="${layers}<Layer><Name>${ws}:${name}</Name><Title>${ft_title}</Title><Abstract>${abstract}</Abstract></Layer>"
+        done
+        body="<${root}><Service><Title>${title}</Title><ContactInformation><ElectronicMailAddress>${email}</ElectronicMailAddress></ContactInformation></Service>${layers}</${close}>"
+        code=200
+      fi
     fi ;;
   *"DescribeFeatureType"*)
     if [ "${GS_WFS_EXCEPTION:-0}" = "1" ]; then body='<ExceptionReport><Exception>error</Exception></ExceptionReport>'
@@ -704,6 +745,13 @@ chmod +x "$STUBS/jq"
 cat > "$STUBS/yq" <<'STUB'
 #!/usr/bin/env bash
 set -u
+for a in "$@"; do
+  case "$a" in
+    --version|-V)
+      printf '%s\n' "${YQ_VERSION_OUT:-yq (https://github.com/mikefarah/yq) version v4.44.3}"
+      exit 0 ;;
+  esac
+done
 args=()
 for a in "$@"; do
   case "$a" in
@@ -734,7 +782,7 @@ clear_logs() { : > "$CURL_LOG"; : > "$CURL_BODY_LOG"; : > "$CURL_STDIN_LOG"; : >
 
 # Stub-Schalter zurücksetzen (reset_state und restore_state).
 unset_stub_switches() {
-  unset GS_OFF GS_NEG200 GS_PREFLIGHT_FAIL GS_DELETE_FAIL GS_LAYER_DELETE_FAIL GS_USERS_500 GS_USERS_EMPTY GS_USERS_FAIL_ON GS_USERS_EMPTY_ON GS_ROLES_EMPTY_ON GS_WS_NONEMPTY GS_WS_DELETE_404 GS_WS_EMPTY_FORM GS_WS_VERIFY_BAD GS_DS_NONEMPTY GS_DS_BAD_PARAM GS_403_BODY GS_LIST_AVAILABLE_FAIL GS_LIST_AVAILABLE_FAIL_ON GS_LIST_AVAILABLE_MISSING_NATIVE GS_FT_LIST_FAIL GS_STYLE_POLYGON_MISSING GS_STYLE_GENERIC_MISSING GS_WFS_EXCEPTION GS_WMS_FAIL GS_DEFAULT_STYLE GS_ACL_GET_FAIL GS_ACL_POST_FAIL GS_ACL_DELETE_FAIL GS_SETTINGS_PUT_DROPS_KEY GS_SERVICE_PUT_405 GS_CAPS_NO_TITLE GS_IGNORE_SETTINGS KUBECTL_NO_NS KUBECTL_APPLY_FAIL JQ_LOG_ARGS 2>/dev/null || true
+  unset GS_OFF GS_NEG200 GS_PREFLIGHT_FAIL GS_DELETE_FAIL GS_LAYER_DELETE_FAIL GS_USERS_500 GS_USERS_EMPTY GS_USERS_FAIL_ON GS_USERS_EMPTY_ON GS_ROLES_EMPTY_ON GS_WS_NONEMPTY GS_WS_DELETE_404 GS_WS_EMPTY_FORM GS_WS_VERIFY_BAD GS_DS_NONEMPTY GS_DS_BAD_PARAM GS_403_BODY GS_LIST_AVAILABLE_FAIL GS_LIST_AVAILABLE_FAIL_ON GS_LIST_AVAILABLE_MISSING_NATIVE GS_FT_LIST_FAIL GS_STYLE_POLYGON_MISSING GS_STYLE_GENERIC_MISSING GS_WFS_EXCEPTION GS_WMS_FAIL GS_DEFAULT_STYLE GS_ACL_GET_FAIL GS_ACL_POST_FAIL GS_ACL_DELETE_FAIL GS_SETTINGS_PUT_DROPS_KEY GS_SERVICE_PUT_405 GS_CAPS_NO_TITLE GS_CAPS_EXCEPTION GS_CAPS_NO_ABSTRACT GS_GEOJSON_EMPTY GS_GEOJSON_PROP_DECIMALS GS_IGNORE_SETTINGS YQ_VERSION_OUT KUBECTL_NO_NS KUBECTL_APPLY_FAIL JQ_LOG_ARGS 2>/dev/null || true
 }
 
 reset_state() {
