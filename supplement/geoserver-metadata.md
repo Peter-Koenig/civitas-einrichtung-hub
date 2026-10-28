@@ -12,8 +12,6 @@ workspace_settings:               # lokale Einstellungen je p2d2-Workspace
   onlineResource: "https://www.data-dna.eu"
   contact:
     contactOrganization: "p2d2 c/o Projektberatung Dr. König"
-    contactPerson: "Peter König"
-    contactPosition: "Project founder"
     contactEmail: "info@data-dna.eu"
     addressCity: "Bonn"
     addressCountry: "Deutschland"
