@@ -260,6 +260,7 @@ reset_wfst() {
   _p2d2_env_backup_reset
   export GS_KUBECTL_WFST_VALUE=""
   export GS_KUBECTL_SECRET_PRESENT="0"
+  export GS_KUBECTL_SECRET_ERROR="0"
   export GS_CURL_DS_REST=""
 }
 
@@ -298,6 +299,10 @@ case "$args" in
     exit 0 ;;
   *"get secret"*"jsonpath"*) exit 0 ;;
   *"get secret"*"-o json"*) printf '{}'; exit 0 ;;
+  *"get secret"*"-o name"*)
+    if [ "${GS_KUBECTL_SECRET_ERROR:-0}" = "1" ]; then exit 1; fi
+    if [ "${GS_KUBECTL_SECRET_PRESENT:-0}" = "1" ]; then printf 'secret/x'; fi
+    exit 0 ;;
   *"get secret"*) [ "${GS_KUBECTL_SECRET_PRESENT:-0}" = "1" ] && exit 0 || exit 1 ;;
   *"delete secret"*) exit 0 ;;
   *"apply"*) exit 0 ;;
@@ -454,6 +459,14 @@ grep -q 'Secret p2d2-geoserver-wfst-main noch vorhanden' <<< "$out" || FAILS="$F
 grep -q 'Datastore main_pg noch vorhanden' <<< "$out" || FAILS="$FAILS rest_datastore"
 neu="$(comm -13 <(printf '%s\n' "$vor") <(printf '%s\n' "$nach") | grep -vE '^(P2D2_(MAIN|DEVELOP|DE1|DE2|FV)_WFST_PASSWORD|BASH_REMATCH|vor|nach|neu|out|rc|FAILS|GS_KUBECTL_SECRET_PRESENT|GS_CURL_DS_REST)$' || true)"
 [ -z "$neu" ] || FAILS="$FAILS rest_leak"
+
+# ── Pflichtkorrektur Turn 14: get-Fehler ist nicht "nicht vorhanden" ──────────
+reset_wfst
+export GS_KUBECTL_SECRET_ERROR="1"
+out="$(uninstall_addon_geoserver_config 2>&1)"; rc=$?
+[ "$rc" -eq 1 ] || FAILS="$FAILS rbac_exit"
+grep -q 'Secret p2d2-geoserver-wfst-main nicht prüfbar' <<< "$out" || FAILS="$FAILS rbac_msg"
+grep -q 'Secret p2d2-geoserver-wfst-main nicht vorhanden' <<< "$out" && FAILS="$FAILS rbac_falsch"
 
 rm -rf "$T"
 [[ -z "$FAILS" ]] && echo OK || echo "FAIL: $FAILS"

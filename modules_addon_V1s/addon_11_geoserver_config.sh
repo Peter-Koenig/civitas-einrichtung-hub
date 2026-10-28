@@ -303,7 +303,7 @@ _gsc_do_verify() {
 }
 
 _gsc_do_uninstall() {
-  local line key _ user roles secret code rc=0 role
+  local line key _ user roles secret code rc=0 role secret_ref
   local -a existing_users existing_roles
 
   _gsc_preflight || return 1
@@ -378,17 +378,20 @@ _gsc_do_uninstall() {
 
   [[ "$rc" -eq 0 ]] || { log_error "GeoServer-Teil fehlgeschlagen — Secrets bleiben bestehen"; return 1; }
 
-  # 4) Secrets löschen (exakte Namen, je Secret eine Log-Zeile — Fix 7)
+  # 4) Secrets löschen (exakte Namen, je Secret eine Log-Zeile). Ein fehlgeschlagenes
+  # kubectl get darf NICHT als "nicht vorhanden" gewertet werden (Pflichtkorrektur Turn 14).
   while IFS='|' read -r key _ user roles secret; do
     [[ -n "$key" ]] || continue
-    if kubectl -n "$NAMESPACE" get secret "$secret" >/dev/null 2>&1; then
-      if kubectl -n "$NAMESPACE" delete secret "$secret" >/dev/null 2>&1; then
+    if secret_ref="$(kubectl -n "$NAMESPACE" get secret "$secret" --ignore-not-found -o name 2>/dev/null)"; then
+      if [[ -z "$secret_ref" ]]; then
+        log "  Secret $secret nicht vorhanden — übersprungen"
+      elif kubectl -n "$NAMESPACE" delete secret "$secret" --ignore-not-found >/dev/null 2>&1; then
         log_ok "  Secret $secret gelöscht"
       else
         log_error "Secret $secret löschen fehlgeschlagen"; rc=1
       fi
     else
-      log "  Secret $secret nicht vorhanden — übersprungen"
+      log_error "Secret $secret nicht prüfbar (Kubernetes-Abfrage fehlgeschlagen)"; rc=1
     fi
   done <<< "$SOL_TABLE"
 
@@ -416,7 +419,11 @@ _gsc_do_uninstall() {
     for role in ${roles//,/ }; do
       _has "$role" "${after_roles[@]}" && { log_error "Rolle $role noch vorhanden"; rc=1; }
     done
-    kubectl -n "$NAMESPACE" get secret "$secret" >/dev/null 2>&1 && { log_error "Secret $secret noch vorhanden"; rc=1; }
+    if secret_ref="$(kubectl -n "$NAMESPACE" get secret "$secret" --ignore-not-found -o name 2>/dev/null)"; then
+      [[ -z "$secret_ref" ]] || { log_error "Secret $secret noch vorhanden"; rc=1; }
+    else
+      log_error "Secret $secret nicht prüfbar (Kubernetes-Abfrage fehlgeschlagen)"; rc=1
+    fi
   done <<< "$SOL_TABLE"
 
   wtmp="$(mktemp)"; chmod 600 "$wtmp"
