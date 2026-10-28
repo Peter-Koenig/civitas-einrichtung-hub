@@ -21,6 +21,7 @@ _p2d2_managed_vars() {
   printf '%s\n' P2D2_ADMIN_DB_PASSWORD P2D2_RO_DB_PASSWORD
   for stage in MAIN DEVELOP DE1 DE2 FV; do
     printf 'P2D2_%s_DB_PASSWORD\n' "$stage"
+    printf 'P2D2_%s_WFST_PASSWORD\n' "$stage"
   done
 }
 
@@ -103,7 +104,7 @@ _p2d2_secret_get() {
 # kurz (erste Zeile, ohne Wert) geloggt. Kein Seiteneffekt auf die umask.
 _p2d2_secret_apply() {
   local ns="$1" name="$2"; shift 2
-  local manifest err json kv k v b64
+  local manifest err json kv k v b64f
   manifest="$(mktemp)"
   json="$(kubectl -n "$ns" get secret "$name" -o json 2>/dev/null || true)"
   if [[ -n "$json" ]]; then
@@ -113,8 +114,10 @@ _p2d2_secret_apply() {
   [[ -n "$json" ]] || json="{\"apiVersion\":\"v1\",\"kind\":\"Secret\",\"metadata\":{\"name\":\"$name\",\"namespace\":\"$ns\"},\"type\":\"Opaque\",\"data\":{}}"
   for kv in "$@"; do
     k="${kv%%=*}"; v="${kv#*=}"
-    b64="$(printf '%s' "$v" | base64 -w0)"
-    json="$(printf '%s' "$json" | jq -c --arg k "$k" --arg v "$b64" '.data[$k] = $v')"
+    b64f="$(mktemp)"
+    printf '%s' "$v" | base64 -w0 > "$b64f"
+    json="$(printf '%s' "$json" | jq -c --arg k "$k" --rawfile v "$b64f" '.data[$k] = $v')"
+    rm -f "$b64f"
   done
   # mktemp legt das Manifest bereits mit Mode 0600 an; die umask bleibt unverändert.
   printf '%s\n' "$json" > "$manifest"
