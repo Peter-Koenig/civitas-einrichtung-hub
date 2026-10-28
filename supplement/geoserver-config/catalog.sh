@@ -4,6 +4,9 @@
 # catalog.sh - Workspaces, Datastores, FeatureTypes (anlegen/verifizieren/loeschen).
 # Wird vom Einstieg genau einmal gesourct.
 
+# Im Dry-run des Uninstall geplante Layer-Deletes (für uninstall_acls).
+_PLANNED_LAYER_DEL=()
+
 install_workspaces() {
   local -a existing
   local ws uri cur code rc=0 f
@@ -117,6 +120,7 @@ uninstall_workspaces() {
       continue
     fi
     if [[ "$DRY_RUN" -eq 1 ]]; then
+      log "  [dry-run] Workspace $ws wuerde entfernt"
       howto_step "DELETE workspaces/$ws" "200" "-" "404 = schon weg, ohne recurse"
       continue
     fi
@@ -293,6 +297,7 @@ uninstall_datastores() {
       continue
     fi
     if [[ "$DRY_RUN" -eq 1 ]]; then
+      log "  [dry-run] Datastore $ws/$ds wuerde entfernt"
       howto_step "DELETE workspaces/$ws/datastores/$ds" "200" "-" "404 = schon weg, ohne recurse"
       continue
     fi
@@ -594,6 +599,8 @@ uninstall_featuretypes() {
         continue
       fi
       if [[ "$DRY_RUN" -eq 1 ]]; then
+        _PLANNED_LAYER_DEL+=("$ws/$name")
+        log "  [dry-run] $ws/$name: Layer und FeatureType wuerden entfernt"
         howto_step "DELETE workspaces/$ws/layers/$name" "200" "-" "404 = schon weg, ohne recurse ($ws/$name)"
         howto_step "DELETE workspaces/$ws/datastores/$ds/featuretypes/$name" "200" "-" "404 = schon weg, ohne recurse ($ws/$name)"
         continue

@@ -238,6 +238,15 @@ uninstall_acls() {
         rule="${ws}.${layer}.${mode}"
         cur="$(jq -r --arg r "$rule" '.[$r] // empty' "$tmp" 2>/dev/null)"
         [[ -n "$cur" ]] || { log "  ACL $rule nicht vorhanden — übersprungen"; continue; }
+        if [[ "$DRY_RUN" -eq 1 ]]; then
+          if _has "$ws/$layer" "${_PLANNED_LAYER_DEL[@]}"; then
+            log "  [dry-run] ACL $rule entfaellt mit dem Layer"
+          else
+            log_warn "  ACL $rule behalten (Layer $ws/$layer besteht weiter)"
+            _protect_roles "$roles"
+          fi
+          continue
+        fi
         _gs_get "workspaces/${ws}/layers/${layer}.json"
         code="$_GS_CODE"
         if [[ "$code" == "200" ]]; then
@@ -250,10 +259,6 @@ uninstall_acls() {
         if ! _acl_roles_equal "$cur" "$roles"; then
           log_error "ACL $rule abweichend ('$cur') — nicht gelöscht"; rc=1
           _protect_roles "$cur"
-          continue
-        fi
-        if [[ "$DRY_RUN" -eq 1 ]]; then
-          howto_step "DELETE security/acl/layers/$rule" "200" "-" "404 = schon weg"
           continue
         fi
         _gs_write_body DELETE "security/acl/layers/$rule"

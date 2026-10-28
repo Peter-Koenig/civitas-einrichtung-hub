@@ -608,6 +608,7 @@ do_uninstall() {
         continue
       fi
       if [[ "$DRY_RUN" -eq 1 ]]; then
+        log "  [dry-run] Zuordnung $role/$user wuerde entfernt"
         howto_step "DELETE security/roles/role/$role/user/$user" "200" "-" "404 = schon weg"
         continue
       fi
@@ -630,6 +631,7 @@ do_uninstall() {
       continue
     fi
     if [[ "$DRY_RUN" -eq 1 ]]; then
+      log "  [dry-run] Benutzer $user wuerde entfernt"
       howto_step "DELETE security/usergroup/user/$user" "200" "-" "404 = schon weg"
       continue
     fi
@@ -656,6 +658,7 @@ do_uninstall() {
         continue
       fi
       if [[ "$DRY_RUN" -eq 1 ]]; then
+        log "  [dry-run] Rolle $role wuerde entfernt"
         howto_step "DELETE security/roles/role/$role" "200" "-" "404 = schon weg"
         continue
       fi
@@ -677,7 +680,10 @@ do_uninstall() {
   while IFS='|' read -r key _ user roles secret; do
     [[ -n "$key" ]] || continue
     howto "kubectl -n $NAMESPACE delete secret $secret --ignore-not-found"
-    [[ "$DRY_RUN" -eq 1 ]] && continue
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      log "  [dry-run] Secret $secret wuerde entfernt"
+      continue
+    fi
     kubectl -n "$NAMESPACE" delete secret "$secret" --ignore-not-found >/dev/null 2>&1 \
       || { log_error "Secret $secret löschen fehlgeschlagen"; rc=1; }
   done <<< "$SOL_TABLE"

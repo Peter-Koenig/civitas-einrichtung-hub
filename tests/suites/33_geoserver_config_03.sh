@@ -251,12 +251,12 @@ scenario "106"
   restore_state
   rc="$(run_script --uninstall --url "$URL" --ns "$NS")"
   check "S106 Ist Exit 0" "0" "$rc"
-  check "S106 Ist FeatureType 25" "25" "$(grep -c 'FeatureType geloescht' "$T/out.log" || true)"
-  check "S106 Ist Datastore 5" "5" "$(grep -c 'Datastore geloescht' "$T/out.log" || true)"
-  check "S106 Ist Workspace 6" "6" "$(grep -c 'Workspace geloescht' "$T/out.log" || true)"
-  check "S106 Ist Zuordnung 6" "6" "$(grep -c 'Zuordnung .* geloest' "$T/out.log" || true)"
-  check "S106 Ist Benutzer 6" "6" "$(grep -c 'Benutzer .* geloescht' "$T/out.log" || true)"
-  check "S106 Ist Rolle 6" "6" "$(grep -c 'Rolle .* geloescht' "$T/out.log" || true)"
+  check "S106 Ist FeatureType 25" "25" "$(grep -c 'FeatureType gelöscht' "$T/out.log" || true)"
+  check "S106 Ist Datastore 5" "5" "$(grep -c 'Datastore .* gelöscht' "$T/out.log" || true)"
+  check "S106 Ist Workspace 6" "6" "$(grep -c 'Workspace .* gelöscht' "$T/out.log" || true)"
+  check "S106 Ist Zuordnung 6" "6" "$(grep -c 'Zuordnung .* gelöst' "$T/out.log" || true)"
+  check "S106 Ist Benutzer 6" "6" "$(grep -c 'Benutzer .* gelöscht' "$T/out.log" || true)"
+  check "S106 Ist Rolle 6" "6" "$(grep -c 'Rolle .* gelöscht' "$T/out.log" || true)"
 fi
 
 # (107) XML-Escaping des Capabilities-Vergleichs (Abstract mit & und <)
