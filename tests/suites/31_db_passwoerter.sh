@@ -238,9 +238,9 @@ new="$(comm -13 <(printf "%s\n" "$before") <(printf "%s\n" "$after") | grep -vE 
 ' _ "$REPO" )"
 check "addon_11 Einstieg sourcen ohne Variablen" "OK" "$rc"
 
-# ── Phase 2 (Fix 2): Laufzeittest — install/verify/uninstall leaken nur die ──
-# absichtlichen Exporte P2D2_<KEY>_WFST_PASSWORD (compgen -v vorher/nachher,
-# ohne pipefail-Falle; BASH_REMATCH ist ein bash-internes Artefakt von =~).
+# ── Phase 2 (Fix 2 + Auflage 8/9): Laufzeittest mit Stubs ──────────────────
+# Szenarien: Variablen-Leck (install/verify/uninstall), .env-Spiegel e1-e6,
+# Uninstall mit Rest (Auflage 9). Alles in einer Subshell, ohne Netz/echte Secrets.
 cat > "$T/runtime_gs.sh" <<'RUNTIME'
 #!/usr/bin/env bash
 set -u
@@ -251,8 +251,17 @@ export PATH="$T/stubs:$PATH"
 
 log()      { :; }
 log_ok()   { :; }
-log_warn() { :; }
-log_error(){ :; }
+log_warn() { echo "W: $*" >&2; }
+log_error(){ echo "E: $*" >&2; }
+
+FAILS=""
+reset_wfst() {
+  unset P2D2_MAIN_WFST_PASSWORD P2D2_DEVELOP_WFST_PASSWORD P2D2_DE1_WFST_PASSWORD P2D2_DE2_WFST_PASSWORD P2D2_FV_WFST_PASSWORD
+  _p2d2_env_backup_reset
+  export GS_KUBECTL_WFST_VALUE=""
+  export GS_KUBECTL_SECRET_PRESENT="0"
+  export GS_CURL_DS_REST=""
+}
 
 export ADDON_NS="cc-prd-geodata-stack"
 export ADDON_DOMAIN="udp.example.org"
@@ -283,10 +292,13 @@ args="$*"
 case "$args" in
   *"get secret geoserver-geoserver"*"jsonpath"*"geoserver-user"*) printf 'admin' | base64 -w0; exit 0 ;;
   *"get secret geoserver-geoserver"*"jsonpath"*"geoserver-password"*) printf 'geoserverpass1234' | base64 -w0; exit 0 ;;
-  *"get secret"*"jsonpath"*"password"*) printf 'wfstpassword123456' | base64 -w0; exit 0 ;;
+  *"get secret"*"jsonpath"*"DB_PASSWORD"*) printf 'dbpassword1234567890' | base64 -w0; exit 0 ;;
+  *"get secret"*"jsonpath"*"password"*)
+    if [ -n "${GS_KUBECTL_WFST_VALUE:-}" ]; then printf '%s' "$GS_KUBECTL_WFST_VALUE" | base64 -w0; fi
+    exit 0 ;;
   *"get secret"*"jsonpath"*) exit 0 ;;
   *"get secret"*"-o json"*) printf '{}'; exit 0 ;;
-  *"get secret"*) exit 1 ;;
+  *"get secret"*) [ "${GS_KUBECTL_SECRET_PRESENT:-0}" = "1" ] && exit 0 || exit 1 ;;
   *"delete secret"*) exit 0 ;;
   *"apply"*) exit 0 ;;
   *) exit 0 ;;
@@ -330,11 +342,15 @@ case "$url" in
   *"/security/acl/layers"*) body='{}' ;;
   *"/workspaces.json") body='{"workspaces":{"workspace":[]}}' ;;
   *"/namespaces/"*) body='{"namespace":{"uri":"urn:x"}}' ;;
-  *"/datastores/"*"/featuretypes.json?list=available"*) body='{"list":{"string":[]}}' ;;
+  *"/datastores/"*"/featuretypes.json?list=available"*) body='{"list":{"string":["p2d2_containers","v_grabflure_aktuell","p2d2_grabflure_versionen","v_graeber_aktuell","p2d2_graeber_versionen"]}}' ;;
   *"/datastores/"*"/featuretypes/"*) body='{"featureType":{"attributes":{"attribute":[{"name":"osm_name"}]}}}' ;;
   *"/datastores/"*"/featuretypes.json") body='{"featureTypes":""}' ;;
-  *"/datastores.json") body='{"dataStores":""}' ;;
-  *"/services/"*"/workspaces/"*) code=404 ;;
+  *"/datastores.json")
+    ws="$(printf '%s' "$url" | sed -E 's#.*/workspaces/([^/]+)/datastores.json.*#\1#')"
+    body="{\"dataStores\":{\"dataStore\":[{\"name\":\"${ws}_pg\"}]}}"
+    ;;
+  *"/services/"*"/workspaces/"*)
+    if [ "$method" = "GET" ]; then code=404; else code=200; body='{}'; fi ;;
   *"/workspaces/"*"/settings.json") body='{"settings":{"numDecimals":7,"charset":"UTF-8","onlineResource":"https://example.org","contact":{"contactEmail":"test@example.org"}}}' ;;
   *"/services/"*"/settings.json") body='{"wms":{"id":"wms"},"wfs":{"id":"wfs"}}' ;;
   *"/layers/"*) body='{"layer":{"attribution":null}}' ;;
@@ -350,18 +366,99 @@ source "$REPO/modules_addon_V1s/addon_03_secrets.sh"
 # shellcheck disable=SC1090,SC1091
 source "$REPO/modules_addon_V1s/addon_11_geoserver_config.sh"
 
+# ── Szenario: Variablen-Leck (install/verify/uninstall) ─────────────────────
+reset_wfst
 before="$(compgen -v | sort)"
 install_addon_geoserver_config >/dev/null 2>&1
 verify_addon_geoserver_config >/dev/null 2>&1
 uninstall_addon_geoserver_config >/dev/null 2>&1
 after="$(compgen -v | sort)"
-
-new="$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | grep -vE '^(f|before|after|new|BASH_REMATCH)$' || true)"
+new="$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | grep -vE '^(f|before|after|new|BASH_REMATCH|FAILS)$' || true)"
 leak="$(printf '%s\n' "$new" | grep -vE '^P2D2_(MAIN|DEVELOP|DE1|DE2|FV)_WFST_PASSWORD$' || true)"
+[ -z "$leak" ] || FAILS="$FAILS leak"
+
+# ── e1: beide leer -> erzeugt -> gespiegelt ──────────────────────────────────
+reset_wfst
+envf="$(mktemp)"; printf 'P2D2_MAIN_WFST_PASSWORD=""   # Kommentar\n' > "$envf"; chmod 600 "$envf"
+export ADDON_ENV_FILE="$envf"
+install_addon_geoserver_config >/dev/null 2>&1
+val="$(_p2d2_env_read "$envf" "P2D2_MAIN_WFST_PASSWORD")"
+[ "${#val}" -ge 16 ] || FAILS="$FAILS e1_wert"
+grep -q '# Kommentar' "$envf" || FAILS="$FAILS e1_kommentar"
+[ "$(ls "$envf".bak* 2>/dev/null | wc -l)" -eq 1 ] || FAILS="$FAILS e1_bak"
+[ "$(stat -c %a "$envf")" = "600" ] || FAILS="$FAILS e1_rechte"
+rm -f "$envf" "$envf".bak*
+
+# ── e2: gesetzter gültiger Wert -> .env unverändert, kein .bak ───────────────
+reset_wfst
+GUELTIG20="aaaaaaaaaaaaaaaaaaaa"
+envf="$(mktemp)"
+for k in MAIN DEVELOP DE1 DE2 FV; do
+  printf 'P2D2_%s_WFST_PASSWORD="%s"\n' "$k" "$GUELTIG20" >> "$envf"
+  export "P2D2_${k}_WFST_PASSWORD=$GUELTIG20"
+done
+chmod 600 "$envf"; cp -p "$envf" "$envf.ref"
+export ADDON_ENV_FILE="$envf"
+_p2d2_env_backup_reset
+install_addon_geoserver_config >/dev/null 2>&1
+cmp -s "$envf" "$envf.ref" || FAILS="$FAILS e2_unveraendert"
+[ ! -e "$envf.bak" ] || FAILS="$FAILS e2_bak"
+rm -f "$envf" "$envf.ref" "$envf".bak*
+
+# ── e3: .env leer, Secret mit gültigem Wert -> Wert in .env ──────────────────
+reset_wfst
+export GS_KUBECTL_WFST_VALUE="secretvalue123456"
+envf="$(mktemp)"; printf 'P2D2_MAIN_WFST_PASSWORD=""\n' > "$envf"; chmod 600 "$envf"
+export ADDON_ENV_FILE="$envf"
+install_addon_geoserver_config >/dev/null 2>&1
+val="$(_p2d2_env_read "$envf" "P2D2_MAIN_WFST_PASSWORD")"
+[ "$val" = "secretvalue123456" ] || FAILS="$FAILS e3_wert"
+rm -f "$envf" "$envf".bak*
+
+# ── e4: ADDON_ENV_FILE zeigt auf nicht vorhandene Datei -> Exit 0 + Warnung ──
+reset_wfst
+export ADDON_ENV_FILE="/nonexistent/path/env.p2d2-addon"
+out="$(install_addon_geoserver_config 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] || FAILS="$FAILS e4_exit"
+grep -q 'Env-Datei nicht vorhanden' <<< "$out" || FAILS="$FAILS e4_warn"
+
+# ── e5: für p2d2_wfs_user entsteht keine .env-Zeile ──────────────────────────
+reset_wfst
+envf="$(mktemp)"; : > "$envf"; chmod 600 "$envf"
+export ADDON_ENV_FILE="$envf"
+install_addon_geoserver_config >/dev/null 2>&1
+grep -q 'p2d2_wfs_user\|P2D2_RO_WFST_PASSWORD' "$envf" && FAILS="$FAILS e5_ro"
+cnt="$(grep -cE 'P2D2_(MAIN|DEVELOP|DE1|DE2|FV)_WFST_PASSWORD=' "$envf")"
+[ "$cnt" -eq 5 ] || FAILS="$FAILS e5_anzahl"
+rm -f "$envf" "$envf".bak*
+
+# ── e6: _p2d2_env_merge_from übernimmt WFST_PASSWORD in die Ziel-.env ────────
+_p2d2_env_backup_reset
+src="$(mktemp)"; dst="$(mktemp)"
+printf 'P2D2_MAIN_WFST_PASSWORD="mergevalue12345"\n' > "$src"
+: > "$dst"
+_p2d2_env_merge_from "$src" "$dst" >/dev/null 2>&1
+val="$(_p2d2_env_read "$dst" "P2D2_MAIN_WFST_PASSWORD")"
+[ "$val" = "mergevalue12345" ] || FAILS="$FAILS e6_merge"
+rm -f "$src" "$dst" "$dst".bak*
+
+# ── Auflage 9: Uninstall mit Rest (Secret + Datastore bleiben) ────────────────
+reset_wfst
+export GS_KUBECTL_SECRET_PRESENT="1"
+export GS_CURL_DS_REST="main"
+vor="$(compgen -v | sort)"
+out="$(uninstall_addon_geoserver_config 2>&1)"; rc=$?
+nach="$(compgen -v | sort)"
+[ "$rc" -eq 1 ] || FAILS="$FAILS rest_exit"
+grep -q 'Secret p2d2-geoserver-wfst-main noch vorhanden' <<< "$out" || FAILS="$FAILS rest_secret"
+grep -q 'Datastore main_pg noch vorhanden' <<< "$out" || FAILS="$FAILS rest_datastore"
+neu="$(comm -13 <(printf '%s\n' "$vor") <(printf '%s\n' "$nach") | grep -vE '^(P2D2_(MAIN|DEVELOP|DE1|DE2|FV)_WFST_PASSWORD|BASH_REMATCH|vor|nach|neu|out|rc|FAILS|GS_KUBECTL_SECRET_PRESENT|GS_CURL_DS_REST)$' || true)"
+[ -z "$neu" ] || FAILS="$FAILS rest_leak"
+
 rm -rf "$T"
-[[ -z "$leak" ]] && echo OK || echo "LECK: $leak"
+[[ -z "$FAILS" ]] && echo OK || echo "FAIL: $FAILS"
 RUNTIME
 rc="$( bash "$T/runtime_gs.sh" "$REPO" )"
-check "addon_11 Laufzeit ohne Variablen-Leck" "OK" "$rc"
+check "addon_11 Laufzeit (Leck/Env/Uninstall-Rest)" "OK" "$rc"
 
 rm -rf "$T"

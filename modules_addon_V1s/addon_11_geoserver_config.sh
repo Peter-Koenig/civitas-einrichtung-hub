@@ -15,6 +15,10 @@
 # Hinweis (D1): _p2d2_pw_resolve exportiert die Variablen P2D2_<KEY>_WFST_PASSWORD
 # absichtlich in den aufrufenden Prozess; addon_30 (apply_addon_secrets) liest sie
 # dort. Voraussetzung: install_addon_geoserver_config läuft vor install_addon_frontend.
+#
+# Hinweis (D1a/Auflage 8): Das Modul schreibt ausschließlich P2D2_<KEY>_WFST_PASSWORD
+# in die .env (ADDON_ENV_FILE); RO (p2d2_wfs_user) bleibt secret-geführt ohne
+# .env-Variable.
 
 # Guard wie addon_10: ohne ADDON_NS/ADDON_DOMAIN wird das Sourcen abgebrochen.
 if [[ -z "${ADDON_NS:-}" || -z "${ADDON_DOMAIN:-}" ]]; then
@@ -231,6 +235,12 @@ _gsc_do_install() {
       code="$(_gs_http_code POST "security/roles/role/$role/user/$user")"
       [[ "$code" == "200" ]] || { log_error "Zuordnung $role -> $user fehlgeschlagen (HTTP $code)"; return 1; }
     done
+
+    # Auflage 8 (D1a): Wert in die .env spiegeln, erst nachdem Secret und GeoServer
+    # stimmen. pw_var ist nur für key != RO gesetzt; RO bleibt secret-geführt.
+    if [[ "$key" != "RO" ]]; then
+      _p2d2_env_mirror "${ADDON_ENV_FILE:-}" "$pw_var" "$password" || true
+    fi
   done <<< "$SOL_TABLE"
 
   install_workspaces || return 1
@@ -388,7 +398,7 @@ _gsc_do_uninstall() {
   # (K2: im Dry-run übersprungen; hier gibt es keinen Dry-run). B1/B3: bereits gelöschte
   # Datastores werden übersprungen, Lesefehler sind Fehler.
   local -a after_users after_roles after_ws after_ds after_ft
-  local ftmp wtmp dtmp ws dkey dws dname fdsp
+  local ftmp wtmp dtmp ws dkey dws dname fdsp fname
   ftmp="$(mktemp)"; chmod 600 "$ftmp"
   if ! read_users > "$ftmp"; then
     rm -f "$ftmp"; log_error "Schlussverifikation: Benutzerliste nicht lesbar"; return 1
