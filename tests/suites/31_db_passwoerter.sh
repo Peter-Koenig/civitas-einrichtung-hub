@@ -389,6 +389,10 @@ export ADDON_ENV_FILE="$envf"
 install_addon_geoserver_config >/dev/null 2>&1
 val="$(_p2d2_env_read "$envf" "P2D2_MAIN_WFST_PASSWORD")"
 [ "${#val}" -ge 16 ] || FAILS="$FAILS e1_wert"
+for k in MAIN DEVELOP DE1 DE2 FV; do
+  v="$(_p2d2_env_read "$envf" "P2D2_${k}_WFST_PASSWORD")"
+  [ "${#v}" -ge 16 ] || FAILS="$FAILS e1_alle"
+done
 grep -q '# Kommentar' "$envf" || FAILS="$FAILS e1_kommentar"
 [ "$(ls "$envf".bak* 2>/dev/null | wc -l)" -eq 1 ] || FAILS="$FAILS e1_bak"
 [ "$(stat -c %a "$envf")" = "600" ] || FAILS="$FAILS e1_rechte"
