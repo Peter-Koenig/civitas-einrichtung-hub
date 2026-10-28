@@ -86,4 +86,16 @@ check "How-To Dry-Run geplant" "yes" "$(grep -q 'Modus: dry-run (geplant)' "$how
 
 [ "${GEOSERVER_ONLY:-all}" = "new" ] || scenarios_legacy
 
+
+
+if want 109; then
+scenario "109"
+  reset_state
+  export GS_NOT_READY_FIRST=2
+  rc="$(run_script --url "$URL" --ns "$NS")"
+  check "S109 Exit 0" "0" "$rc"
+  check "S109 2 Wartemeldungen" "2" "$(grep -c 'noch nicht bereit' "$T/out.log" || true)"
+  unset GS_NOT_READY_FIRST
+fi
+
 gs_group_end

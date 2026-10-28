@@ -92,4 +92,19 @@ check "WS Konflikt 5 weitere angelegt"   "5" "$(grep -c 'rest/namespaces' "$CURL
 
 [ "${GEOSERVER_ONLY:-all}" = "new" ] || scenarios_legacy
 
+
+
+if want 103; then
+scenario "103"
+  ensure_snap_installed
+  restore_state
+  clear_logs
+  rc="$(run_script --url "$URL" --ns "$NS")"
+  check "S103 Exit 0" "0" "$rc"
+  check "S103 genau 1 HEAD" "1" "$(grep -c ' -I ' "$CURL_LOG" || true)"
+  headline="$(paste -d '|' "$CURL_LOG" "$CURL_STDIN_LOG" 2>/dev/null | grep -- ' -I ' | head -1)"
+  check "S103 HEAD ohne Credentials" "no" "$(printf '%s' "$headline" | grep -q 'user =' && echo yes || echo no)"
+  check "S103 HEAD mit max-time" "yes" "$(printf '%s' "$headline" | grep -q -- '--max-time' && echo yes || echo no)"
+fi
+
 gs_group_end

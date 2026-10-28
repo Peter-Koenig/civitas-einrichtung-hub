@@ -104,4 +104,22 @@ scenario "93"
   unset GS_IGNORE_SETTINGS
 fi
 
+
+
+if want 98; then
+scenario "98"
+  reset_state
+  rc="$(run_script --url "$URL" --ns "$NS")"
+  check "S98 Exit 0" "0" "$rc"
+  check "S98 kein POST auf Dienst-Settings" "0" "$(grep -c 'services/.*/workspaces/.*/settings METHOD=POST' "$CURL_BODY_LOG" || true)"
+  check "S98 10 OK angelegt" "10" "$(grep -c 'Dienst-Metadaten.*angelegt' "$T/out.log")"
+  for ws in main dev de1 de2 fv; do
+    for svc in wms wfs; do
+      exp="$(printf '%s' "$svc" | tr 'a-z' 'A-Z')"
+      check "S98 $ws/$svc name" "$exp" "$(jq -r ".$svc.name // empty" "$GS_STATE_DIR/service/$ws/$svc.json" 2>/dev/null)"
+      check "S98 $ws/$svc enabled" "true" "$(jq -r ".$svc.enabled // empty" "$GS_STATE_DIR/service/$ws/$svc.json" 2>/dev/null)"
+    done
+  done
+fi
+
 gs_group_end

@@ -64,4 +64,14 @@ scenario "86"
   check "S86 kein settings PUT/POST" "0" "$(grep -c '/settings' "$CURL_BODY_LOG" || true)"
 fi
 
+
+
+if want 108; then
+scenario "108"
+  reset_state
+  rc="$(run_script --url "$URL" --ns "$NS")"
+  check "S108 Exit 0" "0" "$rc"
+  check "S108 alle mit max-time" "0" "$(grep -vc -- '--max-time' "$CURL_LOG" || true)"
+fi
+
 gs_group_end

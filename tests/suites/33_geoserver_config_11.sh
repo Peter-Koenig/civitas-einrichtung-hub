@@ -92,4 +92,21 @@ check "B3 Dry-Run leer Uninstall keine FEHLER" "0" "$(grep -c 'FEHLER' "$T/err.l
 
 [ "${GEOSERVER_ONLY:-all}" = "new" ] || scenarios_legacy
 
+
+
+if want 105; then
+scenario "105"
+  ensure_snap_installed
+  restore_state
+  printf '%s' '{"main.geo-containers.w":"P2D2_IMPORT_ROLE,ADMIN"}' > "$GS_STATE_DIR/acl.add"
+  jq -s '.[0] * .[1]' "$GS_STATE_DIR/acl.map" "$GS_STATE_DIR/acl.add" > "$GS_STATE_DIR/acl.map.new" 2>/dev/null
+  mv "$GS_STATE_DIR/acl.map.new" "$GS_STATE_DIR/acl.map"
+  rm -f "$GS_STATE_DIR/acl.add"
+  clear_logs
+  rc="$(run_script --url "$URL" --ns "$NS")"
+  check "S105 Exit 1" "1" "$rc"
+  check "S105 Konflikt Meldung" "yes" "$(grep -q 'Konflikt' "$T/err.log" && echo yes || echo no)"
+  check "S105 Regel bleibt" "P2D2_IMPORT_ROLE,ADMIN" "$(jq -r '."main.geo-containers.w"' "$GS_STATE_DIR/acl.map" 2>/dev/null)"
+fi
+
 gs_group_end

@@ -78,4 +78,49 @@ scenario "94"
   check "S94 How-To dry-run" "yes" "$(grep -q 'dry-run' "$howto_file" && echo yes || echo no)"
 fi
 
+
+if want 100; then
+scenario "100"
+  ensure_snap_installed
+  restore_state
+  export GS_CAPS_EXCEPTION=1
+  clear_logs
+  rc="$(run_script --url "$URL" --ns "$NS")"
+  check "S100 Exit 1" "1" "$rc"
+  check "S100 nennt ExceptionReport" "yes" "$(grep -q 'ExceptionReport' "$T/err.log" && echo yes || echo no)"
+  unset GS_CAPS_EXCEPTION
+fi
+
+
+if want 106; then
+scenario "106"
+  ensure_snap_installed
+  restore_state
+  vor="$(normalize_state "$GS_STATE_DIR" "$KUBE_STATE_DIR" | sha256sum | cut -d' ' -f1)"
+  rc="$(run_script --uninstall --dry-run --url "$URL" --ns "$NS")"
+  check "S106 Exit 0" "0" "$rc"
+  check "S106 0 DELETE" "0" "$(grep -c '\-X DELETE' "$CURL_LOG" || true)"
+  nach="$(normalize_state "$GS_STATE_DIR" "$KUBE_STATE_DIR" | sha256sum | cut -d' ' -f1)"
+  check "S106 Zustand unveraendert" "$vor" "$nach"
+  check "S106 kein WARN behalten" "0" "$(grep -c 'behalten' "$T/err.log" || true)"
+  check "S106 kein bleibt" "0" "$(grep -c 'bleibt' "$T/err.log" || true)"
+  check "S106 Plan FeatureTypes 25" "25" "$(grep -c 'Layer und FeatureType wuerden entfernt' "$T/out.log" || true)"
+  check "S106 Plan ACL 50" "50" "$(grep -c 'ACL .* entfaellt mit dem Layer' "$T/out.log" || true)"
+  check "S106 Plan Datastores 5" "5" "$(grep -c 'Datastore .* wuerde entfernt' "$T/out.log" || true)"
+  check "S106 Plan Workspaces 6" "6" "$(grep -c 'Workspace .* wuerde entfernt' "$T/out.log" || true)"
+  check "S106 Plan Zuordnungen 6" "6" "$(grep -c 'Zuordnung .* wuerde entfernt' "$T/out.log" || true)"
+  check "S106 Plan Benutzer 6" "6" "$(grep -c 'Benutzer .* wuerde entfernt' "$T/out.log" || true)"
+  check "S106 Plan Rollen 6" "6" "$(grep -c 'Rolle .* wuerde entfernt' "$T/out.log" || true)"
+  check "S106 Plan Secrets 6" "6" "$(grep -c 'Secret .* wuerde entfernt' "$T/out.log" || true)"
+  restore_state
+  rc="$(run_script --uninstall --url "$URL" --ns "$NS")"
+  check "S106 Ist Exit 0" "0" "$rc"
+  check "S106 Ist FeatureType 25" "25" "$(grep -c 'FeatureType gelöscht' "$T/out.log" || true)"
+  check "S106 Ist Datastore 5" "5" "$(grep -c 'Datastore .* gelöscht' "$T/out.log" || true)"
+  check "S106 Ist Workspace 6" "6" "$(grep -c 'Workspace .* gelöscht' "$T/out.log" || true)"
+  check "S106 Ist Zuordnung 6" "6" "$(grep -c 'Zuordnung .* gelöst' "$T/out.log" || true)"
+  check "S106 Ist Benutzer 6" "6" "$(grep -c 'Benutzer .* gelöscht' "$T/out.log" || true)"
+  check "S106 Ist Rolle 6" "6" "$(grep -c 'Rolle .* gelöscht' "$T/out.log" || true)"
+fi
+
 gs_group_end

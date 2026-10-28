@@ -80,4 +80,23 @@ check "K4 env Domain gefunden" "yes" "$(grep -q 'udp.envtest.example' "$T/out.lo
 
 [ "${GEOSERVER_ONLY:-all}" = "new" ] || scenarios_legacy
 
+
+
+if want 111; then
+scenario "111"
+  reset_state
+  export JQ_LOG_ARGS=1
+  run_script --url "$URL" --ns "$NS" >/dev/null 2>&1
+  leak=0
+  for f in "$KUBE_STATE_DIR"/secrets/p2d2-geoserver-*.b64; do
+    [ -f "$f" ] || continue
+    b64="$(cat "$f")"
+    klartext="$(base64 -d <<< "$b64" 2>/dev/null)"
+    if grep -qF "$b64" "$JQ_LOG" "$KUBECTL_LOG" "$CURL_LOG" 2>/dev/null; then leak=1; fi
+    if grep -qF "$klartext" "$JQ_LOG" "$KUBECTL_LOG" "$CURL_LOG" 2>/dev/null; then leak=1; fi
+  done
+  check "S111 keine Secret-Leaks" "0" "$leak"
+  unset JQ_LOG_ARGS
+fi
+
 gs_group_end

@@ -98,4 +98,36 @@ scenario "87"
   check "S87 Info weicht ab" "yes" "$(grep -q 'weichen ab' "$T/out.log" && echo yes || echo no)"
 fi
 
+
+if want 110; then
+scenario "110"
+  reset_state
+  export GS_NOT_READY_FIRST=99
+  export GS_WAIT_SECONDS=0
+  rc="$(run_script --url "$URL" --ns "$NS")"
+  check "S110 Exit 2" "2" "$rc"
+  check "S110 nicht erreichbar" "yes" "$(grep -q 'nicht erreichbar' "$T/err.log" && echo yes || echo no)"
+  unset GS_NOT_READY_FIRST GS_WAIT_SECONDS
+fi
+
+
+if want 102; then
+scenario "102"
+  ensure_snap_installed
+  restore_state
+  export GS_GEOJSON_PROP_DECIMALS=1
+  export GS_IGNORE_SETTINGS=1
+  clear_logs
+  rc="$(run_script --url "$URL" --ns "$NS")"
+  check "S102 (a) Exit 1" "1" "$rc"
+  unset GS_GEOJSON_PROP_DECIMALS GS_IGNORE_SETTINGS
+  restore_state
+  export GS_GEOJSON_EMPTY=1
+  clear_logs
+  rc="$(run_script --url "$URL" --ns "$NS")"
+  check "S102 (b) Exit 0" "0" "$rc"
+  check "S102 (b) WARN keine Features" "yes" "$(grep -q 'keine Features' "$T/err.log" && echo yes || echo no)"
+  unset GS_GEOJSON_EMPTY
+fi
+
 gs_group_end

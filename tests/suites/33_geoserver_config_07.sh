@@ -80,4 +80,33 @@ check "D Dry-Run keine FeatureTypes"       "0" "$(find "$GS_STATE_DIR/ft" -name 
 
 [ "${GEOSERVER_ONLY:-all}" = "new" ] || scenarios_legacy
 
+
+if want 101; then
+scenario "101"
+  ensure_snap_installed
+  restore_state
+  export GS_CAPS_NO_ABSTRACT=1
+  clear_logs
+  rc="$(run_script --url "$URL" --ns "$NS")"
+  check "S101 Exit 1" "1" "$rc"
+  check "S101 nennt Abstract" "yes" "$(grep -q 'Abstract' "$T/err.log" && echo yes || echo no)"
+  unset GS_CAPS_NO_ABSTRACT
+fi
+
+
+if want 97; then
+scenario "97"
+  reset_state
+  rc="$(run_script --dry-run --url "$URL" --ns "$NS")"
+  check "S97 Dry-run Exit 0" "0" "$rc"
+  check "S97 keine Mutation" "0" "$(grep -cE 'METHOD=(POST|PUT|DELETE)' "$CURL_BODY_LOG" || true)"
+  check "S97 Plan Workspace-Einstellungen" "yes" "$(grep -q 'Workspace-Einstellungen' "$T/out.log" && echo yes || echo no)"
+  check "S97 Plan Dienst-Metadaten" "yes" "$(grep -q 'Dienst-Metadaten' "$T/out.log" && echo yes || echo no)"
+  check "S97 Plan Datastores" "yes" "$(grep -q 'Datastores' "$T/out.log" && echo yes || echo no)"
+  check "S97 Plan FeatureTypes" "yes" "$(grep -q 'FeatureTypes' "$T/out.log" && echo yes || echo no)"
+  check "S97 Plan Attribut-Mapping" "yes" "$(grep -q 'Attribut-Mapping' "$T/out.log" && echo yes || echo no)"
+  check "S97 Plan Layer-ACLs" "yes" "$(grep -q 'Layer-ACLs' "$T/out.log" && echo yes || echo no)"
+  check "S97 kein FEHLER" "0" "$(grep -c 'FEHLER' "$T/err.log" || true)"
+fi
+
 gs_group_end

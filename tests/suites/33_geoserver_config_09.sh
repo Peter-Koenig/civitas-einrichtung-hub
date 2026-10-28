@@ -93,4 +93,17 @@ scenario "92"
   unset GS_CAPS_NO_TITLE
 fi
 
+
+if want 112; then
+scenario "112"
+  reset_state
+  mkdir -p "$T/tmpdir"
+  export TMPDIR="$T/tmpdir"
+  export GS_ACL_POST_FAIL=1
+  rc="$(run_script --url "$URL" --ns "$NS")"
+  check "S112 Abbruch Exit 1" "1" "$rc"
+  check "S112 keine Temp-Datei" "0" "$(find "$T/tmpdir" -mindepth 1 | awk 'END{print NR}')"
+  unset GS_ACL_POST_FAIL TMPDIR
+fi
+
 gs_group_end
