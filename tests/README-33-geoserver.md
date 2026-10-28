@@ -10,13 +10,13 @@ Slots von `tests/run.sh`.
 
 | Ziel | Befehl | Dauer |
 |---|---|---|
-| alle Gruppen | `JOBS=12 ./tests/run.sh 33_geoserver` | 132 s |
-| eine Gruppe | `./tests/run.sh 33_geoserver_config_05` | 73 s |
-| nur neue Szenarien 85 bis 96 | `GEOSERVER_ONLY=new ./tests/run.sh 33_geoserver` | 49 s |
-| ein neues Szenario | `GEOSERVER_ONLY=new GEOSERVER_SCENARIOS=86 ./tests/run.sh 33_geoserver` | 28 s |
+| alle Gruppen | `JOBS=12 ./tests/run.sh 33_geoserver` | 175 s |
+| eine Gruppe | `JOBS=1 ./tests/run.sh 33_geoserver_config_03` | 117 s |
+| nur neue Szenarien 85 bis 112 | `GEOSERVER_ONLY=new ./tests/run.sh 33_geoserver` | 85 s |
+| ein neues Szenario | `GEOSERVER_ONLY=new GEOSERVER_SCENARIOS=107 ./tests/run.sh 33_geoserver` | 14 s |
 
 Dauer auf dem sdt-LXC (12 Threads, `JOBS`-Standard = `nproc`). `GEOSERVER_ONLY=new` überspringt
-die Bestands-Szenarien 1–84; `GEOSERVER_SCENARIOS` filtert nur die neuen Szenarien (85–96).
+die Bestands-Szenarien 1–84; `GEOSERVER_SCENARIOS` filtert nur die neuen Szenarien (85–112).
 
 ## Szenario zu Gruppe
 
@@ -121,14 +121,22 @@ Diese Tabelle wird generiert mit `tests/tools/gs_group_map.sh` (nicht von Hand g
 | 94 | 06 |
 | 95 | 10 |
 | 96 | 10 |
-| 97 | 03 |
-| 98 | 03 |
+| 97 | 07 |
+| 98 | 10 |
 | 99 | 03 |
-| 100 | 03 |
-| 101 | 03 |
-| 102 | 03 |
-| 103 | 03 |
+| 100 | 06 |
+| 101 | 07 |
+| 102 | 08 |
+| 103 | 05 |
 | 104 | 03 |
+| 105 | 11 |
+| 106 | 06 |
+| 107 | 03 |
+| 108 | 01 |
+| 109 | 04 |
+| 110 | 08 |
+| 111 | 02 |
+| 112 | 09 |
 
 ## Regeln für neue Szenarien
 
