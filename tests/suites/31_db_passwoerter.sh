@@ -222,4 +222,146 @@ new="$(comm -13 <(printf "%s\n" "$before") <(printf "%s\n" "$after") | grep -vE 
 ' _ "$REPO" )"
 check "addon_11 Libs sourcen ohne Variablen" "OK" "$rc"
 
+# ── Phase 2 (Fix 2): Einstieg sourcen ohne Variablen (Guard + addon_03) ──────
+rc="$( bash -c '
+set -euo pipefail
+export ADDON_NS="cc-prd-geodata-stack"
+export ADDON_DOMAIN="udp.example.org"
+# shellcheck disable=SC1090,SC1091
+source "$1/modules_addon_V1s/addon_03_secrets.sh"
+before="$(compgen -v | sort)"
+# shellcheck disable=SC1090,SC1091
+source "$1/modules_addon_V1s/addon_11_geoserver_config.sh"
+after="$(compgen -v | sort)"
+new="$(comm -13 <(printf "%s\n" "$before") <(printf "%s\n" "$after") | grep -vE "^(f|before|after|new|BASH_REMATCH)$" || true)"
+[[ -z "$new" ]] && echo OK || echo "LECK: $new"
+' _ "$REPO" )"
+check "addon_11 Einstieg sourcen ohne Variablen" "OK" "$rc"
+
+# ── Phase 2 (Fix 2): Laufzeittest — install/verify/uninstall leaken nur die ──
+# absichtlichen Exporte P2D2_<KEY>_WFST_PASSWORD (compgen -v vorher/nachher,
+# ohne pipefail-Falle; BASH_REMATCH ist ein bash-internes Artefakt von =~).
+cat > "$T/runtime_gs.sh" <<'RUNTIME'
+#!/usr/bin/env bash
+set -u
+REPO="$1"
+T="$(mktemp -d)"
+mkdir -p "$T/stubs"
+export PATH="$T/stubs:$PATH"
+
+log()      { :; }
+log_ok()   { :; }
+log_warn() { :; }
+log_error(){ :; }
+
+export ADDON_NS="cc-prd-geodata-stack"
+export ADDON_DOMAIN="udp.example.org"
+export ADDON_SUPPLEMENT_DIR="$REPO/supplement"
+export P2D2_BASE_DB_HOST="central-db.test.svc.cluster.local"
+export P2D2_BASE_DB_PORT="5432"
+export P2D2_BASE_DB_NAME="p2d2"
+export P2D2_MAIN_DB_USER="P2D2-MAIN"
+export P2D2_DEVELOP_DB_USER="P2D2-DEVELOP"
+export P2D2_DE1_DB_USER="P2D2-DE1"
+export P2D2_DE2_DB_USER="P2D2-DE2"
+export P2D2_FV_DB_USER="P2D2-FV"
+export P2D2_MAIN_WFST_WORKSPACE="main"
+export P2D2_MAIN_WFST_USERNAME="p2d2_wfst_main"
+export P2D2_DEVELOP_WFST_WORKSPACE="dev"
+export P2D2_DEVELOP_WFST_USERNAME="p2d2_wfst_develop"
+export P2D2_DE1_WFST_WORKSPACE="de1"
+export P2D2_DE1_WFST_USERNAME="p2d2_wfst_de1"
+export P2D2_DE2_WFST_WORKSPACE="de2"
+export P2D2_DE2_WFST_USERNAME="p2d2_wfst_de2"
+export P2D2_FV_WFST_WORKSPACE="fv"
+export P2D2_FV_WFST_USERNAME="p2d2_wfst_fv"
+
+cat > "$T/stubs/kubectl" <<'K'
+#!/usr/bin/env bash
+set -u
+args="$*"
+case "$args" in
+  *"get secret geoserver-geoserver"*"jsonpath"*"geoserver-user"*) printf 'admin' | base64 -w0; exit 0 ;;
+  *"get secret geoserver-geoserver"*"jsonpath"*"geoserver-password"*) printf 'geoserverpass1234' | base64 -w0; exit 0 ;;
+  *"get secret"*"jsonpath"*"password"*) printf 'wfstpassword123456' | base64 -w0; exit 0 ;;
+  *"get secret"*"jsonpath"*) exit 0 ;;
+  *"get secret"*"-o json"*) printf '{}'; exit 0 ;;
+  *"get secret"*) exit 1 ;;
+  *"delete secret"*) exit 0 ;;
+  *"apply"*) exit 0 ;;
+  *) exit 0 ;;
+esac
+K
+chmod +x "$T/stubs/kubectl"
+
+cat > "$T/stubs/yq" <<'Y'
+#!/usr/bin/env bash
+case "$*" in
+  *"--version"*) echo "yq (https://github.com/mikefarah/yq) version v4.44.3" ;;
+  *) printf '%s' '{"workspace_settings":{"numDecimals":7,"charset":"UTF-8","contact":{"contactEmail":"test@example.org"},"onlineResource":"https://example.org"},"service":{"onlineResource":"https://example.org","wms":{"title":"WMS","abstract":"A"},"wfs":{"title":"WFS","abstract":"A","featureBounding":null},"maintainer":"M","fees":"F","accessConstraints":"C","keywords":["k"]},"layers":{"geo-containers":{"title":"T","abstract":"A"},"grabflure":{"title":"T"},"grabflure_versionen":{"title":"T"},"graeber":{"title":"T"},"graeber_versionen":{"title":"T"}},"stages":{"main":"Main","dev":"Dev","de1":"DE1","de2":"DE2","fv":"FV"}}' ;;
+esac
+Y
+chmod +x "$T/stubs/yq"
+
+cat > "$T/stubs/curl" <<'C'
+#!/usr/bin/env bash
+set -u
+stdin="$(cat 2>/dev/null || true)"
+url=""; method="GET"; has_w=0; out_file="/dev/null"; prev=""
+for a in "$@"; do
+  case "$a" in
+    http*) url="$a" ;;
+    -X) prev="X" ;;
+    -w) has_w=1 ;;
+    -o) prev="o" ;;
+    -I) : ;;
+    *) case "$prev" in
+         X) method="$a"; prev="" ;;
+         o) out_file="$a"; prev="" ;;
+       esac ;;
+  esac
+done
+code="200"; body=""
+case "$url" in
+  *"/ows"*) case "$stdin" in *falsch_*) code=401 ;; *) code=200 ;; esac; body="" ;;
+  *"/security/roles.json") body='{"roles":["ADMIN"]}' ;;
+  *"/security/usergroup/users.json") body='{"users":[{"userName":"admin"}]}' ;;
+  *"/security/roles/user/"*) body='{"roles":[]}' ;;
+  *"/security/acl/layers"*) body='{}' ;;
+  *"/workspaces.json") body='{"workspaces":{"workspace":[]}}' ;;
+  *"/namespaces/"*) body='{"namespace":{"uri":"urn:x"}}' ;;
+  *"/datastores/"*"/featuretypes.json?list=available"*) body='{"list":{"string":[]}}' ;;
+  *"/datastores/"*"/featuretypes/"*) body='{"featureType":{"attributes":{"attribute":[{"name":"osm_name"}]}}}' ;;
+  *"/datastores/"*"/featuretypes.json") body='{"featureTypes":""}' ;;
+  *"/datastores.json") body='{"dataStores":""}' ;;
+  *"/services/"*"/workspaces/"*) code=404 ;;
+  *"/workspaces/"*"/settings.json") body='{"settings":{"numDecimals":7,"charset":"UTF-8","onlineResource":"https://example.org","contact":{"contactEmail":"test@example.org"}}}' ;;
+  *"/services/"*"/settings.json") body='{"wms":{"id":"wms"},"wfs":{"id":"wfs"}}' ;;
+  *"/layers/"*) body='{"layer":{"attribution":null}}' ;;
+  *) code=200; body='{}' ;;
+esac
+if [ "$out_file" != "/dev/null" ]; then printf '%s' "$body" > "$out_file"; fi
+if [ "$has_w" = "1" ]; then printf '%s' "$code"; fi
+C
+chmod +x "$T/stubs/curl"
+
+# shellcheck disable=SC1090,SC1091
+source "$REPO/modules_addon_V1s/addon_03_secrets.sh"
+# shellcheck disable=SC1090,SC1091
+source "$REPO/modules_addon_V1s/addon_11_geoserver_config.sh"
+
+before="$(compgen -v | sort)"
+install_addon_geoserver_config >/dev/null 2>&1
+verify_addon_geoserver_config >/dev/null 2>&1
+uninstall_addon_geoserver_config >/dev/null 2>&1
+after="$(compgen -v | sort)"
+
+new="$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | grep -vE '^(f|before|after|new|BASH_REMATCH)$' || true)"
+leak="$(printf '%s\n' "$new" | grep -vE '^P2D2_(MAIN|DEVELOP|DE1|DE2|FV)_WFST_PASSWORD$' || true)"
+rm -rf "$T"
+[[ -z "$leak" ]] && echo OK || echo "LECK: $leak"
+RUNTIME
+rc="$( bash "$T/runtime_gs.sh" "$REPO" )"
+check "addon_11 Laufzeit ohne Variablen-Leck" "OK" "$rc"
+
 rm -rf "$T"

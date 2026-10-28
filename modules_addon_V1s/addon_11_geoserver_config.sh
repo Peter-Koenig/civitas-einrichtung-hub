@@ -11,21 +11,25 @@
 #     sind Legacy (kein Konsument), werden aber übernommen.
 # D9: Import-Rolle P2D2_OSM_IMPORT (Benutzer p2d2_osm_import, Secret
 #     p2d2-geoserver-osm-import) ist nur als Kommentar vorgesehen, wird NICHT angelegt.
+#
+# Hinweis (D1): _p2d2_pw_resolve exportiert die Variablen P2D2_<KEY>_WFST_PASSWORD
+# absichtlich in den aufrufenden Prozess; addon_30 (apply_addon_secrets) liest sie
+# dort. Voraussetzung: install_addon_geoserver_config läuft vor install_addon_frontend.
 
 # Guard wie addon_10: ohne ADDON_NS/ADDON_DOMAIN wird das Sourcen abgebrochen.
 if [[ -z "${ADDON_NS:-}" || -z "${ADDON_DOMAIN:-}" ]]; then
+  echo "FEHLER: ADDON_NS/ADDON_DOMAIN nicht gesetzt — addon_11_geoserver_config.sh nicht isoliert sourcen." >&2
   return 1 2>/dev/null || exit 1
 fi
 
-_LIB_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=./addon_11_geoserver_config_core.sh
-source "${_LIB_DIR}/addon_11_geoserver_config_core.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/addon_11_geoserver_config_core.sh"
 # shellcheck source=./addon_11_geoserver_config_catalog.sh
-source "${_LIB_DIR}/addon_11_geoserver_config_catalog.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/addon_11_geoserver_config_catalog.sh"
 # shellcheck source=./addon_11_geoserver_config_security.sh
-source "${_LIB_DIR}/addon_11_geoserver_config_security.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/addon_11_geoserver_config_security.sh"
 # shellcheck source=./addon_11_geoserver_config_settings.sh
-source "${_LIB_DIR}/addon_11_geoserver_config_settings.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/addon_11_geoserver_config_settings.sh"
 
 install_addon_geoserver_config()   { _gsc_run install; }
 verify_addon_geoserver_config()    { _gsc_run verify; }
@@ -81,6 +85,7 @@ _gsc_preflight() {
   load_ds_config || return 2
   check_styles || return 2
   _wait_gs_ready || { log_error "GeoServer nicht erreichbar: ${GS_REST}"; return 2; }
+  log_ok 'Preflight ok'
   return 0
 }
 
@@ -235,20 +240,11 @@ _gsc_do_install() {
   install_featuretypes || return 1
   install_attr_mapping || return 1
   install_acls || return 1
-
-  verify_install || return 1
-  verify_workspaces || return 1
-  verify_workspace_settings || return 1
-  verify_service_metadata || return 1
-  verify_datastores || return 1
-  verify_featuretypes || return 1
-  verify_attr_mapping || return 1
-  verify_acls || return 1
   return 0
 }
 
 verify_install() {
-  local line key _ user roles secret password code neg
+  local line key _ user roles secret password code neg role
   log "== Verifikation =="
   while IFS='|' read -r key _ user roles secret; do
     [[ -n "$key" ]] || continue
@@ -372,13 +368,90 @@ _gsc_do_uninstall() {
 
   [[ "$rc" -eq 0 ]] || { log_error "GeoServer-Teil fehlgeschlagen — Secrets bleiben bestehen"; return 1; }
 
+  # 4) Secrets löschen (exakte Namen, je Secret eine Log-Zeile — Fix 7)
   while IFS='|' read -r key _ user roles secret; do
     [[ -n "$key" ]] || continue
-    kubectl -n "$NAMESPACE" delete secret "$secret" --ignore-not-found >/dev/null 2>&1 \
-      || { log_error "Secret $secret löschen fehlgeschlagen"; rc=1; }
+    if kubectl -n "$NAMESPACE" get secret "$secret" >/dev/null 2>&1; then
+      if kubectl -n "$NAMESPACE" delete secret "$secret" >/dev/null 2>&1; then
+        log_ok "  Secret $secret gelöscht"
+      else
+        log_error "Secret $secret löschen fehlgeschlagen"; rc=1
+      fi
+    else
+      log "  Secret $secret nicht vorhanden — übersprungen"
+    fi
   done <<< "$SOL_TABLE"
 
   [[ "$rc" -eq 0 ]] || return 1
-  log_ok "Uninstall abgeschlossen"
-  return 0
+
+  # Schlussverifikation (Rückstandsfreiheit) — portiert aus supplement do_uninstall
+  # (K2: im Dry-run übersprungen; hier gibt es keinen Dry-run). B1/B3: bereits gelöschte
+  # Datastores werden übersprungen, Lesefehler sind Fehler.
+  local -a after_users after_roles after_ws after_ds after_ft
+  local ftmp wtmp dtmp ws dkey dws dname fdsp
+  ftmp="$(mktemp)"; chmod 600 "$ftmp"
+  if ! read_users > "$ftmp"; then
+    rm -f "$ftmp"; log_error "Schlussverifikation: Benutzerliste nicht lesbar"; return 1
+  fi
+  mapfile -t after_users < "$ftmp"
+  if ! read_roles > "$ftmp"; then
+    rm -f "$ftmp"; log_error "Schlussverifikation: Rollenliste nicht lesbar"; return 1
+  fi
+  mapfile -t after_roles < "$ftmp"
+  rm -f "$ftmp"
+  _inventory_plausible after_users after_roles || { log_error "Schlussverifikation: Bestand unplausibel"; return 1; }
+  while IFS='|' read -r key _ user roles secret; do
+    [[ -n "$key" ]] || continue
+    _has "$user" "${after_users[@]}" && { log_error "Benutzer $user noch vorhanden"; rc=1; }
+    for role in ${roles//,/ }; do
+      _has "$role" "${after_roles[@]}" && { log_error "Rolle $role noch vorhanden"; rc=1; }
+    done
+    kubectl -n "$NAMESPACE" get secret "$secret" >/dev/null 2>&1 && { log_error "Secret $secret noch vorhanden"; rc=1; }
+  done <<< "$SOL_TABLE"
+
+  wtmp="$(mktemp)"; chmod 600 "$wtmp"
+  if ! read_workspaces > "$wtmp"; then
+    rm -f "$wtmp"; log_error "Schlussverifikation: Workspace-Liste nicht lesbar"; return 1
+  fi
+  mapfile -t after_ws < "$wtmp"
+  rm -f "$wtmp"
+  while IFS='|' read -r ws _; do
+    [[ -n "$ws" ]] || continue
+    _has "$ws" "${after_ws[@]}" && { log_error "Workspace $ws noch vorhanden"; rc=1; }
+  done <<< "$WS_TABLE"
+
+  dtmp="$(mktemp)"; chmod 600 "$dtmp"
+  while IFS='|' read -r dkey dws dname _ _ _; do
+    [[ -n "$dkey" ]] || continue
+    if ! read_datastores "$dws" > "$dtmp"; then
+      rm -f "$dtmp"; log_error "Schlussverifikation: Datastore-Liste für $dws nicht lesbar"; return 1
+    fi
+    mapfile -t after_ds < "$dtmp"
+    _has "$dname" "${after_ds[@]}" && { log_error "Datastore $dname noch vorhanden"; rc=1; }
+  done <<< "$DS_TABLE"
+  rm -f "$dtmp"
+
+  ftmp="$(mktemp)"; chmod 600 "$ftmp"
+  while IFS='|' read -r dkey dws dname _ _ _; do
+    [[ -n "$dkey" ]] || continue
+    fdsp=0; _ds_present "$dws" "$dname" || fdsp=$?
+    if [[ "$fdsp" -eq 1 ]]; then
+      continue
+    fi
+    if [[ "$fdsp" -eq 2 ]]; then
+      rm -f "$ftmp"; log_error "Schlussverifikation: Datastore-Präsenz für $dws/$dname nicht lesbar"; return 1
+    fi
+    if ! read_featuretypes "$dws" "$dname" > "$ftmp"; then
+      rm -f "$ftmp"; log_error "Schlussverifikation: FeatureType-Liste für $dws/$dname nicht lesbar"; return 1
+    fi
+    mapfile -t after_ft < "$ftmp"
+    while IFS='|' read -r fname _ _ _ _; do
+      [[ -n "$fname" ]] || continue
+      _has "$fname" "${after_ft[@]}" && { log_error "FeatureType $fname noch vorhanden"; rc=1; }
+    done <<< "$FT_TABLE"
+  done <<< "$DS_TABLE"
+  rm -f "$ftmp"
+
+  [[ "$rc" -eq 0 ]] && log_ok "Uninstall verifiziert (alle Soll-Objekte entfernt)"
+  return "$rc"
 }
