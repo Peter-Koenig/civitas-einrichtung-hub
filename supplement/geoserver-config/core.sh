@@ -156,10 +156,13 @@ _gs_write_body() {
 
 preflight() {
   local cmd rc=0
-  for cmd in kubectl jq curl openssl; do
+  for cmd in kubectl jq curl openssl yq; do
     command -v "$cmd" >/dev/null 2>&1 || { log_error "Voraussetzung fehlt: $cmd"; rc=2; }
   done
   [[ "$rc" -eq 0 ]] || exit "$rc"
+
+  # yq muss mikefarah v4 sein (der YAML-Parser der Metadaten-Datei).
+  yq --version 2>&1 | grep -q mikefarah || { log_error 'yq: mikefarah v4 erforderlich'; exit 2; }
 
   # GS_BASE muss gesetzt sein (K4): --url oder ADDON_DOMAIN/DOMAIN_NAME (.env.p2d2-addon)
   [[ -n "$GS_BASE" ]] || { log_error "GS_BASE leer — bitte --url BASE oder ADDON_DOMAIN (bzw. DOMAIN_NAME) setzen"; exit 2; }

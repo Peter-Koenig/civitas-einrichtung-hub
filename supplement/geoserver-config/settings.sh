@@ -256,8 +256,18 @@ install_service_metadata() {
 }
 
 verify_service_metadata() {
-  local key ws svc title email code rc=0 maxdec or
+  local key ws svc title email code rc=0 maxdec or cap_ok
   log "== Verifikation Dienst-Metadaten =="
+
+  # HEAD auf service.onlineResource: einmal, ohne Credentials, mit Timeouts (C5).
+  or="$(_meta '.service.onlineResource // empty')"
+  code="$(curl -sS -I --connect-timeout 5 --max-time 10 -o /dev/null -w '%{http_code}' "$or" 2>/dev/null)" || code="000"
+  if [[ "$code" == "200" ]]; then
+    log_ok "Online-Resource erreichbar ($or)"
+  else
+    log_warn "Online-Resource $or -> $code (nicht 200)"
+  fi
+
   while IFS='|' read -r key ws _; do
     [[ -n "$key" ]] || continue
     local desc; desc="$(_meta ".stages.$ws // empty")"
@@ -266,26 +276,45 @@ verify_service_metadata() {
       title="$(_resolve_tpl "$(_meta ".service.$svc.title // empty")" "$ws" "$desc")"
       _gs_get_url "$GS_BASE/$ws/$svc?service=${svc^^}&version=2.0.0&request=GetCapabilities"
       code="$_GS_CODE"
-      if [[ "$code" == "200" ]] \
-        && grep -qF "$title" "$_GS_BODY_FILE" 2>/dev/null \
-        && grep -qF "$email" "$_GS_BODY_FILE" 2>/dev/null \
-        && ! grep -q 'TODO' "$_GS_BODY_FILE" 2>/dev/null; then
-        log_ok "  $ws/$svc: Capabilities ok (Titel + Kontakt)"
+      cap_ok=1
+      if [[ "$code" != "200" ]]; then
+        cap_ok=0
+        log_error "Verifikation $ws/$svc: ${svc^^} GetCapabilities -> $code (erwartet 200)"; rc=1
       else
-        rm -f "$_GS_BODY_FILE"
-        log_error "Verifikation $ws/$svc: Capabilities unvollständig (HTTP $code, Titel/Kontakt/TODO)"; rc=1
-        continue
+        if ! grep -qE '<(wms:)?WMS_Capabilities|<(wfs:)?WFS_Capabilities' "$_GS_BODY_FILE" 2>/dev/null; then
+          cap_ok=0
+          log_error "Verifikation $ws/$svc: Capabilities-Wurzel fehlt"; rc=1
+        fi
+        if grep -qE 'ExceptionReport|ServiceException' "$_GS_BODY_FILE" 2>/dev/null; then
+          cap_ok=0
+          log_error "Verifikation $ws/$svc: Capabilities enthält ExceptionReport"; rc=1
+        fi
+        if ! grep -qF "$title" "$_GS_BODY_FILE" 2>/dev/null || ! grep -qF "$email" "$_GS_BODY_FILE" 2>/dev/null; then
+          cap_ok=0
+          log_error "Verifikation $ws/$svc: Capabilities unvollständig (Titel/Kontakt)"; rc=1
+        fi
+        while IFS='|' read -r name _; do
+          [[ -n "$name" ]] || continue
+          abstract="$(_meta ".layers[\"$name\"].abstract // empty")"
+          if ! grep -qF "$abstract" "$_GS_BODY_FILE" 2>/dev/null; then
+            cap_ok=0
+            log_error "Verifikation $ws/$svc: Abstract für Layer $name fehlt"; rc=1
+          fi
+        done <<< "$FT_TABLE"
       fi
       rm -f "$_GS_BODY_FILE"
+      [[ "$cap_ok" -eq 1 ]] && log_ok "  $ws/$svc: Capabilities ok (Titel + Kontakt + Layer)"
     done
 
-    # Wirksame Genauigkeit: GetFeature auf geo-containers (JSON), max. Nachkommastellen >= 7.
-    _gs_get_url "$GS_BASE/$ws/wfs?service=WFS&version=2.0.0&request=GetFeature&typeNames=${ws}:geo-containers&outputFormat=application/json&count=200"
+    # Wirksame Genauigkeit: GetFeature auf geo-containers (JSON), nur Koordinaten (C4).
+    _gs_get_url "$GS_BASE/$ws/wfs?service=WFS&version=2.0.0&request=GetFeature&typeNames=${ws}:geo-containers&outputFormat=application/json&count=3"
     code="$_GS_CODE"
     if [[ "$code" == "200" ]]; then
-      maxdec="$(jq -r '[.. | numbers | tostring] | map(select(contains("."))) | map(split(".")[1] | length) | max // 0' "$_GS_BODY_FILE" 2>/dev/null)"
+      maxdec="$(jq -r '[.features[]?.geometry.coordinates | flatten | .[] | tostring | select(contains(".")) | split(".")[1] | length] | max // empty' "$_GS_BODY_FILE" 2>/dev/null)"
       rm -f "$_GS_BODY_FILE"
-      if [[ "$maxdec" =~ ^[0-9]+$ ]] && [[ "$maxdec" -ge 7 ]]; then
+      if [[ -z "$maxdec" || "$maxdec" == "null" ]]; then
+        log_warn "  $ws: keine Features, Genauigkeit nicht prüfbar"
+      elif [[ "$maxdec" =~ ^[0-9]+$ ]] && [[ "$maxdec" -ge 7 ]]; then
         log_ok "  $ws: GetFeature geo-containers mit $maxdec Nachkommastellen"
       else
         log_error "Verifikation $ws: Koordinaten auf $maxdec Stellen gerundet (erwartet mindestens 7)"; rc=1
@@ -293,15 +322,6 @@ verify_service_metadata() {
     else
       rm -f "$_GS_BODY_FILE"
       log_error "Verifikation $ws: GetFeature geo-containers -> $code"; rc=1
-    fi
-
-    # HEAD auf service.onlineResource: ungleich 200 nur Warnung.
-    or="$(_meta '.service.onlineResource // empty')"
-    code="$( _curl_user_cfg "$GS_ADMIN_USER" "$GS_ADMIN_PW" | curl -sS -K - -I -o /dev/null -w '%{http_code}' "$or" 2>/dev/null )" || code="000"
-    if [[ "$code" == "200" ]]; then
-      log_ok "  $ws: Online-Resource erreichbar ($or)"
-    else
-      log_warn "Verifikation $ws: Online-Resource $or -> $code (nicht 200)"
     fi
   done <<< "$DS_TABLE"
   return "$rc"

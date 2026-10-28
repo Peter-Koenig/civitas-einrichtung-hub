@@ -92,15 +92,8 @@ verify_workspaces() {
       howto_step "GET workspaces/$ws.json" "200" "$code" "name prüfen"
       log_error "Verifikation $ws: GET workspaces/$ws.json -> $code (erwartet 200)"; rc=1
     fi
-    # Virtuelle Dienste (hart, R7)
-    code="$(_http_code_url "$GS_BASE/$ws/wms?service=WMS&version=1.3.0&request=GetCapabilities")"
-    howto_step "GET $ws/wms GetCapabilities" "200" "$code" "Dienstprüfung"
-    if [[ "$code" == "200" ]]; then log_ok "  $ws: WMS GetCapabilities 200"; else log_error "Verifikation $ws: WMS GetCapabilities -> $code (erwartet 200)"; rc=1; fi
-    if [[ "$ws" != "friedhofsplaene" ]]; then
-      code="$(_http_code_url "$GS_BASE/$ws/wfs?service=WFS&version=2.0.0&request=GetCapabilities")"
-      howto_step "GET $ws/wfs GetCapabilities" "200" "$code" "Dienstprüfung"
-      if [[ "$code" == "200" ]]; then log_ok "  $ws: WFS GetCapabilities 200"; else log_error "Verifikation $ws: WFS GetCapabilities -> $code (erwartet 200)"; rc=1; fi
-    fi
+    # Hinweis: GetCapabilities-Prüfung (Wurzel/Titel/Kontakt/Layer-Abstract) liegt
+    # in verify_service_metadata (Inhalt, nicht nur Statuscode).
   done <<< "$WS_TABLE"
   return "$rc"
 }
