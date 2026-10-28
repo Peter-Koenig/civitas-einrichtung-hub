@@ -2,7 +2,7 @@
 # tests/run.sh — Stub-Test-Harness (parallel, JOBS Slots, freie Slots werden nachbesetzt).
 #
 # Aufruf:
-#   ./tests/run.sh                 # alle Suiten, JOBS=8
+#   ./tests/run.sh                 # alle Suiten, JOBS=$(nproc 2>/dev/null || echo 8)
 #   JOBS=1 ./tests/run.sh          # sequenziell
 #   ./tests/run.sh 33 01           # nur Suiten, deren Dateiname "33" oder "01" enthält
 #
@@ -15,7 +15,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./lib.sh
 source "$HERE/lib.sh"
 
-JOBS="${JOBS:-8}"
+JOBS="${JOBS:-$(nproc 2>/dev/null || echo 8)}"
 case "$JOBS" in
   ''|*[!0-9]*) printf 'JOBS muss eine positive Ganzzahl sein: %s\n' "$JOBS" >&2; exit 2 ;;
 esac
