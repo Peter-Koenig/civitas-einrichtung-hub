@@ -94,7 +94,7 @@ _secret_get() {
 
 _secret_apply() {
   local ns="$1" name="$2"; shift 2
-  local manifest json kv k v b64 err
+  local manifest json kv k v tmpv err
   manifest="$(mktemp)"
   json="$(kubectl -n "$ns" get secret "$name" -o json 2>/dev/null || true)"
   if [[ -n "$json" ]]; then
@@ -104,8 +104,10 @@ _secret_apply() {
   [[ -n "$json" ]] || json="{\"apiVersion\":\"v1\",\"kind\":\"Secret\",\"metadata\":{\"name\":\"$name\",\"namespace\":\"$ns\"},\"type\":\"Opaque\",\"data\":{}}"
   for kv in "$@"; do
     k="${kv%%=*}"; v="${kv#*=}"
-    b64="$(printf '%s' "$v" | base64 -w0)"
-    json="$(printf '%s' "$json" | jq -c --arg k "$k" --arg v "$b64" '.data[$k] = $v')"
+    tmpv="$(mktemp)"; chmod 600 "$tmpv"
+    printf '%s' "$v" | base64 -w0 > "$tmpv"
+    json="$(printf '%s' "$json" | jq -c --arg k "$k" --rawfile v "$tmpv" '.data[$k] = $v')"
+    rm -f "$tmpv"
   done
   printf '%s\n' "$json" > "$manifest"
   if ! err="$(kubectl apply -f "$manifest" 2>&1 >/dev/null)"; then

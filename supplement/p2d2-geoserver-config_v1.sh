@@ -779,6 +779,11 @@ do_uninstall() {
 # Haupt
 # ═══════════════════════════════════════════════════════════════════════════
 main() {
+  umask 077
+  GS_TMPDIR="$(mktemp -d)" || exit 2
+  export TMPDIR="$GS_TMPDIR"
+  trap 'rm -rf -- "$GS_TMPDIR"' EXIT
+
   warn_legacy_vars
   preflight
   load_metadata || exit 2
