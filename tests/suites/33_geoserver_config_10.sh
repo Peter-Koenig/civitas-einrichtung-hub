@@ -58,17 +58,25 @@ check "B3 Dry-Run leer würde angelegt"       "yes" "$(grep -q 'main/geo-contain
 
 [ "${GEOSERVER_ONLY:-all}" = "new" ] || scenarios_legacy
 
-# (95) GS_SERVICE_PUT_405=1: Anlage per POST, HowTo nennt die Methode
+# (95) Anlegen eines lokalen Dienstes scheitert (405/500) -> Abbruch, kein POST
 if want 95; then
 scenario "95"
   reset_state
-  export GS_SERVICE_PUT_405=1
+  export GS_SERVICE_CREATE_FAIL=405
   rc="$(run_script --url "$URL" --ns "$NS")"
-  check "S95 Exit 0" "0" "$rc"
-  check "S95 Service-POST" "yes" "$(grep -q 'services/wms/workspaces/main/settings METHOD=POST' "$CURL_BODY_LOG" && echo yes || echo no)"
-  howto_file="$(latest_howto)"
-  check "S95 How-To nennt POST" "yes" "$(grep -q 'POST services/wms/workspaces/main/settings' "$howto_file" && echo yes || echo no)"
-  unset GS_SERVICE_PUT_405
+  check "S95 405 Exit 1" "1" "$rc"
+  check "S95 405 kein POST" "0" "$(grep -c 'services/.*/workspaces/.*/settings METHOD=POST' "$CURL_BODY_LOG" || true)"
+  check "S95 405 anlegen fehlgeschlagen" "yes" "$(grep -q 'anlegen fehlgeschlagen' "$T/err.log" && echo yes || echo no)"
+  check "S95 405 Code genannt" "yes" "$(grep -q '405' "$T/err.log" && echo yes || echo no)"
+  check "S95 405 kein Datastore" "0" "$(find "$GS_STATE_DIR/ds" -name '*.json' -type f 2>/dev/null | awk 'END{print NR}')"
+  unset GS_SERVICE_CREATE_FAIL
+  reset_state
+  export GS_SERVICE_CREATE_FAIL=500
+  rc="$(run_script --url "$URL" --ns "$NS")"
+  check "S95 500 Exit 1" "1" "$rc"
+  check "S95 500 kein POST" "0" "$(grep -c 'services/.*/workspaces/.*/settings METHOD=POST' "$CURL_BODY_LOG" || true)"
+  check "S95 500 anlegen fehlgeschlagen" "yes" "$(grep -q 'anlegen fehlgeschlagen' "$T/err.log" && echo yes || echo no)"
+  unset GS_SERVICE_CREATE_FAIL
 fi
 
 # (96) Snapshot: Attribution nur bei Abweichung (Zweitlauf keiner)
