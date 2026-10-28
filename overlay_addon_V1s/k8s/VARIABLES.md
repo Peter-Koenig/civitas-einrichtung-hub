@@ -108,8 +108,8 @@ ein Backup `<datei>.bak` (Modus 600) je Lauf angelegt.
 | Variable | Ablage | Kategorie | Quelle / Herkunft | Status |
 |---|---|---|---|---|
 | `DB_PASSWORD` | `<stage>-secret` | K2 | aus `.env` bzw. Secret übernommen, sonst erzeugt | wird erzeugt (bei leer/Platzhalter) |
-| `WFST_PASSWORD` (plain) | `<stage>-secret` | K1 | GeoServer-Secret `p2d2-geoserver-wfst-<ws>` | **CHANGEME** — aus GeoServer-Secret übernehmen |
-| `WFST_PW_<KEY>` | `<stage>-secret` | K1 | dito (suffigiert) | **CHANGEME** — aus GeoServer-Secret übernehmen |
+| `WFST_PASSWORD` (plain) | `<stage>-secret` | K1 | aus `.env` bzw. GeoServer-Secret `p2d2-geoserver-wfst-<ws>` übernommen, sonst erzeugt; anschließend in die `.env` gespiegelt | optional (leer = wird erzeugt/übernommen und gespiegelt) |
+| `WFST_PW_<KEY>` | `<stage>-secret` | K1 | dito (suffigiert) | optional (leer = wird erzeugt/übernommen und gespiegelt) |
 | `SESSION_SECRET` | `<stage>-secret` | K2 | zufällig generiert (bleibt) | **CHANGEME** — bei Installation generieren |
 
 > **WS-Zuordnung für die GeoServer-Secrets:** `main`→`p2d2-geoserver-wfst-main`,
