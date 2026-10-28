@@ -753,7 +753,7 @@ do_uninstall() {
   ftmp="$(mktemp)"; chmod 600 "$ftmp"
   while IFS='|' read -r fkey fws fds _ _ _; do
     [[ -n "$fkey" ]] || continue
-    _ds_present "$fws" "$fds"; fdsp=$?
+    fdsp=0; _ds_present "$fws" "$fds" || fdsp=$?
     if [[ "$fdsp" -eq 1 ]]; then
       continue
     fi

@@ -153,6 +153,30 @@ scenario "107"
   check "S107 Exit 0" "0" "$rc"
 fi
 
+# (113) B3: errexit-Falle `_ds_present; dsp=$?` unter set -e
+if want 113; then
+scenario "113"
+  reset_state
+  bundle_copy "$T/b3"
+  cat > "$T/b3-driver.sh" <<'DRIVER'
+set -euo pipefail
+source "$B3_DIR/geoserver-config/core.sh"
+source "$B3_DIR/geoserver-config/catalog.sh"
+DS_TABLE='MAIN|main|main_pg|main|P2D2_MAIN_DB_USER|p2d2-main-secret'
+FT_TABLE=''
+NAMESPACE="$B3_NS"
+GS_REST="$B3_GS_REST"
+GS_ADMIN_USER='admin'
+GS_ADMIN_PW='adminpw'
+DRY_RUN=0
+uninstall_featuretypes
+echo "RETURN=$?"
+DRIVER
+  rc="$( B3_DIR="$T/b3" B3_NS="$NS" B3_GS_REST="$URL/rest" bash "$T/b3-driver.sh" >"$T/out.log" 2>"$T/err.log"; printf '%s' "$?" )"
+  check "S113 Exit 0" "0" "$rc"
+  check "S113 Datastore fehlt uebersprungen" "yes" "$(grep -q 'übersprungen' "$T/out.log" && echo yes || echo no)"
+fi
+
 # (108) Alle GeoServer-curl-Aufrufe mit --max-time
 
 # (109) Preflight wartet auf GeoServer (2x 503, dann 200)

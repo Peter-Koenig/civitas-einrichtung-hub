@@ -408,7 +408,7 @@ install_featuretypes() {
   log "== FeatureTypes =="
   while IFS='|' read -r key ws ds schema uservar secret; do
     [[ -n "$key" ]] || continue
-    _ds_present "$ws" "$ds"; dsp=$?
+    dsp=0; _ds_present "$ws" "$ds" || dsp=$?
     if [[ "$dsp" -eq 2 ]]; then
       log_error "FeatureTypes $ws/$ds: Datastore-Präsenz nicht lesbar"; rc=1; continue
     fi
@@ -579,7 +579,7 @@ uninstall_featuretypes() {
   log "== FeatureTypes entfernen =="
   while IFS='|' read -r key ws ds schema uservar secret; do
     [[ -n "$key" ]] || continue
-    _ds_present "$ws" "$ds"; dsp=$?
+    dsp=0; _ds_present "$ws" "$ds" || dsp=$?
     if [[ "$dsp" -eq 1 ]]; then
       log "  FeatureTypes von $ws/$ds nicht prüfbar (Datastore nicht vorhanden) — übersprungen"
       continue
