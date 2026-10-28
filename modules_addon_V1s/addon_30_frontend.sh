@@ -179,8 +179,13 @@ addon_compute_image_tag() {
 }
 
 # _p2d2_is_managed_key <key> — wird der Key von addon_00 aufgelöst (DB_PASSWORD)?
-# (später um WFS-T-Keys erweiterbar).
-_p2d2_is_managed_key() { [[ "$1" == "DB_PASSWORD" ]]; }
+# (seit addon_11 auch WFST_PASSWORD und WFST_PW_*; nur Fehlermeldung).
+_p2d2_is_managed_key() {
+  case "$1" in
+    DB_PASSWORD|WFST_PASSWORD|WFST_PW_*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 # _addon_ensure_secret <namespace> <name> <key=value>...
 # Merge der Keys in das Secret (vorhandene Keys bleiben erhalten, fehlende/geänderte
@@ -244,13 +249,20 @@ apply_addon_secrets() {
     esac
     # WFST_PASSWORD (plain) und WFST_PW_<KEY> (suffigiert) sind derselbe Wert
     # (GeoServer-WFS-T-Passwort) — einmal aus .env lesen, nicht doppelt pflegen.
-    local wfst_password
+    local wfst_password old_wfst svc
     wfst_password="$(_addon_get "P2D2_${key}_WFST_PASSWORD")"
+    old_wfst="$(_p2d2_secret_get "${ns}" "${secret}" "WFST_PASSWORD")"
     _addon_ensure_secret "${ns}" "${secret}" \
       "DB_PASSWORD=$(_addon_get "P2D2_${key}_DB_PASSWORD")" \
       "WFST_PASSWORD=${wfst_password}" \
       "WFST_PW_${suffix}=${wfst_password}" \
       "SESSION_SECRET=$(_addon_get "P2D2_${key}_SESSION_SECRET")" || return 1
+    svc="${secret%-secret}"
+    if [[ -n "${old_wfst}" && "${old_wfst}" != "${wfst_password}" ]] \
+        && kubectl -n "${ns}" get deployment "${svc}" >/dev/null 2>&1; then
+      kubectl -n "${ns}" rollout restart "deployment/${svc}" >/dev/null 2>&1 \
+        || log_warn "Rollout-Restart ${svc} fehlgeschlagen"
+    fi
   done
 
   log_ok "Basis- + Stage-Secrets befüllt (Merge: vorhandene Keys bleiben, geänderte werden aktualisiert)"
