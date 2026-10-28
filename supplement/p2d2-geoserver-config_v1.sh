@@ -96,6 +96,9 @@ HOWTO_FD=3          # Datei-Deskriptor für die How-To-Ausgabe
 # Rollen, die wegen noch vorhandener Layer/ACL beim Uninstall NICHT gelöscht werden dürfen (B).
 _KEEP_ROLES=()
 
+# Bestand der Workspaces vor dem Install (für Dry-run-Behandlung fehlender Workspaces).
+_EXISTING_WS=()
+
 GS_CONFIG_LIB_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/geoserver-config" && pwd -P)" || {
   printf '%s\n' 'FEHLER: GeoServer-Konfigurationsdateien fehlen' >&2
   exit 2

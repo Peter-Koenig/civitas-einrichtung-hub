@@ -92,11 +92,22 @@ _service_soll() {
   title="$(_resolve_tpl "$(_meta ".service.$svc.title // empty")" "$ws" "$desc")"
   abstract="$(_resolve_tpl "$(_meta ".service.$svc.abstract // empty")" "$ws" "$desc")"
   printf '%s' "$_GS_METADATA" | jq -c --arg svc "$svc" --arg title "$title" --arg abstract "$abstract" \
-    '{title:$title, abstrct:$abstract,
+    '{name: ($svc | ascii_upcase), enabled: true,
+      title:$title, abstrct:$abstract,
       maintainer:.service.maintainer, fees:.service.fees,
       accessConstraints:.service.accessConstraints, onlineResource:.service.onlineResource,
       keywords:{string:.service.keywords}}
      + (if $svc == "wfs" then {featureBounding:.service.wfs.featureBounding} else {} end)'
+}
+
+# _service_global <svc> — globales Dienstdokument (Inhalt unter .<svc>) auf stdout.
+_service_global() {
+  local svc="$1"
+  _gs_get "services/${svc}/settings.json"
+  [[ "$_GS_CODE" == "200" ]] || { rm -f "$_GS_BODY_FILE"; log_gs_error "globales Dienstdokument ${svc} nicht lesbar"; return 1; }
+  jq -c --arg s "$svc" '.[$s]' "$_GS_BODY_FILE" 2>/dev/null
+  rm -f "$_GS_BODY_FILE"
+  return 0
 }
 
 install_workspace_settings() {
@@ -104,6 +115,11 @@ install_workspace_settings() {
   log "== Workspace-Einstellungen =="
   while IFS='|' read -r key ws _; do
     [[ -n "$key" ]] || continue
+    if [[ "$DRY_RUN" -eq 1 ]] && ! _has "$ws" "${_EXISTING_WS[@]}"; then
+      log "  [dry-run] $ws: Workspace-Einstellungen würden gesetzt (Workspace wird zuvor angelegt)"
+      howto_step "PUT workspaces/$ws/settings" "200" "-" "geplant"
+      continue
+    fi
     _gs_get "workspaces/${ws}/settings.json"
     code="$_GS_CODE"
     if [[ "$code" != "200" ]]; then
@@ -177,11 +193,18 @@ verify_workspace_settings() {
 }
 
 install_service_metadata() {
-  local key ws svc code soll cur f rc=0 desc used_method
+  local key ws svc code soll cur f rc=0 desc base
   log "== Dienst-Metadaten (WMS/WFS) =="
   while IFS='|' read -r key ws _; do
     [[ -n "$key" ]] || continue
     desc="$(_meta ".stages.$ws // empty")"
+    if [[ "$DRY_RUN" -eq 1 ]] && ! _has "$ws" "${_EXISTING_WS[@]}"; then
+      for svc in wms wfs; do
+        log "  [dry-run] $ws/$svc: Dienst-Metadaten würden angelegt (Workspace wird zuvor angelegt)"
+        howto_step "PUT services/$svc/workspaces/$ws/settings" "200" "-" "geplant"
+      done
+      continue
+    fi
     for svc in wms wfs; do
       soll="$(_service_soll "$svc" "$ws" "$desc")"
       _gs_get "services/${svc}/workspaces/${ws}/settings.json"
@@ -212,17 +235,17 @@ install_service_metadata() {
           howto_step "PUT services/$svc/workspaces/$ws/settings" "200" "-" "anlegen $ws/$svc (404 -> PUT)"
           continue
         fi
+        base="$(_service_global "$svc")" || { rc=1; continue; }
         f="$(mktemp)"; chmod 600 "$f"
-        jq -nc --arg svc "$svc" --argjson soll "$soll" '{($svc): $soll}' > "$f"
+        jq -nc --arg s "$svc" --argjson base "$base" --argjson soll "$soll" '{($s): ($base | del(.id) | . * $soll)}' > "$f"
         _gs_write_body PUT "services/${svc}/workspaces/${ws}/settings" "$f" 'application/json'
-        code="$_GS_CODE"; used_method="PUT"
-        if [[ "$code" == "404" || "$code" == "405" ]]; then
-          _gs_write_body POST "services/${svc}/workspaces/${ws}/settings" "$f" 'application/json'
-          code="$_GS_CODE"; used_method="POST"
+        code="$_GS_CODE"; rm -f "$f"
+        howto_step "PUT services/$svc/workspaces/$ws/settings" "200" "$code" "anlegen $ws/$svc (404 -> PUT)"
+        if [[ "$code" == "200" ]]; then
+          log_ok "  $ws/$svc: Dienst-Metadaten angelegt"
+        else
+          log_gs_error "Dienst-Metadaten $ws/$svc anlegen fehlgeschlagen (HTTP $code)"; rc=1
         fi
-        rm -f "$f"
-        howto_step "$used_method services/$svc/workspaces/$ws/settings" "200" "$code" "anlegen $ws/$svc (404/405 -> $used_method)"
-        [[ "$code" == "200" || "$code" == "201" ]] || { log_gs_error "Dienst-Metadaten $ws/$svc anlegen fehlgeschlagen (HTTP $code)"; rc=1; }
       else
         rm -f "$_GS_BODY_FILE"
         log_error "Dienst-Metadaten $ws/$svc: GET -> $code (erwartet 200/404)"; rc=1

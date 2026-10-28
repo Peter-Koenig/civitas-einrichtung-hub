@@ -14,6 +14,7 @@ install_workspaces() {
   fi
   mapfile -t existing < "$tmp"
   rm -f "$tmp"
+  _EXISTING_WS=("${existing[@]}")
 
   log "== Workspaces =="
   while IFS='|' read -r ws uri; do
