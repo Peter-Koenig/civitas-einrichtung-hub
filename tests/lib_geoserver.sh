@@ -29,6 +29,7 @@ export CURL_BODY_LOG="$T/curl-body.log"
 export CURL_STDIN_LOG="$T/curl-stdin.log"
 export KUBECTL_LOG="$T/kubectl.log"
 export JQ_LOG="$T/jq.log"
+export SLEEP_LOG="$T/sleep.log"
 
 # Stub-Verzeichnis voranstellen (überschreibt die globalen tests/stubs/*).
 STUBS="$T/stubs"
@@ -82,6 +83,7 @@ has_role() { grep -qx "$1" "$S/roles.list" 2>/dev/null; }
 has_user() { grep -qx "$1" "$S/users.list" 2>/dev/null; }
 has_ws()   { grep -qx "$1" "$S/workspaces.list" 2>/dev/null; }
 has_ds()   { grep -qx "$2" "$S/ds/$1.list" 2>/dev/null; }
+xml_esc()  { printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
 
 roles_json() {
   printf '{"roles":['
@@ -178,6 +180,11 @@ case "$url" in
     fi ;;
   *"/security/roles.json")
     [ "${GS_PREFLIGHT_FAIL:-0}" = "1" ] && code=500
+    if [ -n "${GS_NOT_READY_FIRST:-}" ] && [ "$method" = "GET" ]; then
+      c=0; [ -f "$S/roles_not_ready_count" ] && c="$(cat "$S/roles_not_ready_count")"
+      c=$((c+1)); printf '%s' "$c" > "$S/roles_not_ready_count"
+      [ "$c" -le "$GS_NOT_READY_FIRST" ] && code=503
+    fi
     empty_roles=0
     if [ -n "${GS_ROLES_EMPTY_ON:-}" ]; then
       c=0; [ -f "$S/roles_empty_count" ] && c="$(cat "$S/roles_empty_count")"
@@ -496,14 +503,18 @@ case "$url" in
     ws="${url#*/workspaces/}"; ws="${ws%%/*}"
     case "$method" in
       PUT)
-        # Stub ist strenger als der echte GeoServer (L4): ohne name wird NICHTS gespeichert.
-        nm="$(jq -r --arg s "$svc" '.[$s].name // empty' "$body_file" 2>/dev/null)"
-        if [ -z "$nm" ]; then
-          body='Cannot invoke String.equals(Object) because name is null'; code=500
+        if [ -n "${GS_SERVICE_CREATE_FAIL:-}" ] && [ ! -f "$S/service/$ws/$svc.json" ]; then
+          body='Anlegen abgelehnt (Stub)'; code="$GS_SERVICE_CREATE_FAIL"   # nichts speichern
         else
-          mkdir -p "$S/service/$ws"
-          jq --arg s "$svc" '.[$s].enabled //= false' "$body_file" > "$S/service/$ws/$svc.json" 2>/dev/null
-          code=200
+          # Stub ist strenger als der echte GeoServer (L4): ohne name wird NICHTS gespeichert.
+          nm="$(jq -r --arg s "$svc" '.[$s].name // empty' "$body_file" 2>/dev/null)"
+          if [ -z "$nm" ]; then
+            body='Cannot invoke String.equals(Object) because name is null'; code=500
+          else
+            mkdir -p "$S/service/$ws"
+            jq --arg s "$svc" '.[$s].enabled //= false' "$body_file" > "$S/service/$ws/$svc.json" 2>/dev/null
+            code=200
+          fi
         fi ;;
       POST)
         code=405 ;;
@@ -582,7 +593,7 @@ case "$url" in
       u="${url#*/geoserver/}"; ws="${u%%/*}"
       svc="${u#*/}"; svc="${svc%%\?*}"
       title=""
-      [ -f "$S/service/$ws/$svc.json" ] && title="$(jq -r ".$svc.title // empty" "$S/service/$ws/$svc.json" 2>/dev/null)"
+      [ -f "$S/service/$ws/$svc.json" ] && title="$(xml_esc "$(jq -r ".$svc.title // empty" "$S/service/$ws/$svc.json" 2>/dev/null)")"
       email=""
       [ -f "$S/settings/$ws.json" ] && email="$(jq -r '.settings.contact.contactEmail // empty' "$S/settings/$ws.json" 2>/dev/null)"
       if [ "${GS_CAPS_NO_TITLE:-0}" = "1" ]; then title=""; fi
@@ -602,8 +613,8 @@ case "$url" in
         for ft in "$S"/ft/"$ws"/*/*.json; do
           [ -f "$ft" ] || continue
           name="$(basename "$ft" .json)"
-          ft_title="$(jq -r '.featureType.title // empty' "$ft" 2>/dev/null)"
-          abstract="$(jq -r '.featureType.abstract // empty' "$ft" 2>/dev/null)"
+          ft_title="$(xml_esc "$(jq -r '.featureType.title // empty' "$ft" 2>/dev/null)")"
+          abstract="$(xml_esc "$(jq -r '.featureType.abstract // empty' "$ft" 2>/dev/null)")"
           [ "${GS_CAPS_NO_ABSTRACT:-0}" = "1" ] && abstract=""
           layers="${layers}<Layer><Name>${ws}:${name}</Name><Title>${ft_title}</Title><Abstract>${abstract}</Abstract></Layer>"
         done
@@ -763,6 +774,14 @@ exec /usr/bin/yq "${args[@]:-.}"
 STUB
 chmod +x "$STUBS/yq"
 
+# ── sleep-Stub: No-op, schreibt Aufrufe in SLEEP_LOG (Tests warten nicht) ─────
+cat > "$STUBS/sleep" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${SLEEP_LOG:?}"
+exit 0
+STUB
+chmod +x "$STUBS/sleep"
+
 # ── Helfer ─────────────────────────────────────────────────────────────────────
 }
 
@@ -782,7 +801,7 @@ clear_logs() { : > "$CURL_LOG"; : > "$CURL_BODY_LOG"; : > "$CURL_STDIN_LOG"; : >
 
 # Stub-Schalter zurücksetzen (reset_state und restore_state).
 unset_stub_switches() {
-  unset GS_OFF GS_NEG200 GS_PREFLIGHT_FAIL GS_DELETE_FAIL GS_LAYER_DELETE_FAIL GS_USERS_500 GS_USERS_EMPTY GS_USERS_FAIL_ON GS_USERS_EMPTY_ON GS_ROLES_EMPTY_ON GS_WS_NONEMPTY GS_WS_DELETE_404 GS_WS_EMPTY_FORM GS_WS_VERIFY_BAD GS_DS_NONEMPTY GS_DS_BAD_PARAM GS_403_BODY GS_LIST_AVAILABLE_FAIL GS_LIST_AVAILABLE_FAIL_ON GS_LIST_AVAILABLE_MISSING_NATIVE GS_FT_LIST_FAIL GS_STYLE_POLYGON_MISSING GS_STYLE_GENERIC_MISSING GS_WFS_EXCEPTION GS_WMS_FAIL GS_DEFAULT_STYLE GS_ACL_GET_FAIL GS_ACL_POST_FAIL GS_ACL_DELETE_FAIL GS_SETTINGS_PUT_DROPS_KEY GS_SERVICE_PUT_405 GS_CAPS_NO_TITLE GS_CAPS_EXCEPTION GS_CAPS_NO_ABSTRACT GS_GEOJSON_EMPTY GS_GEOJSON_PROP_DECIMALS GS_IGNORE_SETTINGS YQ_VERSION_OUT KUBECTL_NO_NS KUBECTL_APPLY_FAIL JQ_LOG_ARGS 2>/dev/null || true
+  unset GS_OFF GS_NEG200 GS_PREFLIGHT_FAIL GS_DELETE_FAIL GS_LAYER_DELETE_FAIL GS_USERS_500 GS_USERS_EMPTY GS_USERS_FAIL_ON GS_USERS_EMPTY_ON GS_ROLES_EMPTY_ON GS_WS_NONEMPTY GS_WS_DELETE_404 GS_WS_EMPTY_FORM GS_WS_VERIFY_BAD GS_DS_NONEMPTY GS_DS_BAD_PARAM GS_403_BODY GS_LIST_AVAILABLE_FAIL GS_LIST_AVAILABLE_FAIL_ON GS_LIST_AVAILABLE_MISSING_NATIVE GS_FT_LIST_FAIL GS_STYLE_POLYGON_MISSING GS_STYLE_GENERIC_MISSING GS_WFS_EXCEPTION GS_WMS_FAIL GS_DEFAULT_STYLE GS_ACL_GET_FAIL GS_ACL_POST_FAIL GS_ACL_DELETE_FAIL GS_SETTINGS_PUT_DROPS_KEY GS_SERVICE_CREATE_FAIL GS_CAPS_NO_TITLE GS_CAPS_EXCEPTION GS_CAPS_NO_ABSTRACT GS_GEOJSON_EMPTY GS_GEOJSON_PROP_DECIMALS GS_NOT_READY_FIRST GS_IGNORE_SETTINGS YQ_VERSION_OUT KUBECTL_NO_NS KUBECTL_APPLY_FAIL JQ_LOG_ARGS 2>/dev/null || true
 }
 
 reset_state() {
