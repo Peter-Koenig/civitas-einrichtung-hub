@@ -220,10 +220,10 @@ addon_validate_config() {
     addon_validate_nonempty "${v}" || return 1
   done
   for key in MAIN DEVELOP DE1 DE2 FV; do
-    # DB-Passwort darf leer/CHANGEME sein (leer = wird erzeugt, Turn 5);
-    # WFS-T-/Session-Secrets bleiben Pflicht.
+    # DB- und WFST-Passwort dürfen leer/CHANGEME sein (leer = wird erzeugt);
+    # Session-Secrets bleiben Pflicht.
     addon_validate_nonempty "P2D2_${key}_DB_PASSWORD" 1 || return 1
-    addon_validate_nonempty "P2D2_${key}_WFST_PASSWORD" || return 1
+    addon_validate_nonempty "P2D2_${key}_WFST_PASSWORD" 1 || return 1
     addon_validate_nonempty "P2D2_${key}_SESSION_SECRET" || return 1
   done
 
