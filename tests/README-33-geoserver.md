@@ -121,6 +121,14 @@ Diese Tabelle wird generiert mit `tests/tools/gs_group_map.sh` (nicht von Hand g
 | 94 | 06 |
 | 95 | 10 |
 | 96 | 10 |
+| 97 | 03 |
+| 98 | 03 |
+| 99 | 03 |
+| 100 | 03 |
+| 101 | 03 |
+| 102 | 03 |
+| 103 | 03 |
+| 104 | 03 |
 
 ## Regeln für neue Szenarien
 

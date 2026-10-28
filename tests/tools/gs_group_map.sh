@@ -29,5 +29,5 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   done
 } | LC_ALL=C sort -V -k1,1 | awk -F'\t' '
   BEGIN { print "| Szenario | Gruppe |"; print "|----------|--------|" }
-  { printf "| %s | %s |\n", $1, $2 }
+  !seen[$1]++ { printf "| %s | %s |\n", $1, $2 }
 '
