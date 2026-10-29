@@ -3,8 +3,7 @@
 # Copyright (C) 2024-2026 p2d2 Contributors
 #
 # addon_11_geoserver_config.sh — GeoServer-Vektor-Konfiguration (Workspaces,
-# Datastores, FeatureTypes, Benutzer/Rollen/ACLs, Dienst-Metadaten). Überträgt das
-# Wegwerf-Skript supplement/p2d2-geoserver-config_v1.sh als Modul in den Installer.
+# Datastores, FeatureTypes, Benutzer/Rollen/ACLs, Dienst-Metadaten).
 #
 # Voraussetzung: bash >= 5.2 (VM: 5.2.37).
 # D8: RO-Benutzer p2d2_wfs_user + Rolle WFS-USER + Secret p2d2-geoserver-wfs-user
