@@ -113,7 +113,9 @@ case "$args" in
     exit 0
     ;;
   *"create configmap"*"dry-run"*) printf 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: mapproxy-config\n' ;;
-  *"exec"*"sys.argv"*) printf 'TRNS' ;;
+  *"exec"*"sys.argv"*)
+    if [[ -n "${KUBECTL_GETMAP_RESULT:-}" ]]; then printf '%s' "$KUBECTL_GETMAP_RESULT"; else printf 'TRNS'; fi
+    ;;
   *"exec"*"GetCapabilities"*)
     if [[ -n "${KUBECTL_CAPS_MISSING_LAYER:-}" ]]; then
       printf '<WMS_Capabilities><Layer><Name>p2d2_osm</Name></Layer><Layer><Name>p2d2_cemeteries_overview</Name></Layer></WMS_Capabilities>'
@@ -393,6 +395,7 @@ verify_addon_mapproxy >/dev/null 2>&1
 check "Verify: rc=0" "0" "$?"
 check "Verify: GetCapabilities ausgeführt" "yes" "$(grep -q 'GetCapabilities' "$KUBECTL_CALL_LOG" && echo yes || echo no)"
 check "Verify: GetMap ausgeführt" "yes" "$(grep -q 'GetMap' "$KUBECTL_CALL_LOG" && echo yes || echo no)"
+check "Verify: GetMap-URL mit STYLES" "yes" "$(grep -qF '&LAYERS=p2d2_cemeteries_details&STYLES=&SRS=' "$KUBECTL_CALL_LOG" && echo yes || echo no)"
 
 # ── Verify-Fehlerpfad: Diagnose + rc=1 ────────────────────────────────────────
 : > "$KUBECTL_CALL_LOG"
@@ -413,6 +416,14 @@ export KUBECTL_CAPS_MISSING_LAYER=1
 verify_addon_mapproxy >/dev/null 2>&1
 check "Verify: fehlender Layer -> rc=1" "1" "$?"
 unset KUBECTL_CAPS_MISSING_LAYER
+
+# ── Verify: GetMap HTTP 500 -> rc=1 + Fehlerursache in der Meldung ──────────
+: > "$KUBECTL_CALL_LOG"
+export KUBECTL_GETMAP_RESULT="HTTP 500 missing parameters ['styles']"
+verify_addon_mapproxy >/dev/null 2>&1
+check "Verify: GetMap HTTP 500 -> rc=1" "1" "$?"
+check "Verify: GetMap Fehlermeldung enthält HTTP 500" "yes" "$(grep -qF 'HTTP 500' "$LOGBUF" && echo yes || echo no)"
+unset KUBECTL_GETMAP_RESULT
 
 # ── Uninstall Image-Entfernung (Anforderung 4) ────────────────────────────────
 # (a) Default false -> Image bleibt, kein rm.

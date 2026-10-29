@@ -193,12 +193,19 @@ verify_addon_mapproxy() {
   # EIN GetMap (kein OSM-Layer): p2d2_cemeteries_details, TRANSPARENT=true -> PNG mit tRNS.
   local bbox="${ADDON_MAPPROXY_VERIFY_BBOX:-356000,5648000,356500,5648500}" map_result
   map_result="$(kubectl -n "${ns}" exec deploy/mapproxy -- python -c \
-    'import sys, urllib.request; d=urllib.request.urlopen(sys.argv[1], timeout=30).read(); print("TRNS" if b"tRNS" in d else "NOTRNS")' \
-    "http://127.0.0.1:8080/service?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&LAYERS=p2d2_cemeteries_details&SRS=EPSG:25832&BBOX=${bbox}&WIDTH=256&HEIGHT=256&FORMAT=image/png&TRANSPARENT=true" 2>/dev/null || true)"
+    'import sys, urllib.request, urllib.error
+try:
+    d = urllib.request.urlopen(sys.argv[1], timeout=30).read()
+    print("TRNS" if b"tRNS" in d else "NOTRNS")
+except urllib.error.HTTPError as x:
+    print("HTTP %s %s" % (x.code, x.read()[:200].decode("utf-8", "replace").replace("\n", " ")))
+except Exception as x:
+    print("%s %s" % (type(x).__name__, x))' \
+    "http://127.0.0.1:8080/service?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&LAYERS=p2d2_cemeteries_details&STYLES=&SRS=EPSG:25832&BBOX=${bbox}&WIDTH=256&HEIGHT=256&FORMAT=image/png&TRANSPARENT=true" 2>/dev/null || true)"
   if [[ "${map_result}" == "TRNS" ]]; then
     log_ok "MapProxy GetMap p2d2_cemeteries_details: 200 + tRNS"
   else
-    log_error "MapProxy GetMap p2d2_cemeteries_details: tRNS fehlt (${map_result:-<Fehler>})"
+    log_error "MapProxy GetMap p2d2_cemeteries_details: tRNS fehlt (${map_result:0:300})"
     return 1
   fi
 
