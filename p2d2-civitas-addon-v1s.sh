@@ -423,7 +423,9 @@ else
   addon_docker_ensure
   install_addon_mapproxy_build
   install_addon_mapproxy
+  install_addon_mapproxy_routing || ADDON_EXIT_CODE=1
   verify_addon_mapproxy || ADDON_EXIT_CODE=1
+  verify_addon_mapproxy_routing || ADDON_EXIT_CODE=1
   install_addon_iam
   install_addon_frontend_build
   ADDON_DOCKER_HOLD=false

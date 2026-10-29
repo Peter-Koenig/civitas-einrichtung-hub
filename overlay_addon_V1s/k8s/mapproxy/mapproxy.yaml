@@ -7,8 +7,8 @@
 #     http://192.168.122.112:8080/geoserver/wms
 #     -> http://geoserver-geoserver.__P2D2_NAMESPACE__.svc.cluster.local/geoserver/wms
 #  2. styles "friedhofsplan_transparent": in beiden WMS-Quellen gesetzt (Stand
-#     Standalone-Export 2026-09-29). Ob der Style bleibt, ist offen (Peter prueft,
-#     ob das GeoTIFF die Transparenz selbst liefert).
+#     Standalone-Export 2026-09-29). Der Style ist nötig: Ohne ihn zeichnet der
+#     GeoServer das GeoTIFF deckend, mit schwarzem Hintergrund (gemessen 2026-10-29).
 #  3. Cache-Verzeichnisse: /srv/mapproxy/cache_data/... -> PVC-Mount /cache_data/...
 #  4. globals.cache.base_dir auf /cache_data gesetzt (damit auch der OSM-Cache auf dem PVC liegt)
 #  5. Dienst-Metadaten (wms.md/wmts.md) aus supplement/geoserver-metadata.md
@@ -20,7 +20,7 @@ globals:
     base_dir: '/cache_data'
   http:
     access_control_allow_origin: ""
-    # CORS-Removal: in p2d2 controlled by Caddy
+    # CORS: im AddOn setzt die APISIX-Route (cors-Plugin) den Header; hier leer lassen, sonst doppelt.
 
 services:
   wms:

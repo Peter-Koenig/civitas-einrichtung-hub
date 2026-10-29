@@ -62,18 +62,29 @@ install_addon_mapproxy_build() {
 # und nicht im Docker-Image-Store: dann wird es rein lokal exportiert und per
 # docker load übernommen (kein externer Zugriff, keine Credentials).
 _mapproxy_validate_config() {
-  local cfg_file="$1" image="$2"
+  local cfg_file="$1" image="$2" ref
   if ! addon_docker_ensure; then
     log_warn "Docker nicht verfügbar — MapProxy-Config-Validierung übersprungen"
     return 0
   fi
   if ! docker image inspect "${image}" >/dev/null 2>&1; then
+    # Vollqualifizierte Referenz: containerd führt lokal gebaute Images als
+    # docker.io/library/<name>:<tag>. Kurzname nur bei bereits vorhandenem "/" unverändert.
+    ref="${image}"
+    [[ "${ref}" == */* ]] || ref="docker.io/library/${ref}"
     log "MapProxy-Image ${image} nicht im Docker-Store — übernehme aus containerd (k8s.io)"
-    if ! k3s ctr -n k8s.io images export "${image}" - 2>/dev/null | docker load 2>/dev/null; then
+    if ! k3s ctr -n k8s.io images export "${ref}" - 2>/dev/null | docker load 2>/dev/null; then
       log_warn "MapProxy-Image ${image} nicht für Config-Validierung verfügbar — Validierung übersprungen"
       return 0
     fi
+    if ! docker image inspect "${image}" >/dev/null 2>&1; then
+      log_warn "MapProxy-Image ${image} nach Export weiterhin nicht im Docker-Store — Validierung übersprungen"
+      return 0
+    fi
   fi
+  # Die gerenderte Config hat Modus 600 und gehört root; das Image läuft als UID
+  # 1000 und kann sie im Bind-Mount sonst nicht lesen. Kein Secret enthalten.
+  chmod 644 "${cfg_file}"
   local out rc
   out="$(docker run --rm -v "${cfg_file}:/c/mapproxy.yaml:ro" "${image}" \
     python -c "from mapproxy.config.loader import load_configuration; load_configuration('/c/mapproxy.yaml', ignore_warnings=True)" 2>&1)"
@@ -124,9 +135,8 @@ install_addon_mapproxy() {
     return 1
   fi
 
-  # 3) APISIX-Routing /mapserver — TODO (Upstream + Route mit proxy-rewrite,
-  #    kommt in einem späteren Turn).
-  log "  APISIX-Routing /mapserver: TODO — Upstream + Route (proxy-rewrite) anlegen"
+  # 3) APISIX-Routing /mapserver folgt in install_addon_mapproxy_routing
+  #    (wird im Hauptskript separat, nicht-abbrechend aufgerufen).
 
   log_ok "AddOn 20 MapProxy abgeschlossen (Pod angelegt)"
 }
@@ -246,6 +256,154 @@ _mapproxy_apisix_delete_by_name() {
     log_warn "APISIX ${name} löschen fehlgeschlagen (HTTP ${http_code})"
     return 1
   fi
+}
+
+# _mapproxy_apisix_http <admin_key> <method> <url> [body_file] — APISIX-Admin-Aufruf
+# mit X-API-KEY über stdin (curl -K -). Der Key erscheint nie in Prozessargumenten
+# oder Logs. Setzt die globalen Variablen _APISIX_HTTP_CODE und _APISIX_HTTP_BODY.
+_mapproxy_apisix_http() {
+  local admin_key="$1" method="$2" url="$3" body="${4:-}" cfg tmp code
+  case "${admin_key}" in
+    *$'\n'*|*$'\r'*|*'"'*) log_error "APISIX-Admin-Key enthält unzulässige Zeichen (CR/LF/\")"; return 1 ;;
+  esac
+  cfg="$(printf 'header = "X-API-KEY: %s"\n' "${admin_key}")"
+  tmp="$(mktemp)"; chmod 600 "${tmp}"
+  if [[ -n "${body}" ]]; then
+    code="$( printf '%s' "${cfg}" | curl -sS -K - --max-time 15 -X "${method}" -H 'Content-Type: application/json' --data-binary "@${body}" -o "${tmp}" -w '%{http_code}' "${url}" 2>/dev/null )" || code="000"
+  else
+    code="$( printf '%s' "${cfg}" | curl -sS -K - --max-time 15 -X "${method}" -o "${tmp}" -w '%{http_code}' "${url}" 2>/dev/null )" || code="000"
+  fi
+  _APISIX_HTTP_CODE="${code}"
+  _APISIX_HTTP_BODY="$(cat "${tmp}" 2>/dev/null)"
+  rm -f "${tmp}"
+  return 0
+}
+
+# _mapproxy_apisix_find_id <admin_key> <collection> <name> <base> — ID eines APISIX-
+# Admin-Objekts anhand seines name-Felds ermitteln. Leer = nicht vorhanden.
+_mapproxy_apisix_find_id() {
+  local admin_key="$1" coll="$2" name="$3" base="$4" id
+  _mapproxy_apisix_http "${admin_key}" GET "${base}/${coll}" || return 1
+  if [[ "${_APISIX_HTTP_CODE}" != "200" ]]; then
+    log_warn "APISIX ${coll} nicht abfragbar (HTTP ${_APISIX_HTTP_CODE}) — ${name} nicht gefunden"
+    return 1
+  fi
+  id="$(jq -r --arg n "${name}" '.list[]? | select(.value.name==$n) | (.value.id // (.key | split("/")[-1]))' <<< "${_APISIX_HTTP_BODY}" 2>/dev/null | head -1 || true)"
+  printf '%s' "${id}"
+}
+
+# _mapproxy_apisix_upsert <admin_key> <collection> <id> <body> <base> — legt an (POST)
+# oder aktualisiert (PUT); Erfolgscodes 200/201. Existenzprüfung über den Namen liegt
+# beim Aufrufer (_mapproxy_apisix_find_id).
+_mapproxy_apisix_upsert() {
+  local admin_key="$1" coll="$2" id="$3" body="$4" base="$5" method url body_file
+  if [[ -n "${id}" ]]; then
+    method="PUT"; url="${base}/${coll}/${id}"
+  else
+    method="POST"; url="${base}/${coll}"
+  fi
+  body_file="$(mktemp)"; chmod 600 "${body_file}"
+  printf '%s' "${body}" > "${body_file}"
+  _mapproxy_apisix_http "${admin_key}" "${method}" "${url}" "${body_file}"
+  rm -f "${body_file}"
+  if [[ "${_APISIX_HTTP_CODE}" == "200" || "${_APISIX_HTTP_CODE}" == "201" ]]; then
+    return 0
+  fi
+  log_warn "APISIX ${coll} ${method} ${url} fehlgeschlagen (HTTP ${_APISIX_HTTP_CODE}): $(printf '%s' "${_APISIX_HTTP_BODY}" | head -c 200)"
+  return 1
+}
+
+# install_addon_mapproxy_routing — legt APISIX-Upstream + Route /mapserver an oder
+# aktualisiert sie idempotent über den Namen. Nicht-abbrechend (return 1 im Fehlerfall).
+install_addon_mapproxy_routing() {
+  log "=== AddOn 20: MapProxy-Routing (APISIX /mapserver) ==="
+
+  local ns="${ADDON_NS}" domain="${ADDON_DOMAIN}"
+  local apisix_base admin_key creds
+  apisix_base="https://api-admin.${domain}/apisix/admin"
+  creds="${ADDON_APISIX_CREDENTIALS_FILE:-/root/civitas-install/credentials.env}"
+
+  admin_key="$(addon_apisix_admin_key)"
+  if [[ -z "${admin_key}" ]]; then
+    log_warn "APISIX_ADMIN_ROLE_KEY nicht gefunden (${creds}) — /mapserver-Routing übersprungen"
+    return 1
+  fi
+
+  local upstream_id upstream_body route_id route_body
+  upstream_body="$(jq -nc --arg ns "${ns}" '{name:"mapserver-upstream",type:"roundrobin",scheme:"http",pass_host:"pass",nodes:[{host:("mapproxy."+$ns+".svc.cluster.local"),port:8080,weight:1}]}')"
+
+  upstream_id="$(_mapproxy_apisix_find_id "${admin_key}" "upstreams" "mapserver-upstream" "${apisix_base}")" || return 1
+  if ! _mapproxy_apisix_upsert "${admin_key}" "upstreams" "${upstream_id}" "${upstream_body}" "${apisix_base}"; then
+    return 1
+  fi
+
+  # ID nach POST erneut ermitteln (POST erzeugt eine neue numerische ID).
+  upstream_id="$(_mapproxy_apisix_find_id "${admin_key}" "upstreams" "mapserver-upstream" "${apisix_base}")" || return 1
+  if [[ -z "${upstream_id}" ]]; then
+    log_error "APISIX Upstream mapserver-upstream nach dem Anlegen nicht auffindbar"
+    return 1
+  fi
+
+  route_body="$(jq -nc --arg uid "${upstream_id}" '{name:"mapserver-route",uri:"/mapserver*",methods:["GET","POST","PUT","PATCH","DELETE"],upstream_id:$uid,plugins:{"proxy-rewrite":{regex_uri:["^/mapserver(.*)","$1"],headers:{set:{"X-Script-Name":"/mapserver","X-Forwarded-Proto":"https"}}},"cors":{}}}')"
+  route_id="$(_mapproxy_apisix_find_id "${admin_key}" "routes" "mapserver-route" "${apisix_base}")" || return 1
+  if ! _mapproxy_apisix_upsert "${admin_key}" "routes" "${route_id}" "${route_body}" "${apisix_base}"; then
+    return 1
+  fi
+
+  log_ok "AddOn 20 MapProxy-Routing abgeschlossen (Upstream + Route /mapserver)"
+  return 0
+}
+
+# verify_addon_mapproxy_routing — öffentliche Erreichbarkeit /mapserver (WMS/WMTS
+# Capabilities + CORS). Nicht-abbrechend, harte Fehler (return 1).
+verify_addon_mapproxy_routing() {
+  log "=== AddOn 20: MapProxy-Routing verifizieren ==="
+
+  local domain="${ADDON_DOMAIN}"
+  local wms_url wmts_url attempt ok f code body
+  wms_url="https://geoportal.${domain}/mapserver/service?SERVICE=WMS&REQUEST=GetCapabilities"
+  wmts_url="https://geoportal.${domain}/mapserver/wmts/1.0.0/WMTSCapabilities.xml"
+
+  ok=0
+  for attempt in 1 2 3 4 5; do
+    f="$(mktemp)"; chmod 600 "${f}"
+    code="$(curl -sS --max-time 30 -o "${f}" -w '%{http_code}' "${wms_url}" 2>/dev/null || true)"
+    body="$(cat "${f}" 2>/dev/null)"; rm -f "${f}"
+    if [[ "${code}" == "200" ]] \
+      && grep -qF 'p2d2_osm' <<< "${body}" \
+      && grep -qF 'p2d2_cemeteries_overview' <<< "${body}" \
+      && grep -qF 'p2d2_cemeteries_details' <<< "${body}" \
+      && grep -qF "xlink:href=\"https://geoportal.${domain}/mapserver/service?" <<< "${body}"; then
+      ok=1; break
+    fi
+    (( attempt < 5 )) && sleep 3
+  done
+  if [[ "${ok}" -ne 1 ]]; then
+    log_error "MapProxy /mapserver WMS-Capabilities fehlgeschlagen (HTTP ${code:-0})"
+    return 1
+  fi
+  log_ok "MapProxy /mapserver WMS-Capabilities: 200 + 3 Layer + korrekte Adresse"
+
+  f="$(mktemp)"; chmod 600 "${f}"
+  code="$(curl -sS --max-time 30 -o "${f}" -w '%{http_code}' "${wmts_url}" 2>/dev/null || true)"
+  body="$(cat "${f}" 2>/dev/null)"; rm -f "${f}"
+  if [[ "${code}" != "200" ]] || ! grep -qF "template=\"https://geoportal.${domain}/mapserver/wmts/" <<< "${body}"; then
+    log_error "MapProxy /mapserver WMTS-Capabilities fehlgeschlagen (HTTP ${code:-0})"
+    return 1
+  fi
+  log_ok "MapProxy /mapserver WMTS-Capabilities: 200 + korrektes template"
+
+  local headers acao_count
+  headers="$(curl -sS --max-time 30 -D - -o /dev/null -H "Origin: https://f-de1.${domain}" "${wms_url}" 2>/dev/null || true)"
+  acao_count="$(grep -ic '^access-control-allow-origin:' <<< "${headers}" || true)"
+  if [[ "${acao_count}" != "1" ]] || ! grep -qi '^access-control-allow-origin:[[:space:]]*\*' <<< "${headers}"; then
+    log_error "MapProxy /mapserver CORS-Header falsch (${acao_count:-0} Zeilen)"
+    return 1
+  fi
+  log_ok "MapProxy /mapserver CORS: genau ein access-control-allow-origin: *"
+
+  log_ok "MapProxy-Routing verifiziert (/mapserver erreichbar)"
+  return 0
 }
 
 # addon_remove_mapproxy_image — entfernt das MapProxy-Image aus containerd

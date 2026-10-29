@@ -27,11 +27,16 @@ export APT_PURGE_LOG="$T/apt-purge.log"
 export DOCKER_BUILD_LOG="$T/docker-build.log"
 export K3S_IMPORT_LOG="$T/k3s-import.log"
 export K3S_RM_LOG="$T/k3s-rm.log"
+export K3S_EXPORT_LOG="$T/k3s-export.log"
 export K3S_IMAGE_LIST="$T/k3s-images.txt"
 export KUBECTL_CALL_LOG="$T/kubectl-call.log"
 export KUBECTL_APPLY_STDIN="$T/kubectl-apply-stdin"
 export DOCKER_REAL="$STUBS/docker.real"
-: > "$APT_INSTALL_LOG"; : > "$APT_PURGE_LOG"; : > "$DOCKER_BUILD_LOG"; : > "$K3S_IMPORT_LOG"; : > "$K3S_RM_LOG"; : > "$K3S_IMAGE_LIST"; : > "$KUBECTL_CALL_LOG"; : > "$KUBECTL_APPLY_STDIN"
+export CURL_ARGS_LOG="$T/curl-args.log"
+export APISIX_BODY_LOG="$T/apisix-body.log"
+export APISIX_STATE_DIR="$T/apisix-state"
+mkdir -p "$APISIX_STATE_DIR"
+: > "$APT_INSTALL_LOG"; : > "$APT_PURGE_LOG"; : > "$DOCKER_BUILD_LOG"; : > "$K3S_IMPORT_LOG"; : > "$K3S_RM_LOG"; : > "$K3S_EXPORT_LOG"; : > "$K3S_IMAGE_LIST"; : > "$KUBECTL_CALL_LOG"; : > "$KUBECTL_APPLY_STDIN"; : > "$CURL_ARGS_LOG"; : > "$APISIX_BODY_LOG"
 
 docker_present() { cp "$DOCKER_REAL" "$STUBS/docker"; chmod +x "$STUBS/docker"; }
 # hash -d: verhindert, dass bash nach dem rm einen veralteten Hash-Pfad für
@@ -86,7 +91,7 @@ case "$args" in
     printf 'docker.io/library/mapproxy:v1s-2026-09-12\n' >> "$K3S_IMAGE_LIST"
     exit 0
     ;;
-  *"images export"*) printf 'docker-image-data' ;;
+  *"images export"*) echo "$args" >> "$K3S_EXPORT_LOG"; printf 'docker-image-data' ;;
   *"images rm"*)
     echo "$args" >> "$K3S_RM_LOG"
     : > "$K3S_IMAGE_LIST"
@@ -127,6 +132,115 @@ esac
 exit 0
 KUB
 chmod +x "$STUBS/kubectl"
+
+# sleep-Stub (Retry-Wartezeit im Test eliminieren).
+cat > "$STUBS/sleep" <<'SLEEP'
+#!/usr/bin/env bash
+exit 0
+SLEEP
+chmod +x "$STUBS/sleep"
+
+# curl-Stub (APISIX-Admin-API + öffentliche /mapserver-Verifikation).
+# Zustand: APISIX_STATE_DIR/upstream-id und route-id; Args/Body werden protokolliert.
+cat > "$STUBS/curl" <<'CURL'
+#!/usr/bin/env bash
+args=("$@")
+method="GET"; url=""; out=""; wformat=""; have_w=0; dump_header=0; data_file=""
+i=0
+while [ "$i" -lt "$#" ]; do
+  a="${args[$i]}"
+  case "$a" in
+    -X) i=$((i+1)); method="${args[$i]}" ;;
+    -o) i=$((i+1)); out="${args[$i]}" ;;
+    -w) i=$((i+1)); wformat="${args[$i]}"; have_w=1 ;;
+    -D) i=$((i+1)); dump_header=1 ;;
+    --data-binary) i=$((i+1)); data_file="${args[$i]#@}" ;;
+    -K) i=$((i+1)) ;;
+  esac
+  i=$((i+1))
+done
+url="${args[$#-1]}"
+printf '%s\n' "$*" >> "$CURL_ARGS_LOG"
+
+body=""
+code="200"
+
+if [[ "$url" == *"api-admin."*"/apisix/admin/upstreams"* ]]; then
+  if [[ "$method" == "GET" ]]; then
+    if [[ -f "$APISIX_STATE_DIR/upstream-id" ]]; then
+      body='{"list":[{"value":{"id":"123","name":"mapserver-upstream"}}]}'
+    else
+      body='{"list":[]}'
+    fi
+  elif [[ "$method" == "POST" ]]; then
+    printf '123' > "$APISIX_STATE_DIR/upstream-id"
+    code="201"
+  elif [[ "$method" == "PUT" ]]; then
+    code="200"
+  elif [[ "$method" == "DELETE" ]]; then
+    rm -f "$APISIX_STATE_DIR/upstream-id"
+    code="200"
+  fi
+elif [[ "$url" == *"api-admin."*"/apisix/admin/routes"* ]]; then
+  if [[ "$method" == "GET" ]]; then
+    if [[ -f "$APISIX_STATE_DIR/route-id" ]]; then
+      body='{"list":[{"value":{"id":"456","name":"mapserver-route"}}]}'
+    else
+      body='{"list":[]}'
+    fi
+  elif [[ "$method" == "POST" ]]; then
+    printf '456' > "$APISIX_STATE_DIR/route-id"
+    code="201"
+  elif [[ "$method" == "PUT" ]]; then
+    code="200"
+  elif [[ "$method" == "DELETE" ]]; then
+    rm -f "$APISIX_STATE_DIR/route-id"
+    code="200"
+  fi
+fi
+
+if [[ -n "$data_file" && -f "$data_file" ]]; then
+  printf '%s\n' "$(cat "$data_file")" >> "$APISIX_BODY_LOG"
+fi
+
+if [[ "$url" == *"/mapserver/"* ]]; then
+  if [[ "$url" == *"wmts"* ]]; then
+    if [[ "${CURL_WMTS_OK:-1}" == "1" ]]; then
+      body='<Capabilities><Contents><Layer><ResourceURL template="https://geoportal.'"$ADDON_DOMAIN"'/mapserver/wmts/1.0.0/x/{TileMatrixSet}/{TileMatrix}/{TileCol}/{TileRow}.png"/></Layer></Contents></Capabilities>'
+    else
+      code="404"; body=""
+    fi
+  elif [[ "$dump_header" == "1" ]]; then
+    printf 'HTTP/1.1 200 OK\r\n'
+    printf 'access-control-allow-origin: *\r\n'
+    if [[ "${CURL_CORS_DOUBLE:-0}" == "1" ]]; then
+      printf 'access-control-allow-origin: *\r\n'
+    fi
+    printf '\r\n'
+    exit 0
+  else
+    if [[ "${CURL_WMS_404:-0}" == "1" ]]; then
+      code="404"; body=""
+    else
+      href='xlink:href="https://geoportal.'"$ADDON_DOMAIN"'/mapserver/service?"'
+      if [[ "${CURL_WMS_ADDR_OK:-1}" != "1" ]]; then
+        href='xlink:href="https://geoportal.'"$ADDON_DOMAIN"'/service?"'
+      fi
+      body='<WMS_Capabilities><Layer><Name>p2d2_osm</Name></Layer><Layer><Name>p2d2_cemeteries_overview</Name></Layer><Layer><Name>p2d2_cemeteries_details</Name></Layer>'"$href"'</WMS_Capabilities>'
+    fi
+  fi
+fi
+
+if [[ -n "$out" && "$out" != "/dev/null" ]]; then
+  printf '%s' "$body" > "$out"
+fi
+if [[ "$have_w" == "1" ]]; then
+  printf '%s' "$code"
+elif [[ -z "$out" || "$out" == "/dev/null" ]]; then
+  printf '%s' "$body"
+fi
+CURL
+chmod +x "$STUBS/curl"
 
 # ── Module laden ──────────────────────────────────────────────────────────────
 # shellcheck disable=SC1090,SC1091
@@ -250,6 +364,7 @@ check "Meta: kein SomewhereStreet" "0" "$(grep -cF 'SomewhereStreet' "$MAPROXY_Y
 check "Meta: keine alte Lizenz" "0" "$(grep -cF 'private and evaluation use only' "$MAPROXY_YAML" || true)"
 check "Meta: kein person:/position:" "0" "$(grep -cE '^[[:space:]]*(person|position):' "$MAPROXY_YAML" || true)"
 check "OSM: User-Agent identifizierend" "yes" "$(grep -qF 'p2d2-MapProxy/1.0 (https://www.data-dna.eu; info@data-dna.eu)' "$MAPROXY_YAML" && echo yes || echo no)"
+check "CORS: access_control_allow_origin leer (APISIX setzt den Header)" "1" "$(grep -cF 'access_control_allow_origin: ""' "$MAPROXY_YAML")"
 
 # ── Statischer Config-Test (keyword_list Objekt-Liste, contact-Schlüssel) ────
 if python3 -c 'import yaml' 2>/dev/null; then
@@ -312,5 +427,112 @@ check "Uninstall false: kein rm" "0" "$(wc -l < "$K3S_RM_LOG" | tr -d ' ')"
 export P2D2_UNINSTALL_REMOVE_IMAGES="true"
 uninstall_addon_mapproxy >/dev/null 2>&1
 check "Uninstall true: rm einmal" "1" "$(wc -l < "$K3S_RM_LOG" | tr -d ' ')"
+
+# ── Config-Validierung: containerd-Export mit vollqualifiziertem Namen (B.3) ──
+: > "$K3S_EXPORT_LOG"
+export DOCKER_INSPECT_SEEN="$T/docker-inspect-seen"
+rm -f "$DOCKER_INSPECT_SEEN"
+cat > "$STUBS/docker" <<'DOCKEXPORT'
+#!/usr/bin/env bash
+args="$*"
+case "$args" in
+  *"--version"*) echo "Docker version 26.1.4" ;;
+  *"image inspect"*)
+    if [[ ! -f "$DOCKER_INSPECT_SEEN" ]]; then
+      touch "$DOCKER_INSPECT_SEEN"
+      exit 1
+    fi
+    exit 0
+    ;;
+  *"run"*) exit 0 ;;
+  *"load"*) exit 0 ;;
+  *"info"*) exit 0 ;;
+esac
+exit 0
+DOCKEXPORT
+chmod +x "$STUBS/docker"
+hash -d docker 2>/dev/null || true
+cfg_export="$(mktemp)"; chmod 600 "$cfg_export"
+printf 'globals:\n  cache:\n    base_dir: /cache_data\nservices: {}\n' > "$cfg_export"
+_mapproxy_validate_config "$cfg_export" "mapproxy:v1s-2026-09-12" >/dev/null 2>&1
+check "Validate: Export nutzt vollqualifizierten Namen" "yes" "$(grep -qF 'docker.io/library/mapproxy:v1s-2026-09-12' "$K3S_EXPORT_LOG" && echo yes || echo no)"
+rm -f "$cfg_export"
+unset DOCKER_INSPECT_SEEN
+
+# ── Config-Validierung: Datei vor docker run für andere lesbar (644) ────────
+cat > "$STUBS/docker" <<'DOCKRUN'
+#!/usr/bin/env bash
+args="$*"
+case "$args" in
+  *"--version"*) echo "Docker version 26.1.4" ;;
+  *"image inspect"*) exit 0 ;;
+  *"run"*) exit 0 ;;
+  *"load"*) exit 0 ;;
+  *"info"*) exit 0 ;;
+esac
+exit 0
+DOCKRUN
+chmod +x "$STUBS/docker"
+hash -d docker 2>/dev/null || true
+cfg_mode="$(mktemp)"; chmod 600 "$cfg_mode"
+printf 'globals:\n  cache:\n    base_dir: /cache_data\nservices: {}\n' > "$cfg_mode"
+_mapproxy_validate_config "$cfg_mode" "mapproxy:v1s-2026-09-12" >/dev/null 2>&1
+check "Validate: cfg-Datei vor docker run 644" "644" "$(stat -c '%a' "$cfg_mode")"
+rm -f "$cfg_mode"
+
+# ── Routing: Admin-Key fehlt -> return 1 ohne curl ──────────────────────────
+unset ADDON_APISIX_CREDENTIALS_FILE
+: > "$CURL_ARGS_LOG"
+install_addon_mapproxy_routing >/dev/null 2>&1
+check "Routing: kein Admin-Key -> rc=1" "1" "$?"
+check "Routing: kein Admin-Key -> kein curl" "0" "$(wc -l < "$CURL_ARGS_LOG" | tr -d ' ')"
+
+# ── Routing: erst anlegen (POST), dann idempotent (PUT) ────────────────────
+export ADDON_APISIX_CREDENTIALS_FILE="$T/credentials.env"
+printf 'APISIX_ADMIN_ROLE_KEY=test-apikey-123\n' > "$ADDON_APISIX_CREDENTIALS_FILE"
+rm -f "$APISIX_STATE_DIR/upstream-id" "$APISIX_STATE_DIR/route-id"
+: > "$CURL_ARGS_LOG"; : > "$APISIX_BODY_LOG"
+
+install_addon_mapproxy_routing >/dev/null 2>&1
+check "Routing: erster Lauf rc=0" "0" "$?"
+check "Routing: Upstream POST (erster Lauf)" "yes" "$(grep -qE 'POST.*apisix/admin/upstreams$' "$CURL_ARGS_LOG" && echo yes || echo no)"
+check "Routing: Upstream kein PUT (erster Lauf)" "0" "$(grep -cE 'PUT.*apisix/admin/upstreams/' "$CURL_ARGS_LOG" || true)"
+check "Routing: Route POST (erster Lauf)" "yes" "$(grep -qE 'POST.*apisix/admin/routes$' "$CURL_ARGS_LOG" && echo yes || echo no)"
+
+route_body="$(grep -E '^\{' "$APISIX_BODY_LOG" | tail -1)"
+check "Routing: Route-Body upstream_id=123" "yes" "$(grep -qF '"upstream_id":"123"' <<< "$route_body" && echo yes || echo no)"
+check "Routing: Route-Body X-Script-Name" "yes" "$(grep -qF '"X-Script-Name":"/mapserver"' <<< "$route_body" && echo yes || echo no)"
+check "Routing: Route-Body X-Forwarded-Proto" "yes" "$(grep -qF '"X-Forwarded-Proto":"https"' <<< "$route_body" && echo yes || echo no)"
+check "Routing: Route-Body cors" "yes" "$(grep -qF '"cors":{}' <<< "$route_body" && echo yes || echo no)"
+
+: > "$CURL_ARGS_LOG"
+install_addon_mapproxy_routing >/dev/null 2>&1
+check "Routing: zweiter Lauf rc=0" "0" "$?"
+check "Routing: Upstream PUT (zweiter Lauf)" "yes" "$(grep -qE 'PUT.*apisix/admin/upstreams/123' "$CURL_ARGS_LOG" && echo yes || echo no)"
+check "Routing: Route PUT (zweiter Lauf)" "yes" "$(grep -qE 'PUT.*apisix/admin/routes/456' "$CURL_ARGS_LOG" && echo yes || echo no)"
+check "Routing: kein zweiter POST" "0" "$(grep -cE 'POST.*apisix/admin/(upstreams|routes)$' "$CURL_ARGS_LOG" || true)"
+check "Routing: Key nicht in curl-Args" "0" "$(grep -cF 'test-apikey-123' "$CURL_ARGS_LOG" || true)"
+check "Routing: Key nicht im Log" "0" "$(grep -cF 'test-apikey-123' "$LOGBUF" || true)"
+
+# ── Routing-Verify ───────────────────────────────────────────────────────
+: > "$CURL_ARGS_LOG"
+unset CURL_WMS_404 CURL_WMS_ADDR_OK CURL_WMTS_OK CURL_CORS_DOUBLE
+verify_addon_mapproxy_routing >/dev/null 2>&1
+check "Routing-Verify: ok rc=0" "0" "$?"
+
+export CURL_WMS_ADDR_OK=0
+verify_addon_mapproxy_routing >/dev/null 2>&1
+check "Routing-Verify: Adresse ohne /mapserver rc=1" "1" "$?"
+unset CURL_WMS_ADDR_OK
+
+export CURL_CORS_DOUBLE=1
+verify_addon_mapproxy_routing >/dev/null 2>&1
+check "Routing-Verify: doppelter CORS rc=1" "1" "$?"
+unset CURL_CORS_DOUBLE
+
+export CURL_WMS_404=1
+verify_addon_mapproxy_routing >/dev/null 2>&1
+check "Routing-Verify: 404 nach allen Versuchen rc=1" "1" "$?"
+unset CURL_WMS_404
 
 rm -rf "$T"
