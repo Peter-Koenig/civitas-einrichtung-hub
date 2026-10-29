@@ -151,9 +151,9 @@ _portal_validate_in_pod() {
   fi
 }
 
-# _portal_show_diff <a> <b> — Diff (delta wenn vorhanden, sonst diff).
+# _portal_show_diff <a> <b> — neutrales unified diff (bewusst ohne delta/Farb-Pager).
 _portal_show_diff() {
-  if command -v delta >/dev/null 2>&1; then delta "$1" "$2" || true; else diff -u "$1" "$2" || true; fi
+  diff -u --color=never "$1" "$2" || true
 }
 
 # _portal_backup <work> — Backup der ConfigMap + current.js.
