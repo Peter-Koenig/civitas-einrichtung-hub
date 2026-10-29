@@ -102,6 +102,16 @@ verify_addon_mapproxy() {
 
   if ! kubectl -n "${ns}" rollout status deployment/mapproxy --timeout="${timeout}s" >/dev/null 2>&1; then
     log_error "MapProxy-Rollout nicht erfolgreich (Timeout ${timeout}s)"
+    log_error "  Diagnose (ohne Secrets):"
+    kubectl -n "${ns}" get pods -l app=mapproxy -o wide 2>&1 | sed 's/^/  /' || true
+    local pod
+    pod="$(kubectl -n "${ns}" get pods -l app=mapproxy -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+    if [[ -n "${pod}" ]]; then
+      log_error "  --- Pod ${pod}: Events ---"
+      kubectl -n "${ns}" describe pod "${pod}" 2>/dev/null | sed -n '/Events:/,$p' || true
+      log_error "  --- Pod ${pod}: letzte Logzeilen ---"
+      kubectl -n "${ns}" logs deploy/mapproxy --tail=20 2>&1 | sed 's/^/  /' || true
+    fi
     return 1
   fi
 

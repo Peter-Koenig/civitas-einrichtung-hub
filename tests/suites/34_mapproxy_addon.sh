@@ -98,8 +98,15 @@ cat > "$STUBS/kubectl" <<'KUB'
 args="$*"
 echo "$args" >> "$KUBECTL_CALL_LOG"
 case "$args" in
-  *"rollout status"*) exit 0 ;;
+  *"rollout status"*)
+    if [[ -n "${KUBECTL_ROLLOUT_FAIL:-}" && -f "$KUBECTL_ROLLOUT_FAIL" ]]; then exit 1; fi
+    exit 0
+    ;;
   *"create configmap"*"dry-run"*) printf 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: mapproxy-config\n' ;;
+  *"get pods"*"-o jsonpath"*) printf 'mapproxy-abc123-xyz' ;;
+  *"get pods"*"-o wide"*) printf 'NAME READY STATUS RESTARTS AGE\nmapproxy-abc123-xyz 0/1 CrashLoopBackOff 7 18m\n' ;;
+  *"describe pod"*) printf 'Events:\n  Warning  Unhealthy  18m  Readiness probe failed: HTTP probe failed with statuscode: 404\n' ;;
+  *"logs"*"deploy/mapproxy"*) printf '[INFO] gunicorn worker booting\n' ;;
   *"apply"*|*"delete"*) exit 0 ;;
 esac
 exit 0
@@ -139,10 +146,14 @@ check "Docker vorhanden: kein install/purge" "0|0" "$(wc -l < "$APT_INSTALL_LOG"
 docker_absent
 : > "$APT_INSTALL_LOG"; : > "$APT_PURGE_LOG"
 unset ADDON_DOCKER_INSTALLED_BY_SCRIPT
+# ADDON_DOCKER_HOLD wird von der gesourcten addon_docker_release gelesen
+# (shellcheck kann das nicht auflösen) — daher SC2034 hier gezielt deaktivieren.
+# shellcheck disable=SC2034
 ADDON_DOCKER_HOLD=true
 addon_docker_ensure >/dev/null 2>&1
 addon_docker_release >/dev/null 2>&1
 check "HOLD: kein purge" "0" "$(wc -l < "$APT_PURGE_LOG" | tr -d ' ')"
+# shellcheck disable=SC2034
 ADDON_DOCKER_HOLD=false
 addon_docker_release >/dev/null 2>&1
 check "HOLD aufgehoben: purge" "1" "$(wc -l < "$APT_PURGE_LOG" | tr -d ' ')"
@@ -188,9 +199,26 @@ check "Install: rc=0" "0" "$?"
 check "Install: ConfigMap erzeugt" "yes" "$(grep -q 'create configmap mapproxy-config' "$KUBECTL_CALL_LOG" && echo yes || echo no)"
 check "Install: Manifest angewendet" "yes" "$(grep -q 'apply -f -' "$KUBECTL_CALL_LOG" && echo yes || echo no)"
 
+# ── Deployment-Probes (Anforderung: GetCapabilities-Pfad, kein /demo) ─────────
+DEPLOY_YAML="$REPO/overlay_addon_V1s/k8s/mapproxy/deployment.yaml"
+check "Probe: GetCapabilities-Pfad 2x" "2" "$(grep -oF '/service?SERVICE=WMS&REQUEST=GetCapabilities' "$DEPLOY_YAML" | wc -l | tr -d ' ')"
+check "Probe: kein /demo" "0" "$(grep -cF 'path: /demo' "$DEPLOY_YAML" || true)"
+
 # ── Verify ────────────────────────────────────────────────────────────────────
 verify_addon_mapproxy >/dev/null 2>&1
 check "Verify: rc=0" "0" "$?"
+
+# ── Verify-Fehlerpfad: Diagnose + rc=1 ────────────────────────────────────────
+: > "$KUBECTL_CALL_LOG"
+export KUBECTL_ROLLOUT_FAIL="$T/kubectl-rollout-fail"
+: > "$KUBECTL_ROLLOUT_FAIL"
+verify_addon_mapproxy >/dev/null 2>&1
+check "Verify Fehler: rc=1" "1" "$?"
+check "Verify Fehler: get pods Diagnose" "yes" "$(grep -q 'get pods' "$KUBECTL_CALL_LOG" && echo yes || echo no)"
+check "Verify Fehler: describe Diagnose" "yes" "$(grep -q 'describe pod' "$KUBECTL_CALL_LOG" && echo yes || echo no)"
+check "Verify Fehler: logs Diagnose" "yes" "$(grep -q 'logs' "$KUBECTL_CALL_LOG" && echo yes || echo no)"
+rm -f "$KUBECTL_ROLLOUT_FAIL"
+unset KUBECTL_ROLLOUT_FAIL
 
 # ── Uninstall Image-Entfernung (Anforderung 4) ────────────────────────────────
 # (a) Default false -> Image bleibt, kein rm.

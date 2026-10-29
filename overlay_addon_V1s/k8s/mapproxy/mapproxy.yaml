@@ -11,6 +11,8 @@
 #     Kommentar, der Style sei entfernt worden, entspricht NICHT dem aktuellen Stand.
 #  3. Cache-Verzeichnisse: /srv/mapproxy/cache_data/... -> PVC-Mount /cache_data/...
 #  4. globals.cache.base_dir auf /cache_data gesetzt (damit auch der OSM-Cache auf dem PVC liegt)
+#  5. WMTS-Kontaktperson anonymisiert (kein Personenname im versionierten Quelltext;
+#     im Standalone stand hier ein Klarname).
 
 globals:
   cache:
@@ -31,7 +33,7 @@ services:
       abstract: p2d2 links open administrative data with OpenStreetMap data
       online_resource: http://www.data-dna.eu
       contact:
-        person: Peter König
+        person: data-dna
         position: Projektinitiator
         organization: data-dna e.V. (i.Gr.)
         address: SomewhereStreet

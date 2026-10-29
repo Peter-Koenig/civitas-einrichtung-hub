@@ -76,17 +76,18 @@ spec:
             limits:
               cpu: "1"
               memory: 1Gi
-          # Health-Endpoint: /demo (MapProxy liefert auf / eine 404; die
-          # dokumentierte Prüfung nutzt `curl -I http://localhost:8080/demo`).
+          # Health-Endpoint: GetCapabilities (200 im Cluster gemessen). Braucht
+          # keine erreichbaren Quellen. /demo existiert nur bei aktiviertem
+          # Dienst `demo` (hier nicht konfiguriert) und liefert 404.
           readinessProbe:
             httpGet:
-              path: /demo
+              path: '/service?SERVICE=WMS&REQUEST=GetCapabilities'
               port: 8080
             initialDelaySeconds: 10
             periodSeconds: 10
           livenessProbe:
             httpGet:
-              path: /demo
+              path: '/service?SERVICE=WMS&REQUEST=GetCapabilities'
               port: 8080
             initialDelaySeconds: 30
             periodSeconds: 30
