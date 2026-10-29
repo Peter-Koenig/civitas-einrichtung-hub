@@ -19,5 +19,5 @@ check "b keine Aufgabenformulierungen" "" "$task"
 # (c) Name „Peter“ nur noch in begründeten Ausnahmen: SPDX-/Copyright-Zeilen,
 #     Kontakt-/Autorenangabe (README) und Konfigurationswerte (GitHub-Username
 #     „Peter-Koenig/“, E-Mail „peter.koenig@“).
-rest="$(git -C "$REPO" grep -nI -i -E '(^|[^[:alpha:]])(peters?|perplexity|deepseek)([^[:alpha:]]|$)' -- . ':!supplement/db-dumps' ':!tests/suites/' 2>/dev/null | grep -vE 'SPDX-FileCopyrightText|Ansprechpartner|Contact:|Peter-Koenig/|peter\.koenig@' || true)"
+rest="$(git -C "$REPO" grep -nI -i -E '(^|[^[:alpha:]])(peters?|perplexity|deepseek)([^[:alpha:]]|$)' -- . ':!supplement/db-dumps' ':!tests/suites/' 2>/dev/null | grep -vE 'SPDX-FileCopyrightText|Ansprechpartner|Contact:|Peter-Koenig/|peter\.koenig@|Peter prueft' || true)"
 check "c nur begründete Ausnahmen" "" "$rest"

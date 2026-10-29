@@ -55,6 +55,40 @@ install_addon_mapproxy_build() {
   return 0
 }
 
+# _mapproxy_validate_config <rendered_yaml> <image> — prüft die gerenderte
+# MapProxy-Config im gebauten Image, bevor die ConfigMap angewendet wird.
+# Rückgabe 0 (ok) / 1 (ungültig). Docker nicht verfügbar -> Warnung + 0 (weiter).
+# Das Image kann nach einem übersprungenen Build nur in containerd (k8s.io) liegen
+# und nicht im Docker-Image-Store: dann wird es rein lokal exportiert und per
+# docker load übernommen (kein externer Zugriff, keine Credentials).
+_mapproxy_validate_config() {
+  local cfg_file="$1" image="$2"
+  if ! addon_docker_ensure; then
+    log_warn "Docker nicht verfügbar — MapProxy-Config-Validierung übersprungen"
+    return 0
+  fi
+  if ! docker image inspect "${image}" >/dev/null 2>&1; then
+    log "MapProxy-Image ${image} nicht im Docker-Store — übernehme aus containerd (k8s.io)"
+    if ! k3s ctr -n k8s.io images export "${image}" - 2>/dev/null | docker load 2>/dev/null; then
+      log_warn "MapProxy-Image ${image} nicht für Config-Validierung verfügbar — Validierung übersprungen"
+      return 0
+    fi
+  fi
+  local out rc
+  out="$(docker run --rm -v "${cfg_file}:/c/mapproxy.yaml:ro" "${image}" \
+    python -c "from mapproxy.config.loader import load_configuration; load_configuration('/c/mapproxy.yaml', ignore_warnings=True)" 2>&1)"
+  rc=$?
+  if [[ ${rc} -ne 0 ]]; then
+    log_error "MapProxy-Config ungültig (Validierung im Image fehlgeschlagen):"
+    printf '%s\n' "${out}" \
+      | grep -vE '^(Traceback|[[:space:]]+File |[[:space:]]+raise |[[:space:]]+return |[[:space:]]+during )' \
+      | sed 's/^/    /' | head -40 || true
+    return 1
+  fi
+  log_ok "MapProxy-Config im gebauten Image validiert"
+  return 0
+}
+
 install_addon_mapproxy() {
   log "=== AddOn 20: MapProxy (ConfigMap/PVC/Service/Deployment) ==="
 
@@ -68,6 +102,11 @@ install_addon_mapproxy() {
   sed "s|__P2D2_NAMESPACE__|${ns}|g" "${overlay_dir}/mapproxy/mapproxy.yaml" > "${cfg_tmp}" \
     || { log_error "mapproxy.yaml rendern fehlgeschlagen"; rm -f "${cfg_tmp}"; return 1; }
   cfg_hash="$(sha256sum "${cfg_tmp}" | awk '{print $1}')"
+  if ! _mapproxy_validate_config "${cfg_tmp}" "${image}"; then
+    log_error "MapProxy-Config ungültig — ConfigMap wird nicht angewendet"
+    rm -f "${cfg_tmp}"
+    return 1
+  fi
   if ! kubectl -n "${ns}" create configmap mapproxy-config --from-file=mapproxy.yaml="${cfg_tmp}" \
        --dry-run=client -o yaml | kubectl apply -f -; then
     log_error "ConfigMap mapproxy-config anwenden fehlgeschlagen"
@@ -92,11 +131,7 @@ install_addon_mapproxy() {
   log_ok "AddOn 20 MapProxy abgeschlossen (Pod angelegt)"
 }
 
-# verify_addon_mapproxy — Rollout-Status (Pod Ready). Wird im Hauptskript
-# nicht-abbrechend aufgerufen (verify_addon_mapproxy || ADDON_EXIT_CODE=1),
-# daher explizite return 1 statt set -e. Die inhaltliche WMS/Layer-Prüfung
-# (GetCapabilities) folgt im Konfigurations-Turn, wenn APISIX-Routing und
-# GeoServer-Style/Mosaic feststehen.
+# verify_addon_mapproxy — Rollout-Status (Pod Ready), WMS-GetCapabilities (drei Layer) und ein GetMap (tRNS). Wird im Hauptskript nicht-abbrechend aufgerufen (verify_addon_mapproxy || ADDON_EXIT_CODE=1), daher explizite return 1 statt set -e.
 verify_addon_mapproxy() {
   log "=== AddOn 20: MapProxy verifizieren ==="
 
@@ -107,13 +142,26 @@ verify_addon_mapproxy() {
     log_error "MapProxy-Rollout nicht erfolgreich (Timeout ${timeout}s)"
     log_error "  Diagnose (ohne Secrets):"
     kubectl -n "${ns}" get pods -l app=mapproxy -o wide 2>&1 | sed 's/^/  /' || true
-    local pod
-    pod="$(kubectl -n "${ns}" get pods -l app=mapproxy -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+    local pod loglines
+    # Bevorzugt einen laufenden Pod (statt blind items[0]); Fallback auf den ersten Pod.
+    pod="$(kubectl -n "${ns}" get pods -l app=mapproxy -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.phase}{"\n"}{end}' 2>/dev/null \
+      | awk '$2=="Running"{print $1; exit}' || true)"
+    if [[ -z "${pod}" ]]; then
+      pod="$(kubectl -n "${ns}" get pods -l app=mapproxy -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+    fi
     if [[ -n "${pod}" ]]; then
       log_error "  --- Pod ${pod}: Events ---"
       kubectl -n "${ns}" describe pod "${pod}" 2>/dev/null | sed -n '/Events:/,$p' || true
       log_error "  --- Pod ${pod}: letzte Logzeilen ---"
-      kubectl -n "${ns}" logs deploy/mapproxy --tail=20 2>&1 | sed 's/^/  /' || true
+      loglines="$(kubectl -n "${ns}" logs deploy/mapproxy --previous --tail=300 2>/dev/null \
+        | grep -vE '^[[:space:]]+(File|~|\\^)' | head -30 || true)"
+      if [[ -z "${loglines}" ]]; then
+        loglines="$(kubectl -n "${ns}" logs deploy/mapproxy --tail=300 2>/dev/null \
+          | grep -vE '^[[:space:]]+(File|~|\\^)' | head -30 || true)"
+      fi
+      if [[ -n "${loglines}" ]]; then
+        printf '%s\n' "${loglines}" | sed 's/^/  /'
+      fi
     fi
     return 1
   fi
@@ -129,7 +177,8 @@ verify_addon_mapproxy() {
   for layer in p2d2_osm p2d2_cemeteries_overview p2d2_cemeteries_details; do
     grep -qF "${layer}" <<< "${caps}" || { log_error "MapProxy-Layer ${layer} fehlt in GetCapabilities"; cap_ok=0; }
   done
-  [[ "${cap_ok}" -eq 1 ]] && log_ok "MapProxy GetCapabilities: 200 + Layer p2d2_osm/cemeteries_overview/cemeteries_details"
+  [[ "${cap_ok}" -eq 1 ]] || return 1
+  log_ok "MapProxy GetCapabilities: 200 + Layer p2d2_osm/cemeteries_overview/cemeteries_details"
 
   # EIN GetMap (kein OSM-Layer): p2d2_cemeteries_details, TRANSPARENT=true -> PNG mit tRNS.
   local bbox="${ADDON_MAPPROXY_VERIFY_BBOX:-356000,5648000,356500,5648500}" map_result

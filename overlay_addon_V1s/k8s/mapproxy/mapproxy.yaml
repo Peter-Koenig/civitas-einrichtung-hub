@@ -6,14 +6,14 @@
 #  1. GeoServer-URL: Legacy-IP -> Cluster-Service-DNS
 #     http://192.168.122.112:8080/geoserver/wms
 #     -> http://geoserver-geoserver.__P2D2_NAMESPACE__.svc.cluster.local/geoserver/wms
-#  2. styles "friedhofsplan_transparent": Im Dateikörper weiterhin in beiden
-#     WMS-Quellen vorhanden (offener Punkt, NICHT selbst entfernt). Der frühere
-#     Kommentar, der Style sei entfernt worden, entspricht NICHT dem aktuellen Stand.
+#  2. styles "friedhofsplan_transparent": in beiden WMS-Quellen gesetzt (Stand
+#     Standalone-Export 2026-09-29). Ob der Style bleibt, ist offen (Peter prueft,
+#     ob das GeoTIFF die Transparenz selbst liefert).
 #  3. Cache-Verzeichnisse: /srv/mapproxy/cache_data/... -> PVC-Mount /cache_data/...
 #  4. globals.cache.base_dir auf /cache_data gesetzt (damit auch der OSM-Cache auf dem PVC liegt)
 #  5. Dienst-Metadaten (wms.md/wmts.md) aus supplement/geoserver-metadata.md
 #     (service-Block): organization/email/city/country, fees NONE, Lizenz CC0/ODbL.
-#     Die frühere Anonymisierung "person: data-dna" (Turn 005) entfällt.
+#     keyword_list im MapProxy-Format (Liste von Objekten mit keywords).
 
 globals:
   cache:
@@ -28,6 +28,8 @@ services:
       title: "p2d2 Karten (MapProxy)"
       abstract: "Gecachte Karten der Anwendung p2d2 (Public-Public Data-DNA): OpenStreetMap-Hintergrund und Friedhofspläne."
       online_resource: https://www.data-dna.eu
+      keyword_list:
+        - keywords: ["p2d2", "Public-Public Data-DNA", "Geodaten", "Friedhöfe"]
       contact:
         organization: "p2d2 c/o Projektberatung Dr. König"
         email: info@data-dna.eu
@@ -35,7 +37,6 @@ services:
         country: Deutschland
       access_constraints: "Friedhofspläne: CC0-1.0. Layer p2d2_osm: (c) OpenStreetMap-Mitwirkende, ODbL-1.0 (https://www.openstreetmap.org/copyright)."
       fees: 'NONE'
-      keyword_list: ["p2d2", "Public-Public Data-DNA", "Geodaten", "Friedhöfe"]
     strict: false
     srs: ['EPSG:25832', 'EPSG:3857', 'EPSG:4326']
   wmts:
@@ -43,6 +44,8 @@ services:
       title: "p2d2 Karten (MapProxy)"
       abstract: "Gecachte Karten der Anwendung p2d2 (Public-Public Data-DNA): OpenStreetMap-Hintergrund und Friedhofspläne."
       online_resource: https://www.data-dna.eu
+      keyword_list:
+        - keywords: ["p2d2", "Public-Public Data-DNA", "Geodaten", "Friedhöfe"]
       contact:
         organization: "p2d2 c/o Projektberatung Dr. König"
         email: info@data-dna.eu
@@ -50,7 +53,6 @@ services:
         country: Deutschland
       access_constraints: "Friedhofspläne: CC0-1.0. Layer p2d2_osm: (c) OpenStreetMap-Mitwirkende, ODbL-1.0 (https://www.openstreetmap.org/copyright)."
       fees: 'NONE'
-      keyword_list: ["p2d2", "Public-Public Data-DNA", "Geodaten", "Friedhöfe"]
   tms:
     use_grid_names: true
 

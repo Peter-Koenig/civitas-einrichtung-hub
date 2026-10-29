@@ -62,7 +62,7 @@ case "$url" in
   *"coverages/friedhoefe_koeln.json")
     resp='{"coverage":{"enabled":true,"nativeBoundingBox":{"minx":354764,"maxx":358892,"miny":5642942,"maxy":5656324}}}' ;;
   *"layers/friedhofsplaene:friedhoefe_koeln.json")
-    resp='{"layer":{"enabled":true}}' ;;
+    resp="{\"layer\":{\"enabled\":${CURL_LAYER_ENABLED:-true}}}" ;;
   *"GetCapabilities")
     if [ "${CURL_HAS_LAYER:-true}" = "true" ]; then
       resp='<WMS_Capabilities><Layer><Name>friedhofsplaene:friedhoefe_koeln</Name></Layer></WMS_Capabilities>'
@@ -127,6 +127,12 @@ export CURL_STORE_ENABLED="false"
 verify_addon_geoserver_mosaic >/dev/null 2>&1
 check "Verify Mosaic: store enabled=false → rc=1" "1" "$?"
 unset CURL_STORE_ENABLED
+
+# ── Verify: Layer enabled=false → rc=1 (D.1) ──────────────────────────────────
+export CURL_LAYER_ENABLED="false"
+verify_addon_geoserver_mosaic >/dev/null 2>&1
+check "Verify Mosaic: layer enabled=false → rc=1" "1" "$?"
+unset CURL_LAYER_ENABLED
 
 # ── Verify: fehlender Layer in Capabilities → rc=1 ────────────────────────────
 export CURL_HAS_LAYER="false"

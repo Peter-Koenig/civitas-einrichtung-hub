@@ -15,6 +15,16 @@ if [[ -z "${ADDON_NS:-}" || -z "${ADDON_DOMAIN:-}" ]]; then
   return 1 2>/dev/null || exit 1
 fi
 
+# _gs_curl_user_cfg <user> <pw> — liefert eine `curl -K -`-Configzeile `user = ...`
+# auf stdout. Kein Credential in den Prozessargumenten; Escaping identisch zu
+# `_curl_user_cfg` in addon_11_geoserver_config_core.sh (Backslash + Anführungszeichen).
+_gs_curl_user_cfg() {
+  local s="${1}:${2}"
+  case "$s" in *$'\n'*|*$'\r'*) log_error "Zugangsdaten enthalten Zeilenumbruch"; return 1 ;; esac
+  s="${s//\\/\\\\}"; s="${s//\"/\\\"}"
+  printf 'user = "%s"\n' "$s"
+}
+
 # _gs_rest <user> <pw> <method> <url> <json_body> <ok_codes space-getrennt>
 # GeoServer-REST-Aufruf mit HTTP-Statuscode-Prüfung. Gibt 0 (ok) oder 1 (Fehler)
 # zurück; bei Fehler wird der Response-Body in log_warn geschrieben (kein roher
@@ -22,7 +32,7 @@ fi
 _gs_rest() {
   local user="$1" pw="$2" method="$3" url="$4" body="$5" ok_codes="$6"
   local resp code resp_body ok=0 c
-  resp=$(curl -sS -w $'\n%{http_code}' -u "${user}:${pw}" -X "${method}" \
+  resp=$( _gs_curl_user_cfg "${user}" "${pw}" | curl -sS -K - -w $'\n%{http_code}' -X "${method}" \
     -H 'Content-Type: application/json' -d "${body}" "${url}" 2>/dev/null || true)
   code=$(printf '%s' "${resp}" | tail -1)
   resp_body=$(printf '%s' "${resp}" | sed '$d')
@@ -40,7 +50,7 @@ _gs_rest() {
 # (Content-Type application/vnd.ogc.sld+xml, --data-binary); 200 ok, sonst Warnung.
 _gs_style_sld_put() {
   local user="$1" pw="$2" rest="$3" style="$4" sld="$5" code
-  code=$(curl -sS -o /dev/null -w '%{http_code}' -u "${user}:${pw}" -X PUT \
+  code=$( _gs_curl_user_cfg "${user}" "${pw}" | curl -sS -K - -o /dev/null -w '%{http_code}' -X PUT \
     -H 'Content-Type: application/vnd.ogc.sld+xml' --data-binary @"${sld}" \
     "${rest}/workspaces/friedhofsplaene/styles/${style}" 2>/dev/null || true)
   if [[ "${code}" == "200" ]]; then
@@ -166,7 +176,7 @@ install_addon_geoserver_mosaic() {
 
     # 9.4) Coverage (explizit; nativeCoverageName = Mosaic-TypeName = Ordnername).
     body=$(jq -nc --arg name "${coverage}" --arg native "${stadt}" --arg title "Friedhöfe ${stadt}" \
-      '{coverage:{name:$name,nativeCoverageName:$native,title:$title,srs:"EPSG:25832",projectionPolicy:"REPROJECT_TO_DECLARED",cachingEnabled:false}}')
+      '{coverage:{name:$name,nativeCoverageName:$native,title:$title,srs:"EPSG:25832",projectionPolicy:"REPROJECT_TO_DECLARED",metadata:{entry:[{"@key":"cachingEnabled","$":"false"}]}}}')
     _gs_rest "${admin_user}" "${admin_pw}" POST "${rest}/workspaces/friedhofsplaene/coveragestores/${coveragestore}/coverages" "${body}" "201 200" \
       || fail=1
 
@@ -244,7 +254,7 @@ verify_addon_geoserver_mosaic() {
 
     # 1) Coveragestore enabled (GET .json; enabled muss true sein).
     f_store="$(mktemp)"; chmod 600 "$f_store"
-    code=$(curl -sS -o "$f_store" -w '%{http_code}' -u "${admin_user}:${admin_pw}" \
+    code=$( _gs_curl_user_cfg "${admin_user}" "${admin_pw}" | curl -sS -K - -o "$f_store" -w '%{http_code}' \
       "${rest}/workspaces/friedhofsplaene/coveragestores/${coveragestore}.json" 2>/dev/null || true)
     store_enabled="$(jq -r '.coverageStore.enabled // "false"' "$f_store" 2>/dev/null || true)"
     rm -f "$f_store"
@@ -257,7 +267,7 @@ verify_addon_geoserver_mosaic() {
 
     # 2) Coverage enabled + nativeBoundingBox (für GetMap).
     f_cov="$(mktemp)"; chmod 600 "$f_cov"
-    code=$(curl -sS -o "$f_cov" -w '%{http_code}' -u "${admin_user}:${admin_pw}" \
+    code=$( _gs_curl_user_cfg "${admin_user}" "${admin_pw}" | curl -sS -K - -o "$f_cov" -w '%{http_code}' \
       "${rest}/workspaces/friedhofsplaene/coveragestores/${coveragestore}/coverages/${coverage}.json" 2>/dev/null || true)
     cov_enabled="$(jq -r '.coverage.enabled // "false"' "$f_cov" 2>/dev/null || true)"
     if [[ "${code}" != "200" || "${cov_enabled}" != "true" ]]; then
@@ -269,9 +279,9 @@ verify_addon_geoserver_mosaic() {
 
     # 3) Layer enabled (kein false; bei RASTER-Layern fehlt enabled und gilt als true).
     f_layer="$(mktemp)"; chmod 600 "$f_layer"
-    code=$(curl -sS -o "$f_layer" -w '%{http_code}' -u "${admin_user}:${admin_pw}" \
+    code=$( _gs_curl_user_cfg "${admin_user}" "${admin_pw}" | curl -sS -K - -o "$f_layer" -w '%{http_code}' \
       "${rest}/layers/friedhofsplaene:${coverage}.json" 2>/dev/null || true)
-    layer_enabled="$(jq -r '.layer.enabled // "true"' "$f_layer" 2>/dev/null || true)"
+    layer_enabled="$(jq -r '(.layer.enabled | if . == null then true else . end) | tostring' "$f_layer" 2>/dev/null || true)"
     rm -f "$f_layer"
     if [[ "${code}" != "200" || "${layer_enabled}" == "false" ]]; then
       log_error "  Stadt ${stadt}: Layer nicht enabled (HTTP ${code}, enabled=${layer_enabled:-<fehlt>})"

@@ -46,6 +46,9 @@ args="$*"
 case "$args" in
   *"--version"*) echo "Docker version 26.1.4, build 5650f9b" ;;
   *"info"*) exit 0 ;;
+  *"image inspect"*) exit 0 ;;
+  *"run"*) if [[ -n "${DOCKER_RUN_FAIL:-}" ]]; then exit 1; fi; exit 0 ;;
+  *"load"*) exit 0 ;;
   *"build"*) printf '%s\n' "$args" >> "$DOCKER_BUILD_LOG"; exit 0 ;;
   *"save"*) echo "docker-image-data" ;;
 esac
@@ -83,6 +86,7 @@ case "$args" in
     printf 'docker.io/library/mapproxy:v1s-2026-09-12\n' >> "$K3S_IMAGE_LIST"
     exit 0
     ;;
+  *"images export"*) printf 'docker-image-data' ;;
   *"images rm"*)
     echo "$args" >> "$K3S_RM_LOG"
     : > "$K3S_IMAGE_LIST"
@@ -105,7 +109,14 @@ case "$args" in
     ;;
   *"create configmap"*"dry-run"*) printf 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: mapproxy-config\n' ;;
   *"exec"*"sys.argv"*) printf 'TRNS' ;;
-  *"exec"*"GetCapabilities"*) printf '<WMS_Capabilities><Layer><Name>p2d2_osm</Name></Layer><Layer><Name>p2d2_cemeteries_overview</Name></Layer><Layer><Name>p2d2_cemeteries_details</Name></Layer></WMS_Capabilities>' ;;
+  *"exec"*"GetCapabilities"*)
+    if [[ -n "${KUBECTL_CAPS_MISSING_LAYER:-}" ]]; then
+      printf '<WMS_Capabilities><Layer><Name>p2d2_osm</Name></Layer><Layer><Name>p2d2_cemeteries_overview</Name></Layer></WMS_Capabilities>'
+    else
+      printf '<WMS_Capabilities><Layer><Name>p2d2_osm</Name></Layer><Layer><Name>p2d2_cemeteries_overview</Name></Layer><Layer><Name>p2d2_cemeteries_details</Name></Layer></WMS_Capabilities>'
+    fi
+    ;;
+  *"get pods"*"{range .items"*) printf 'mapproxy-abc123-xyz Running\n' ;;
   *"get pods"*"-o jsonpath"*) printf 'mapproxy-abc123-xyz' ;;
   *"get pods"*"-o wide"*) printf 'NAME READY STATUS RESTARTS AGE\nmapproxy-abc123-xyz 0/1 CrashLoopBackOff 7 18m\n' ;;
   *"describe pod"*) printf 'Events:\n  Warning  Unhealthy  18m  Readiness probe failed: HTTP probe failed with statuscode: 404\n' ;;
@@ -204,6 +215,27 @@ check "Install: ConfigMap erzeugt" "yes" "$(grep -q 'create configmap mapproxy-c
 check "Install: Manifest angewendet" "yes" "$(grep -q 'apply -f -' "$KUBECTL_CALL_LOG" && echo yes || echo no)"
 check "Install: checksum/config gerendert (64 hex)" "yes" "$(grep -qE 'checksum/config: [0-9a-f]{64}' "$KUBECTL_APPLY_STDIN" && echo yes || echo no)"
 
+# ── Preflight: ungueltige Config -> return 1, kein schreibender kubectl ───────
+cat > "$STUBS/docker" <<'DOCKPRE'
+#!/usr/bin/env bash
+args="$*"
+case "$args" in
+  *"--version"*) echo "Docker version 26.1.4" ;;
+  *"image inspect"*) exit 0 ;;
+  *"run"*) exit 1 ;;
+  *"load"*) exit 0 ;;
+  *"info"*) exit 0 ;;
+esac
+exit 0
+DOCKPRE
+chmod +x "$STUBS/docker"
+hash -d docker 2>/dev/null || true
+: > "$KUBECTL_CALL_LOG"
+install_addon_mapproxy >/dev/null 2>&1
+check "Preflight: ungueltige Config rc=1" "1" "$?"
+check "Preflight: kein create configmap" "0" "$(grep -c 'create configmap' "$KUBECTL_CALL_LOG" || true)"
+check "Preflight: kein apply" "0" "$(grep -c 'apply' "$KUBECTL_CALL_LOG" || true)"
+
 # ── Deployment-Probes (Anforderung: GetCapabilities-Pfad, kein /demo) ─────────
 DEPLOY_YAML="$REPO/overlay_addon_V1s/k8s/mapproxy/deployment.yaml"
 check "Probe: GetCapabilities-Pfad 2x" "2" "$(grep -oF '/service?SERVICE=WMS&REQUEST=GetCapabilities' "$DEPLOY_YAML" | wc -l | tr -d ' ')"
@@ -218,6 +250,28 @@ check "Meta: kein SomewhereStreet" "0" "$(grep -cF 'SomewhereStreet' "$MAPROXY_Y
 check "Meta: keine alte Lizenz" "0" "$(grep -cF 'private and evaluation use only' "$MAPROXY_YAML" || true)"
 check "Meta: kein person:/position:" "0" "$(grep -cE '^[[:space:]]*(person|position):' "$MAPROXY_YAML" || true)"
 check "OSM: User-Agent identifizierend" "yes" "$(grep -qF 'p2d2-MapProxy/1.0 (https://www.data-dna.eu; info@data-dna.eu)' "$MAPROXY_YAML" && echo yes || echo no)"
+
+# ── Statischer Config-Test (keyword_list Objekt-Liste, contact-Schlüssel) ────
+if python3 -c 'import yaml' 2>/dev/null; then
+  python3 - "$MAPROXY_YAML" <<'PY'
+import sys, yaml
+cfg = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+kw_ok = all(
+    isinstance(cfg["services"][s]["md"].get("keyword_list"), list)
+    and all(isinstance(o, dict) and "keywords" in o for o in cfg["services"][s]["md"].get("keyword_list", []))
+    for s in ("wms", "wmts")
+)
+contact = cfg["services"]["wms"]["md"].get("contact", {})
+contact_ok = set(contact.keys()) <= {"organization", "email", "city", "country"}
+sys.exit(0 if kw_ok and contact_ok else 1)
+PY
+  check "Statik: keyword_list Objekte + contact-Schlüssel" "0" "$?"
+else
+  check "Statik: keyword_list 2x" "2" "$(grep -cF 'keyword_list:' "$MAPROXY_YAML")"
+  check "Statik: keyword_list Objekt-Liste 2x" "2" "$(grep -cF '        - keywords: [' "$MAPROXY_YAML")"
+  check "Statik: keine flache keyword_list" "0" "$(grep -cE 'keyword_list: \[' "$MAPROXY_YAML" || true)"
+  check "Statik: contact nur erlaubte Schlüssel" "0" "$(grep -cE '^[[:space:]]+(person|position|address|postcode):' "$MAPROXY_YAML" || true)"
+fi
 
 # ── Verify ────────────────────────────────────────────────────────────────────
 verify_addon_mapproxy >/dev/null 2>&1
@@ -234,8 +288,16 @@ check "Verify Fehler: rc=1" "1" "$?"
 check "Verify Fehler: get pods Diagnose" "yes" "$(grep -q 'get pods' "$KUBECTL_CALL_LOG" && echo yes || echo no)"
 check "Verify Fehler: describe Diagnose" "yes" "$(grep -q 'describe pod' "$KUBECTL_CALL_LOG" && echo yes || echo no)"
 check "Verify Fehler: logs Diagnose" "yes" "$(grep -q 'logs' "$KUBECTL_CALL_LOG" && echo yes || echo no)"
+check "Verify Fehler: logs --previous" "yes" "$(grep -q -- '--previous' "$KUBECTL_CALL_LOG" && echo yes || echo no)"
 rm -f "$KUBECTL_ROLLOUT_FAIL"
 unset KUBECTL_ROLLOUT_FAIL
+
+# ── Verify: fehlender Layer in GetCapabilities -> rc=1 ────────────────────────
+: > "$KUBECTL_CALL_LOG"
+export KUBECTL_CAPS_MISSING_LAYER=1
+verify_addon_mapproxy >/dev/null 2>&1
+check "Verify: fehlender Layer -> rc=1" "1" "$?"
+unset KUBECTL_CAPS_MISSING_LAYER
 
 # ── Uninstall Image-Entfernung (Anforderung 4) ────────────────────────────────
 # (a) Default false -> Image bleibt, kein rm.
