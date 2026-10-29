@@ -17,6 +17,8 @@ log_error(){ echo "E:$*" >> "$LOG_BUF"; }
 export ADDON_NS="cc-prd-geodata-stack"
 export ADDON_DOMAIN="udp.example.org"
 # shellcheck disable=SC1090,SC1091
+source "$REPO/modules_addon_V1s/addon_01_config.sh"
+# shellcheck disable=SC1090,SC1091
 source "$REPO/modules_addon_V1s/addon_20_mapproxy.sh"
 # shellcheck disable=SC1090,SC1091
 source "$REPO/modules_addon_V1s/addon_10_geoserver.sh"
@@ -142,6 +144,10 @@ run_install_branch() {
   install_addon_geoserver_config() { calls="${calls} geoserver_config"; [[ "$fail" == "geoserver_config" ]] && return 1; return 0; }
   verify_addon_geoserver_config() { calls="${calls} verify_geoserver_config"; [[ "$fail" == "verify_geoserver_config" ]] && return 1; return 0; }
   install_addon_mapproxy()       { calls="${calls} mapproxy"; [[ "$fail" == "mapproxy" ]] && return 1; return 0; }
+  addon_docker_ensure()           { calls="${calls} docker_ensure"; return 0; }
+  install_addon_mapproxy_build()  { calls="${calls} mapproxy_build"; [[ "$fail" == "mapproxy_build" ]] && return 1; return 0; }
+  verify_addon_mapproxy()         { calls="${calls} verify_mapproxy"; [[ "$fail" == "verify_mapproxy" ]] && return 1; return 0; }
+  addon_docker_release()          { calls="${calls} docker_release"; return 0; }
   install_addon_iam()            { calls="${calls} iam"; [[ "$fail" == "iam" ]] && return 1; return 0; }
   install_addon_frontend_build() { calls="${calls} frontend_build"; [[ "$fail" == "frontend_build" ]] && return 1; return 0; }
   install_addon_frontend()       { calls="${calls} frontend"; [[ "$fail" == "frontend" ]] && return 1; return 0; }
@@ -155,8 +161,8 @@ run_install_branch() {
   printf '%s' "${ADDON_EXIT_CODE}|${calls}"
 }
 
-check "Install-Reihenfolge" "0| postgresql geoserver geoserver_config verify_geoserver_config mapproxy iam frontend_build frontend portal_apply portal_verify tls_backup" "$(run_install_branch none)"
-check "Install verify-Geoserver-Fehler nicht-abbrechend" "1| postgresql geoserver geoserver_config verify_geoserver_config mapproxy iam frontend_build frontend portal_apply portal_verify tls_backup" "$(run_install_branch verify_geoserver_config)"
+check "Install-Reihenfolge" "0| postgresql geoserver geoserver_config verify_geoserver_config docker_ensure mapproxy_build mapproxy verify_mapproxy iam frontend_build docker_release frontend portal_apply portal_verify tls_backup" "$(run_install_branch none)"
+check "Install verify-Geoserver-Fehler nicht-abbrechend" "1| postgresql geoserver geoserver_config verify_geoserver_config docker_ensure mapproxy_build mapproxy verify_mapproxy iam frontend_build docker_release frontend portal_apply portal_verify tls_backup" "$(run_install_branch verify_geoserver_config)"
 
 # ── A2: addon_remove_frontend_images (Stub-Zustand) ───────────────────────────
 # shellcheck disable=SC1090,SC1091

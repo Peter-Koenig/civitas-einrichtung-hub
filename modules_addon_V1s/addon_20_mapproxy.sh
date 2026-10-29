@@ -2,14 +2,12 @@
 # SPDX-License-Identifier: EUPL-1.2
 # Copyright (C) 2024-2026 p2d2 Contributors
 #
-# addon_20_mapproxy.sh — p2d2-AddOn: MapProxy-Baustein (FERTIG, manuell verifiziert)
+# addon_20_mapproxy.sh — p2d2-AddOn: MapProxy-Baustein.
 #
 # Eigener MapProxy-Pod im GeoData-Namespace: Image-Build (k3s-Node) -> K8s-Ressourcen
-# (ConfigMap/PVC/Service/Deployment) -> APISIX-Routing /mapserver.
+# (ConfigMap/PVC/Service/Deployment). APISIX-Routing /mapserver folgt in einem späteren Turn.
 #
 # Quelle: ai-runs/.../mapproxy-automatisierungshinweise.md.
-# Rudimentär: Image-Build auf dem k3s-Node (extern, hier nur dokumentiert), K8s-Ressourcen
-# per kubectl apply, APISIX-Routing via Admin-API. NICHT idempotent (Existenz-Prüfung fehlt).
 
 # Fail-Fast: ohne ADDON_NS sofort abbrechen (Modul nicht isoliert sourcen).
 if [[ -z "${ADDON_NS:-}" ]]; then
@@ -17,27 +15,98 @@ if [[ -z "${ADDON_NS:-}" ]]; then
   return 1 2>/dev/null || exit 1
 fi
 
+# _mapproxy_image_present <image> — 0 wenn das lokal gebaute Image in containerd
+# (Namespace k8s.io) als docker.io/library/<image> vorhanden ist, sonst 1.
+_mapproxy_image_present() {
+  local image="$1"
+  k3s ctr -n k8s.io images ls 2>/dev/null | awk '{print $1}' | grep -qF "docker.io/library/${image}"
+}
+
+# install_addon_mapproxy_build — baut das MapProxy-Image und importiert es in
+# containerd. Idempotent: vorhandenes Image überspringt den Build. Docker wird über
+# den gemeinsamen Helfer addon_docker_ensure bereitgestellt (HOLD aus dem Hauptskript).
+install_addon_mapproxy_build() {
+  log "=== AddOn 20: MapProxy-Image-Build ==="
+
+  local image="${ADDON_MAPPROXY_IMAGE:-mapproxy:v1s-2026-09-12}"
+  local build_dir
+  build_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../overlay_addon_V1s/k8s/mapproxy" && pwd)"
+
+  addon_docker_ensure || return 1
+
+  if _mapproxy_image_present "${image}"; then
+    log_ok "MapProxy-Image ${image} bereits vorhanden — Build übersprungen"
+    return 0
+  fi
+
+  log "Baue MapProxy-Image ${image} (Kontext: ${build_dir}) …"
+  docker build -t "${image}" "${build_dir}" || { log_error "docker build fehlgeschlagen"; return 1; }
+
+  log "Importiere MapProxy-Image in containerd (Namespace k8s.io) …"
+  docker save "${image}" | k3s ctr -n k8s.io images import - \
+    || { log_error "k3s ctr -n k8s.io images import fehlgeschlagen"; return 1; }
+
+  if ! _mapproxy_image_present "${image}"; then
+    log_error "MapProxy-Image ${image} nach Import nicht auffindbar — Abbruch vor Deployment"
+    return 1
+  fi
+
+  log_ok "MapProxy-Image ${image} gebaut + importiert"
+  return 0
+}
+
 install_addon_mapproxy() {
-  log "=== AddOn 20: MapProxy (/mapserver) ==="
+  log "=== AddOn 20: MapProxy (ConfigMap/PVC/Service/Deployment) ==="
 
   local ns="${ADDON_NS}"
+  local image="${ADDON_MAPPROXY_IMAGE:-mapproxy:v1s-2026-09-12}"
+  local overlay_dir cfg_tmp
+  overlay_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../overlay_addon_V1s/k8s" && pwd)"
 
-  # 1) Image-Build — MUSS auf dem k3s-Node laufen (docker build + docker save | k3s ctr import).
-  #    TODO: als separater Schritt/Job, nicht aus diesem Skript auf sdt.
-  log "  1) Image-Build (k3s-Node): mapproxy:v1s-2026-09-12 — TODO: Build-Skript einbinden"
+  # 1) ConfigMap mapproxy-config (Key mapproxy.yaml; Namespace aus ADDON_NS rendern).
+  cfg_tmp="$(mktemp)"; chmod 600 "${cfg_tmp}"
+  sed "s|__P2D2_NAMESPACE__|${ns}|g" "${overlay_dir}/mapproxy/mapproxy.yaml" > "${cfg_tmp}" \
+    || { log_error "mapproxy.yaml rendern fehlgeschlagen"; rm -f "${cfg_tmp}"; return 1; }
+  if ! kubectl -n "${ns}" create configmap mapproxy-config --from-file=mapproxy.yaml="${cfg_tmp}" \
+       --dry-run=client -o yaml | kubectl apply -f -; then
+    log_error "ConfigMap mapproxy-config anwenden fehlgeschlagen"
+    rm -f "${cfg_tmp}"
+    return 1
+  fi
+  rm -f "${cfg_tmp}"
 
-  # 2) K8s-Ressourcen (ConfigMap mapproxy.yaml + PVC mapproxy-cache + Service + Deployment).
-  #    TODO: Manifeste aus p2d2-civitas-addon/tmp/mapproxy-*.yaml nach overlay_addon_V1s/k8s/
-  #    überführen und hier anwenden.
-  log "  2) K8s-Ressourcen: TODO — ConfigMap/PVC/Service/Deployment aus tmp/-Manifesten übernehmen"
-  # kubectl -n "$ns" apply -f "${SCRIPT_DIR}/overlay_addon_V1s/k8s/mapproxy.yaml"
+  # 2) PVC + Service + Deployment (Platzhalter rendern, idempotent per apply).
+  if ! sed -e "s|__P2D2_NAMESPACE__|${ns}|g" -e "s|__P2D2_IMAGE__|${image}|g" \
+       "${overlay_dir}/mapproxy/deployment.yaml" | kubectl apply -f -; then
+    log_error "MapProxy-Ressourcen (PVC/Service/Deployment) anwenden fehlgeschlagen"
+    return 1
+  fi
 
-  # 3) APISIX-Routing /mapserver (Admin-Key aus /root/civitas-install/credentials.env).
-  #    Upstream mapserver-upstream (mapproxy.<ns>.svc.cluster.local:8080) +
-  #    Route mapserver-route (uri /mapserver*, proxy-rewrite regex_uri ["^/mapserver(.*)","$1"]).
-  log "  3) APISIX-Routing /mapserver: TODO — Upstream + Route (proxy-rewrite) anlegen"
+  # 3) APISIX-Routing /mapserver — TODO (Upstream + Route mit proxy-rewrite,
+  #    kommt in einem späteren Turn).
+  log "  APISIX-Routing /mapserver: TODO — Upstream + Route (proxy-rewrite) anlegen"
 
-  log_ok "AddOn 20 MapProxy abgeschlossen (rudimentär, nicht idempotent)"
+  log_ok "AddOn 20 MapProxy abgeschlossen (Pod angelegt)"
+}
+
+# verify_addon_mapproxy — Rollout-Status (Pod Ready). Wird im Hauptskript
+# nicht-abbrechend aufgerufen (verify_addon_mapproxy || ADDON_EXIT_CODE=1),
+# daher explizite return 1 statt set -e. Die inhaltliche WMS/Layer-Prüfung
+# (GetCapabilities) folgt im Konfigurations-Turn, wenn APISIX-Routing und
+# GeoServer-Style/Mosaic feststehen.
+verify_addon_mapproxy() {
+  log "=== AddOn 20: MapProxy verifizieren ==="
+
+  local ns="${ADDON_NS}"
+  local timeout="${ADDON_MAPPROXY_VERIFY_TIMEOUT:-180}"
+
+  if ! kubectl -n "${ns}" rollout status deployment/mapproxy --timeout="${timeout}s" >/dev/null 2>&1; then
+    log_error "MapProxy-Rollout nicht erfolgreich (Timeout ${timeout}s)"
+    return 1
+  fi
+
+  log_ok "MapProxy verifiziert (Rollout ok, Pod Ready)"
+  return 0
 }
 
 # addon_apisix_admin_key [creds_file] — liest APISIX_ADMIN_ROLE_KEY aus der
@@ -92,11 +161,28 @@ _mapproxy_apisix_delete_by_name() {
   fi
 }
 
+# addon_remove_mapproxy_image — entfernt das MapProxy-Image aus containerd
+# (Namespace k8s.io), exakter Name, kein Wildcard (analog addon_remove_frontend_images).
+addon_remove_mapproxy_image() {
+  local image="${ADDON_MAPPROXY_IMAGE:-mapproxy:v1s-2026-09-12}"
+  local ref
+  while IFS= read -r ref; do
+    [[ -n "${ref}" ]] && k3s ctr -n k8s.io images rm "${ref}" >/dev/null 2>&1 || true
+  done < <(k3s ctr -n k8s.io images ls 2>/dev/null | awk '{print $1}' | grep -F "docker.io/library/${image}")
+  if _mapproxy_image_present "${image}"; then
+    log_warn "MapProxy-Image ${image} weiterhin vorhanden — manuell prüfen"
+    return 1
+  fi
+  return 0
+}
+
 # uninstall_addon_mapproxy — Rückbau (K8s-Ressourcen + APISIX-Routing).
 uninstall_addon_mapproxy() {
   log "=== Uninstall AddOn 20: MapProxy ==="
 
   local ns="${ADDON_NS}"
+  local remove_images rc=0
+  remove_images="$(addon_validate_uninstall_remove_images)" || return 1
 
   kubectl -n "$ns" delete deployment mapproxy --ignore-not-found || true
   kubectl -n "$ns" delete service mapproxy --ignore-not-found || true
@@ -106,7 +192,7 @@ uninstall_addon_mapproxy() {
   # APISIX-Routing /mapserver: Route + Upstream löschen (Admin-API, Turn 65).
   # Admin-Key aus der CIVITAS/CORE-Credentials-Datei (APISIX_ADMIN_ROLE_KEY),
   # Endpunkt https://api-admin.<DOMAIN>/apisix/admin (analog mapproxy-automatisierungshinweise).
-  local admin_key apisix_base rc=0
+  local admin_key apisix_base
   local creds="${ADDON_APISIX_CREDENTIALS_FILE:-/root/civitas-install/credentials.env}"
   admin_key="$(addon_apisix_admin_key)"
   if [[ -n "${admin_key}" ]]; then
@@ -116,6 +202,18 @@ uninstall_addon_mapproxy() {
   else
     log_warn "APISIX_ADMIN_ROLE_KEY nicht gefunden (${creds}) — mapserver-route/-upstream manuell prüfen"
     rc=1
+  fi
+
+  # MapProxy-Image (containerd k8s.io) nur mit Schalter entfernen (wie Frontend, N7).
+  if [[ "${remove_images}" == "true" ]]; then
+    if addon_remove_mapproxy_image; then
+      log_ok "MapProxy-Image entfernt (containerd k8s.io)"
+    else
+      log_warn "MapProxy-Image-Entfernung nicht vollständig — manuell prüfen"
+      rc=1
+    fi
+  else
+    log_ok "MapProxy-Image bewusst behalten (P2D2_UNINSTALL_REMOVE_IMAGES=false)"
   fi
 
   if [[ "${rc}" -ne 0 ]]; then

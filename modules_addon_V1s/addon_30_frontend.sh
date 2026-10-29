@@ -627,6 +627,54 @@ addon_clear_frontend_tags() {
   return 0
 }
 
+# ── Docker-Lebenszyklus (gemeinsam für MapProxy- und Frontend-Build) ──────────
+# Docker wird pro Install-Lauf höchstens EINMAL installiert und EINMAL entfernt.
+# addon_docker_ensure (idempotent) stellt Docker bereit und merkt sich in der
+# globalen Variable ADDON_DOCKER_INSTALLED_BY_SCRIPT, ob das Skript selbst
+# installiert hat. addon_docker_release entfernt es nur, wenn es selbst installiert
+# wurde, ADDON_DOCKER_HOLD nicht gesetzt ist und der Sicherheitscheck besteht.
+addon_docker_ensure() {
+  if command -v docker >/dev/null 2>&1; then
+    log_ok "Build-Engine Docker vorhanden: $(command -v docker) ($(docker --version 2>&1))"
+  else
+    log "Build-Engine Docker nicht vorhanden — installiere temporär (docker.io) …"
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update || { log_error "apt-get update fehlgeschlagen — Docker-Installation nicht möglich"; return 1; }
+    apt-get install -y docker.io || { log_error "docker.io-Installation fehlgeschlagen — Build-Engine fehlt"; return 1; }
+    ADDON_DOCKER_INSTALLED_BY_SCRIPT="true"
+    log_ok "Docker temporär installiert: $(command -v docker) ($(docker --version 2>&1))"
+  fi
+
+  if ! command -v docker >/dev/null 2>&1; then
+    log_error "Build-Engine Docker nicht verfügbar (kein docker-Binary im PATH)"
+    return 1
+  fi
+  if ! docker info >/dev/null 2>&1; then
+    log_error "Build-Engine Docker nicht nutzbar (Docker-Daemon nicht erreichbar): $(command -v docker)"
+    return 1
+  fi
+  return 0
+}
+
+addon_docker_release() {
+  if [[ "${ADDON_DOCKER_INSTALLED_BY_SCRIPT:-false}" != "true" ]]; then
+    return 0
+  fi
+  if [[ "${ADDON_DOCKER_HOLD:-false}" == "true" ]]; then
+    log "Docker bleibt installiert (ADDON_DOCKER_HOLD gesetzt — weitere Build-Phase folgt)"
+    return 0
+  fi
+  log "Deinstalliere temporär installiertes Docker (Sicherheitscheck) …"
+  if apt-get purge --dry-run docker.io | grep -qE "Purg docker\.io(:[a-z0-9]+)?[[:space:]]"; then
+    apt-get purge -y docker.io || log_warn "Docker-Deinstallation fehlgeschlagen — bitte manuell prüfen"
+    apt-get autoremove -y || true
+    ADDON_DOCKER_INSTALLED_BY_SCRIPT="false"
+    log_ok "Docker deinstalliert (war temporär installiert)"
+  else
+    log_warn "Sicherheitscheck fehlgeschlagen — Docker-Deinstallation übersprungen (bitte manuell prüfen)"
+  fi
+}
+
 # install_addon_frontend_build — baut die Runtime-Images aller 5 Stages auf dem
 # k3s-Node (Docker + k3s ctr import) über build-stage.sh. Eigener, im VM-Kontext
 # automatisch aufgerufener Teilschritt (Turn 63/65) — läuft VOR install_addon_frontend,
@@ -647,35 +695,8 @@ install_addon_frontend_build() {
     return 1
   fi
 
-  # ── Build-Engine (Docker) bereitstellen ─────────────────────────────────────
-  # Verbindliche Build-Engine der CIVITAS/CORE-V1s-Umgebung ist Docker. Auf der
-  # k3s/containerd-VM ist Docker NICHT dauerhaft installiert. Analog zu
-  # modules_V1s/06c_image_build.sh wird Docker nur dann temporär installiert,
-  # wenn es fehlt, und nach dem Build wieder deinstalliert — kein paralleler
-  # Docker-Daemon auf der VM, kein stilles Zurücklassen.
-  local docker_installed_by_script="false"
-  if command -v docker >/dev/null 2>&1; then
-    log_ok "Build-Engine Docker vorhanden: $(command -v docker) ($(docker --version 2>&1))"
-  else
-    log "Build-Engine Docker nicht vorhanden — installiere temporär (docker.io) …"
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update || { log_error "apt-get update fehlgeschlagen — Docker-Installation nicht möglich"; return 1; }
-    apt-get install -y docker.io || { log_error "docker.io-Installation fehlgeschlagen — Build-Engine fehlt"; return 1; }
-    docker_installed_by_script="true"
-    log_ok "Docker temporär installiert: $(command -v docker) ($(docker --version 2>&1))"
-  fi
-
-  # Fail-Fast: Build-Engine (Binary + Daemon) muss VOR dem Git-Clone nutzbar sein.
-  if ! command -v docker >/dev/null 2>&1; then
-    log_error "Build-Engine Docker nicht verfügbar (kein docker-Binary im PATH)"
-    log_error "  Abbruch vor dem Build. Bitte docker.io installieren oder die Build-Umgebung prüfen."
-    return 1
-  fi
-  if ! docker info >/dev/null 2>&1; then
-    log_error "Build-Engine Docker nicht nutzbar (Docker-Daemon nicht erreichbar): $(command -v docker)"
-    log_error "  Abbruch vor dem Build. Bitte Daemon starten (systemctl start docker) oder docker.io neu installieren."
-    return 1
-  fi
+  # ── Build-Engine (Docker) bereitstellen (gemeinsamer Helfer, idempotent) ────
+  addon_docker_ensure || return 1
 
   local stage tag_file tag build_failed=0
   for stage in main dev de1 de2 fv; do
@@ -698,16 +719,7 @@ install_addon_frontend_build() {
   done
 
   # ── Docker ggf. wieder deinstallieren (auch bei Build-Fehler) ──────────────
-  if [[ "${docker_installed_by_script}" == "true" ]]; then
-    log "Deinstalliere temporär installiertes Docker (Sicherheitscheck) …"
-    if apt-get purge --dry-run docker.io | grep -qE "Purg docker\.io(:[a-z0-9]+)?[[:space:]]"; then
-      apt-get purge -y docker.io || log_warn "Docker-Deinstallation fehlgeschlagen — bitte manuell prüfen"
-      apt-get autoremove -y || true
-      log_ok "Docker deinstalliert (war temporär installiert)"
-    else
-      log_warn "Sicherheitscheck fehlgeschlagen — Docker-Deinstallation übersprungen (bitte manuell prüfen)"
-    fi
-  fi
+  addon_docker_release
 
   if [[ "${build_failed}" -ne 0 ]]; then
     return 1

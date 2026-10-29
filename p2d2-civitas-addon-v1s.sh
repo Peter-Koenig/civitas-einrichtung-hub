@@ -395,6 +395,9 @@ log "============================================"
 
 # ── Bausteine in Reihenfolge ──────────────────────────────────────────────────
 ADDON_EXIT_CODE=0
+# Docker bei Abbruch (set -e) nicht zurücklassen: addon_docker_release ist ein
+# No-op, wenn Docker nicht durch das Skript installiert wurde oder HOLD gesetzt ist.
+trap 'ADDON_DOCKER_HOLD=false; addon_docker_release 2>/dev/null || true' EXIT
 if [[ "${1:-}" == "--uninstall" ]]; then
   log "Modus: Uninstall (portal -> frontend -> iam -> mapproxy -> geoserver-config -> geoserver -> postgresql)"
   # Fehleraggregation analog zum Install-Zweig: ein Fehler in einem Modul soll die
@@ -414,9 +417,16 @@ else
   install_addon_geoserver
   install_addon_geoserver_config
   verify_addon_geoserver_config || ADDON_EXIT_CODE=1
+  # Docker über MapProxy- und Frontend-Build gemeinsam halten (ein Install/Remove).
+  ADDON_DOCKER_HOLD=true
+  addon_docker_ensure
+  install_addon_mapproxy_build
   install_addon_mapproxy
+  verify_addon_mapproxy || ADDON_EXIT_CODE=1
   install_addon_iam
   install_addon_frontend_build
+  ADDON_DOCKER_HOLD=false
+  addon_docker_release
   install_addon_frontend
   portal_apply
   # Verifikation laeuft nicht-abbrechend: FAILs werden geloggt, der Installer

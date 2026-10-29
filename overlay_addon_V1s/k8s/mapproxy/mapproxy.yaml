@@ -1,0 +1,172 @@
+# MapProxy-Konfiguration für p2d2 — Adaption für CIVITAS/CORE-Cluster
+# Quelle: p2d2-Standalone /srv/mapproxy/mapproxy.yaml (Bestandsaufnahme 2026-09-12).
+# Der Namespace wird zur Laufzeit aus ADDON_NS gerendert (__P2D2_NAMESPACE__).
+#
+# Anpassungen gegenüber Standalone:
+#  1. GeoServer-URL: Legacy-IP -> Cluster-Service-DNS
+#     http://192.168.122.112:8080/geoserver/wms
+#     -> http://geoserver-geoserver.__P2D2_NAMESPACE__.svc.cluster.local/geoserver/wms
+#  2. styles "friedhofsplan_transparent": Im Dateikörper weiterhin in beiden
+#     WMS-Quellen vorhanden (offener Punkt, NICHT selbst entfernt). Der frühere
+#     Kommentar, der Style sei entfernt worden, entspricht NICHT dem aktuellen Stand.
+#  3. Cache-Verzeichnisse: /srv/mapproxy/cache_data/... -> PVC-Mount /cache_data/...
+#  4. globals.cache.base_dir auf /cache_data gesetzt (damit auch der OSM-Cache auf dem PVC liegt)
+
+globals:
+  cache:
+    base_dir: '/cache_data'
+  http:
+    access_control_allow_origin: ""
+    # CORS-Removal: in p2d2 controlled by Caddy
+
+services:
+  wms:
+    md:
+      title: p2d2 WMS Service
+    strict: false
+    srs: ['EPSG:25832', 'EPSG:3857', 'EPSG:4326']
+  wmts:
+    md:
+      title: p2d2 MapProxy Proxy
+      abstract: p2d2 links open administrative data with OpenStreetMap data
+      online_resource: http://www.data-dna.eu
+      contact:
+        person: Peter König
+        position: Projektinitiator
+        organization: data-dna e.V. (i.Gr.)
+        address: SomewhereStreet
+        city: Bonn
+        postcode: D-53113
+        country: Germany
+        email: admin@data-dna.eu
+      access_constraints:
+        This service is intended for private and evaluation use only.
+        The data is licensed as Creative Commons Attribution-Share Alike 2.0
+        (http://creativecommons.org/licenses/by-sa/2.0/)
+      fees: 'None'
+  tms:
+    use_grid_names: true
+
+layers:
+  - name: p2d2_osm
+    title: OSM in EPSG:25832
+    sources: [osm_cache]
+
+  - name: p2d2_cemeteries_overview
+    title: "p2d2 - Kölner Friedhöfe, Übersicht"
+    sources: [cemeteries_overview_cache]
+
+  - name: p2d2_cemeteries_details
+    title: "Friedhofspläne Köln (Detailansicht)"
+    sources: [cemeteries_details_cache]
+
+caches:
+  osm_cache:
+    grids: [osm_grid_3857]
+    meta_size: [4, 4]
+    sources: [osm_source]
+
+  cemeteries_overview_cache:
+    grids: [cemeteries_overview_grid_25832]
+    sources: [cemeteries_overview_wms]
+    format: image/png
+    request_format: image/png
+    image:
+      resampling_method: nearest
+      paletted: false
+      mode: RGBA
+      transparent: true
+    cache:
+      type: file
+      directory: /cache_data/cemeteries_overview
+      directory_layout: tms
+
+  cemeteries_details_cache:
+    grids: [cemeteries_details_grid_25832]
+    sources: [cemeteries_details_wms]
+    format: image/png
+    request_format: image/png
+    image:
+      resampling_method: nearest
+      paletted: false
+      mode: RGBA
+      transparent: true
+    cache:
+      type: file
+      directory: /cache_data/cemeteries_details
+      directory_layout: tms
+
+sources:
+  osm_source:
+    type: tile
+    grid: osm_grid_3857
+    url: https://tile.openstreetmap.org/%(z)s/%(x)s/%(y)s.png
+    http:
+      headers:
+        User-Agent: "p2d2-MapProxy/1.0 evaluation"
+
+  cemeteries_overview_wms:
+    type: wms
+    req:
+      url: http://geoserver-geoserver.__P2D2_NAMESPACE__.svc.cluster.local/geoserver/wms
+      layers: "friedhofsplaene:friedhoefe_koeln"
+      styles: "friedhofsplan_transparent"
+      transparent: true
+    image:
+      resampling_method: nearest
+      paletted: false
+      mode: RGBA
+      transparent: true
+    supported_srs: ['EPSG:25832', 'EPSG:25833', 'EPSG:3857', 'EPSG:4326']
+    coverage:
+      bbox: [277000, 5580000, 510000, 5820000]
+      srs: EPSG:25832
+    wms_opts:
+      featureinfo: true
+
+  cemeteries_details_wms:
+    type: wms
+    req:
+      url: http://geoserver-geoserver.__P2D2_NAMESPACE__.svc.cluster.local/geoserver/wms
+      layers: "friedhofsplaene:friedhoefe_koeln"
+      styles: "friedhofsplan_transparent"
+      transparent: true
+    image:
+      resampling_method: nearest
+      paletted: false
+      mode: RGBA
+      transparent: true
+    supported_srs: ['EPSG:25832', 'EPSG:3857']
+    coverage:
+      bbox: [348000, 5628000, 392000, 5682000]
+      srs: 'EPSG:25832'
+
+grids:
+  cemeteries_overview_grid_25832:
+    srs: 'EPSG:25832'
+    bbox: [277000, 5580000, 510000, 5820000]
+    origin: 'nw'
+    res_factor: 'sqrt2'
+    min_res: 4891.96981025128
+    max_res: 0.29858214173896974
+    num_levels: 20
+
+  cemeteries_details_grid_25832:
+    srs: 'EPSG:25832'
+    bbox: [348000, 5628000, 392000, 5682000]
+    origin: 'nw'
+    res:
+      - 4.0        # Level 0
+      - 2.0
+      - 1.0
+      - 0.5
+      - 0.25
+      - 0.125
+      - 0.0625
+      - 0.03125
+      - 0.0203     # Level 8: ≈ GeoTIFF-Auflösung
+
+  osm_grid_3857:
+    srs: 'EPSG:3857'
+    bbox: [-20037508.34, -20037508.34, 20037508.34, 20037508.34]
+    origin: 'nw'

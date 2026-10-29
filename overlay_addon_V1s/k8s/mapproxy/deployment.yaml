@@ -1,0 +1,99 @@
+# MapProxy-Pod für das p2d2-AddOn (Template; Namespace/Image werden zur Laufzeit gerendert).
+# Kein chmod -R 777: der Pod läuft mit runAsUser/runAsGroup/fsGroup 1000, damit
+# die Cache-Verzeichnisse unter /cache_data schreibbar sind (local-path + fsGroup).
+# Quelle: p2d2-civitas-addon/tmp/mapproxy-deployment.yaml.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mapproxy-cache
+  namespace: __P2D2_NAMESPACE__
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mapproxy
+  namespace: __P2D2_NAMESPACE__
+  labels:
+    app: mapproxy
+spec:
+  type: ClusterIP
+  selector:
+    app: mapproxy
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mapproxy
+  namespace: __P2D2_NAMESPACE__
+  labels:
+    app: mapproxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mapproxy
+  template:
+    metadata:
+      labels:
+        app: mapproxy
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: mapproxy
+          image: __P2D2_IMAGE__
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: MAPROXY_CONFIG
+              value: /mapproxy/mapproxy.yaml
+          volumeMounts:
+            - name: config
+              mountPath: /mapproxy
+              readOnly: true
+            - name: cache
+              mountPath: /cache_data
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          # Health-Endpoint: /demo (MapProxy liefert auf / eine 404; die
+          # dokumentierte Prüfung nutzt `curl -I http://localhost:8080/demo`).
+          readinessProbe:
+            httpGet:
+              path: /demo
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /demo
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 30
+      volumes:
+        - name: config
+          configMap:
+            name: mapproxy-config
+        - name: cache
+          persistentVolumeClaim:
+            claimName: mapproxy-cache
