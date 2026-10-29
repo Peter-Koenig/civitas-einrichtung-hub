@@ -415,6 +415,7 @@ if [[ "${1:-}" == "--uninstall" ]]; then
 else
   install_addon_postgresql
   install_addon_geoserver
+  verify_addon_geoserver_mosaic || ADDON_EXIT_CODE=1
   install_addon_geoserver_config
   verify_addon_geoserver_config || ADDON_EXIT_CODE=1
   # Docker über MapProxy- und Frontend-Build gemeinsam halten (ein Install/Remove).

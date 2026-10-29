@@ -25,6 +25,9 @@ supplement/*
 !supplement/templates/**
 # GeoServer-Metadaten (YAML-Block, wird vom Konfigurationsskript gelesen)
 !supplement/geoserver-metadata.md
+# GeoServer-Raster-Style (SLD, wird vom Mosaic-Modul hochgeladen)
+!supplement/styles/
+!supplement/styles/**
 
 # Lokale Secrets-Dateien (die Vorlagen *.example sind versioniert)
 .env.local

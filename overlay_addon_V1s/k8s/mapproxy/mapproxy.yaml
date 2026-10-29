@@ -11,8 +11,9 @@
 #     Kommentar, der Style sei entfernt worden, entspricht NICHT dem aktuellen Stand.
 #  3. Cache-Verzeichnisse: /srv/mapproxy/cache_data/... -> PVC-Mount /cache_data/...
 #  4. globals.cache.base_dir auf /cache_data gesetzt (damit auch der OSM-Cache auf dem PVC liegt)
-#  5. WMTS-Kontaktperson anonymisiert (kein Personenname im versionierten Quelltext;
-#     im Standalone stand hier ein Klarname).
+#  5. Dienst-Metadaten (wms.md/wmts.md) aus supplement/geoserver-metadata.md
+#     (service-Block): organization/email/city/country, fees NONE, Lizenz CC0/ODbL.
+#     Die frühere Anonymisierung "person: data-dna" (Turn 005) entfällt.
 
 globals:
   cache:
@@ -24,28 +25,32 @@ globals:
 services:
   wms:
     md:
-      title: p2d2 WMS Service
+      title: "p2d2 Karten (MapProxy)"
+      abstract: "Gecachte Karten der Anwendung p2d2 (Public-Public Data-DNA): OpenStreetMap-Hintergrund und Friedhofspläne."
+      online_resource: https://www.data-dna.eu
+      contact:
+        organization: "p2d2 c/o Projektberatung Dr. König"
+        email: info@data-dna.eu
+        city: Bonn
+        country: Deutschland
+      access_constraints: "Friedhofspläne: CC0-1.0. Layer p2d2_osm: (c) OpenStreetMap-Mitwirkende, ODbL-1.0 (https://www.openstreetmap.org/copyright)."
+      fees: 'NONE'
+      keyword_list: ["p2d2", "Public-Public Data-DNA", "Geodaten", "Friedhöfe"]
     strict: false
     srs: ['EPSG:25832', 'EPSG:3857', 'EPSG:4326']
   wmts:
     md:
-      title: p2d2 MapProxy Proxy
-      abstract: p2d2 links open administrative data with OpenStreetMap data
-      online_resource: http://www.data-dna.eu
+      title: "p2d2 Karten (MapProxy)"
+      abstract: "Gecachte Karten der Anwendung p2d2 (Public-Public Data-DNA): OpenStreetMap-Hintergrund und Friedhofspläne."
+      online_resource: https://www.data-dna.eu
       contact:
-        person: data-dna
-        position: Projektinitiator
-        organization: data-dna e.V. (i.Gr.)
-        address: SomewhereStreet
+        organization: "p2d2 c/o Projektberatung Dr. König"
+        email: info@data-dna.eu
         city: Bonn
-        postcode: D-53113
-        country: Germany
-        email: admin@data-dna.eu
-      access_constraints:
-        This service is intended for private and evaluation use only.
-        The data is licensed as Creative Commons Attribution-Share Alike 2.0
-        (http://creativecommons.org/licenses/by-sa/2.0/)
-      fees: 'None'
+        country: Deutschland
+      access_constraints: "Friedhofspläne: CC0-1.0. Layer p2d2_osm: (c) OpenStreetMap-Mitwirkende, ODbL-1.0 (https://www.openstreetmap.org/copyright)."
+      fees: 'NONE'
+      keyword_list: ["p2d2", "Public-Public Data-DNA", "Geodaten", "Friedhöfe"]
   tms:
     use_grid_names: true
 
@@ -105,7 +110,7 @@ sources:
     url: https://tile.openstreetmap.org/%(z)s/%(x)s/%(y)s.png
     http:
       headers:
-        User-Agent: "p2d2-MapProxy/1.0 evaluation"
+        User-Agent: "p2d2-MapProxy/1.0 (https://www.data-dna.eu; info@data-dna.eu)"
 
   cemeteries_overview_wms:
     type: wms

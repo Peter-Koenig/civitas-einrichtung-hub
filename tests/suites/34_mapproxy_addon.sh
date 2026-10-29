@@ -29,8 +29,9 @@ export K3S_IMPORT_LOG="$T/k3s-import.log"
 export K3S_RM_LOG="$T/k3s-rm.log"
 export K3S_IMAGE_LIST="$T/k3s-images.txt"
 export KUBECTL_CALL_LOG="$T/kubectl-call.log"
+export KUBECTL_APPLY_STDIN="$T/kubectl-apply-stdin"
 export DOCKER_REAL="$STUBS/docker.real"
-: > "$APT_INSTALL_LOG"; : > "$APT_PURGE_LOG"; : > "$DOCKER_BUILD_LOG"; : > "$K3S_IMPORT_LOG"; : > "$K3S_RM_LOG"; : > "$K3S_IMAGE_LIST"; : > "$KUBECTL_CALL_LOG"
+: > "$APT_INSTALL_LOG"; : > "$APT_PURGE_LOG"; : > "$DOCKER_BUILD_LOG"; : > "$K3S_IMPORT_LOG"; : > "$K3S_RM_LOG"; : > "$K3S_IMAGE_LIST"; : > "$KUBECTL_CALL_LOG"; : > "$KUBECTL_APPLY_STDIN"
 
 docker_present() { cp "$DOCKER_REAL" "$STUBS/docker"; chmod +x "$STUBS/docker"; }
 # hash -d: verhindert, dass bash nach dem rm einen veralteten Hash-Pfad für
@@ -103,11 +104,14 @@ case "$args" in
     exit 0
     ;;
   *"create configmap"*"dry-run"*) printf 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: mapproxy-config\n' ;;
+  *"exec"*"sys.argv"*) printf 'TRNS' ;;
+  *"exec"*"GetCapabilities"*) printf '<WMS_Capabilities><Layer><Name>p2d2_osm</Name></Layer><Layer><Name>p2d2_cemeteries_overview</Name></Layer><Layer><Name>p2d2_cemeteries_details</Name></Layer></WMS_Capabilities>' ;;
   *"get pods"*"-o jsonpath"*) printf 'mapproxy-abc123-xyz' ;;
   *"get pods"*"-o wide"*) printf 'NAME READY STATUS RESTARTS AGE\nmapproxy-abc123-xyz 0/1 CrashLoopBackOff 7 18m\n' ;;
   *"describe pod"*) printf 'Events:\n  Warning  Unhealthy  18m  Readiness probe failed: HTTP probe failed with statuscode: 404\n' ;;
   *"logs"*"deploy/mapproxy"*) printf '[INFO] gunicorn worker booting\n' ;;
-  *"apply"*|*"delete"*) exit 0 ;;
+  *"apply"*) cat > "${KUBECTL_APPLY_STDIN}" 2>/dev/null; exit 0 ;;
+  *"delete"*) exit 0 ;;
 esac
 exit 0
 KUB
@@ -198,15 +202,28 @@ install_addon_mapproxy >/dev/null 2>&1
 check "Install: rc=0" "0" "$?"
 check "Install: ConfigMap erzeugt" "yes" "$(grep -q 'create configmap mapproxy-config' "$KUBECTL_CALL_LOG" && echo yes || echo no)"
 check "Install: Manifest angewendet" "yes" "$(grep -q 'apply -f -' "$KUBECTL_CALL_LOG" && echo yes || echo no)"
+check "Install: checksum/config gerendert (64 hex)" "yes" "$(grep -qE 'checksum/config: [0-9a-f]{64}' "$KUBECTL_APPLY_STDIN" && echo yes || echo no)"
 
 # ── Deployment-Probes (Anforderung: GetCapabilities-Pfad, kein /demo) ─────────
 DEPLOY_YAML="$REPO/overlay_addon_V1s/k8s/mapproxy/deployment.yaml"
 check "Probe: GetCapabilities-Pfad 2x" "2" "$(grep -oF '/service?SERVICE=WMS&REQUEST=GetCapabilities' "$DEPLOY_YAML" | wc -l | tr -d ' ')"
 check "Probe: kein /demo" "0" "$(grep -cF 'path: /demo' "$DEPLOY_YAML" || true)"
+check "Probe: checksum/config Platzhalter" "1" "$(grep -cF 'checksum/config: __P2D2_CONFIG_HASH__' "$DEPLOY_YAML")"
+
+# ── MapProxy-Metadaten + User-Agent (Turn 006 B1/B2) ──────────────────────────
+MAPROXY_YAML="$REPO/overlay_addon_V1s/k8s/mapproxy/mapproxy.yaml"
+check "Meta: online_resource 2x" "2" "$(grep -cF 'online_resource: https://www.data-dna.eu' "$MAPROXY_YAML")"
+check "Meta: fees NONE 2x" "2" "$(grep -cF "fees: 'NONE'" "$MAPROXY_YAML")"
+check "Meta: kein SomewhereStreet" "0" "$(grep -cF 'SomewhereStreet' "$MAPROXY_YAML" || true)"
+check "Meta: keine alte Lizenz" "0" "$(grep -cF 'private and evaluation use only' "$MAPROXY_YAML" || true)"
+check "Meta: kein person:/position:" "0" "$(grep -cE '^[[:space:]]*(person|position):' "$MAPROXY_YAML" || true)"
+check "OSM: User-Agent identifizierend" "yes" "$(grep -qF 'p2d2-MapProxy/1.0 (https://www.data-dna.eu; info@data-dna.eu)' "$MAPROXY_YAML" && echo yes || echo no)"
 
 # ── Verify ────────────────────────────────────────────────────────────────────
 verify_addon_mapproxy >/dev/null 2>&1
 check "Verify: rc=0" "0" "$?"
+check "Verify: GetCapabilities ausgeführt" "yes" "$(grep -q 'GetCapabilities' "$KUBECTL_CALL_LOG" && echo yes || echo no)"
+check "Verify: GetMap ausgeführt" "yes" "$(grep -q 'GetMap' "$KUBECTL_CALL_LOG" && echo yes || echo no)"
 
 # ── Verify-Fehlerpfad: Diagnose + rc=1 ────────────────────────────────────────
 : > "$KUBECTL_CALL_LOG"

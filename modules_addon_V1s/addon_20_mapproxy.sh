@@ -60,13 +60,14 @@ install_addon_mapproxy() {
 
   local ns="${ADDON_NS}"
   local image="${ADDON_MAPPROXY_IMAGE:-mapproxy:v1s-2026-09-12}"
-  local overlay_dir cfg_tmp
+  local overlay_dir cfg_tmp cfg_hash
   overlay_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../overlay_addon_V1s/k8s" && pwd)"
 
   # 1) ConfigMap mapproxy-config (Key mapproxy.yaml; Namespace aus ADDON_NS rendern).
   cfg_tmp="$(mktemp)"; chmod 600 "${cfg_tmp}"
   sed "s|__P2D2_NAMESPACE__|${ns}|g" "${overlay_dir}/mapproxy/mapproxy.yaml" > "${cfg_tmp}" \
     || { log_error "mapproxy.yaml rendern fehlgeschlagen"; rm -f "${cfg_tmp}"; return 1; }
+  cfg_hash="$(sha256sum "${cfg_tmp}" | awk '{print $1}')"
   if ! kubectl -n "${ns}" create configmap mapproxy-config --from-file=mapproxy.yaml="${cfg_tmp}" \
        --dry-run=client -o yaml | kubectl apply -f -; then
     log_error "ConfigMap mapproxy-config anwenden fehlgeschlagen"
@@ -75,8 +76,10 @@ install_addon_mapproxy() {
   fi
   rm -f "${cfg_tmp}"
 
-  # 2) PVC + Service + Deployment (Platzhalter rendern, idempotent per apply).
+  # 2) PVC + Service + Deployment (Platzhalter rendern, idempotent per apply;
+  #    checksum/config löst bei geänderter ConfigMap einen Rollout aus).
   if ! sed -e "s|__P2D2_NAMESPACE__|${ns}|g" -e "s|__P2D2_IMAGE__|${image}|g" \
+           -e "s|__P2D2_CONFIG_HASH__|${cfg_hash}|g" \
        "${overlay_dir}/mapproxy/deployment.yaml" | kubectl apply -f -; then
     log_error "MapProxy-Ressourcen (PVC/Service/Deployment) anwenden fehlgeschlagen"
     return 1
@@ -115,7 +118,32 @@ verify_addon_mapproxy() {
     return 1
   fi
 
-  log_ok "MapProxy verifiziert (Rollout ok, Pod Ready)"
+  # WMS-GetCapabilities (im Cluster, ohne externe Aufrufe): 200 + 3 Layer.
+  local caps layer cap_ok=1
+  caps="$(kubectl -n "${ns}" exec deploy/mapproxy -- python -c \
+    'import urllib.request; print(urllib.request.urlopen("http://127.0.0.1:8080/service?SERVICE=WMS&REQUEST=GetCapabilities", timeout=10).read().decode())' 2>/dev/null || true)"
+  if [[ -z "${caps}" ]]; then
+    log_error "MapProxy GetCapabilities nicht lesbar (Pod nicht erreichbar/HTTP-Fehler)"
+    return 1
+  fi
+  for layer in p2d2_osm p2d2_cemeteries_overview p2d2_cemeteries_details; do
+    grep -qF "${layer}" <<< "${caps}" || { log_error "MapProxy-Layer ${layer} fehlt in GetCapabilities"; cap_ok=0; }
+  done
+  [[ "${cap_ok}" -eq 1 ]] && log_ok "MapProxy GetCapabilities: 200 + Layer p2d2_osm/cemeteries_overview/cemeteries_details"
+
+  # EIN GetMap (kein OSM-Layer): p2d2_cemeteries_details, TRANSPARENT=true -> PNG mit tRNS.
+  local bbox="${ADDON_MAPPROXY_VERIFY_BBOX:-356000,5648000,356500,5648500}" map_result
+  map_result="$(kubectl -n "${ns}" exec deploy/mapproxy -- python -c \
+    'import sys, urllib.request; d=urllib.request.urlopen(sys.argv[1], timeout=30).read(); print("TRNS" if b"tRNS" in d else "NOTRNS")' \
+    "http://127.0.0.1:8080/service?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&LAYERS=p2d2_cemeteries_details&SRS=EPSG:25832&BBOX=${bbox}&WIDTH=256&HEIGHT=256&FORMAT=image/png&TRANSPARENT=true" 2>/dev/null || true)"
+  if [[ "${map_result}" == "TRNS" ]]; then
+    log_ok "MapProxy GetMap p2d2_cemeteries_details: 200 + tRNS"
+  else
+    log_error "MapProxy GetMap p2d2_cemeteries_details: tRNS fehlt (${map_result:-<Fehler>})"
+    return 1
+  fi
+
+  log_ok "MapProxy verifiziert (Rollout ok, Pod Ready, GetCapabilities + GetMap)"
   return 0
 }
 

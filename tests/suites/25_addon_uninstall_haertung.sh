@@ -141,6 +141,7 @@ run_install_branch() {
   local calls=""
   install_addon_postgresql()     { calls="${calls} postgresql"; [[ "$fail" == "postgresql" ]] && return 1; return 0; }
   install_addon_geoserver()      { calls="${calls} geoserver"; [[ "$fail" == "geoserver" ]] && return 1; return 0; }
+  verify_addon_geoserver_mosaic() { calls="${calls} verify_mosaic"; [[ "$fail" == "verify_mosaic" ]] && return 1; return 0; }
   install_addon_geoserver_config() { calls="${calls} geoserver_config"; [[ "$fail" == "geoserver_config" ]] && return 1; return 0; }
   verify_addon_geoserver_config() { calls="${calls} verify_geoserver_config"; [[ "$fail" == "verify_geoserver_config" ]] && return 1; return 0; }
   install_addon_mapproxy()       { calls="${calls} mapproxy"; [[ "$fail" == "mapproxy" ]] && return 1; return 0; }
@@ -161,8 +162,8 @@ run_install_branch() {
   printf '%s' "${ADDON_EXIT_CODE}|${calls}"
 }
 
-check "Install-Reihenfolge" "0| postgresql geoserver geoserver_config verify_geoserver_config docker_ensure mapproxy_build mapproxy verify_mapproxy iam frontend_build docker_release frontend portal_apply portal_verify tls_backup" "$(run_install_branch none)"
-check "Install verify-Geoserver-Fehler nicht-abbrechend" "1| postgresql geoserver geoserver_config verify_geoserver_config docker_ensure mapproxy_build mapproxy verify_mapproxy iam frontend_build docker_release frontend portal_apply portal_verify tls_backup" "$(run_install_branch verify_geoserver_config)"
+check "Install-Reihenfolge" "0| postgresql geoserver verify_mosaic geoserver_config verify_geoserver_config docker_ensure mapproxy_build mapproxy verify_mapproxy iam frontend_build docker_release frontend portal_apply portal_verify tls_backup" "$(run_install_branch none)"
+check "Install verify-Geoserver-Fehler nicht-abbrechend" "1| postgresql geoserver verify_mosaic geoserver_config verify_geoserver_config docker_ensure mapproxy_build mapproxy verify_mapproxy iam frontend_build docker_release frontend portal_apply portal_verify tls_backup" "$(run_install_branch verify_geoserver_config)"
 
 # ── A2: addon_remove_frontend_images (Stub-Zustand) ───────────────────────────
 # shellcheck disable=SC1090,SC1091

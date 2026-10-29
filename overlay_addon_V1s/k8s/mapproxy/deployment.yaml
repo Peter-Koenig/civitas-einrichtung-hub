@@ -48,6 +48,8 @@ spec:
     metadata:
       labels:
         app: mapproxy
+      annotations:
+        checksum/config: __P2D2_CONFIG_HASH__
     spec:
       securityContext:
         runAsUser: 1000

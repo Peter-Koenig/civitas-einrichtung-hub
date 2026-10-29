@@ -36,6 +36,44 @@ _gs_rest() {
   return 1
 }
 
+# _gs_style_sld_put <user> <pw> <rest> <style> <sld_file> — SLD hochladen
+# (Content-Type application/vnd.ogc.sld+xml, --data-binary); 200 ok, sonst Warnung.
+_gs_style_sld_put() {
+  local user="$1" pw="$2" rest="$3" style="$4" sld="$5" code
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -u "${user}:${pw}" -X PUT \
+    -H 'Content-Type: application/vnd.ogc.sld+xml' --data-binary @"${sld}" \
+    "${rest}/workspaces/friedhofsplaene/styles/${style}" 2>/dev/null || true)
+  if [[ "${code}" == "200" ]]; then
+    return 0
+  fi
+  log_warn "      PUT SLD ${style} → HTTP ${code}"
+  return 1
+}
+
+# install_addon_geoserver_mosaic_style <admin_user> <admin_pw> <rest> — legt den
+# Raster-Style friedhofsplan_transparent einmal an (POST Style-Ressource + PUT SLD).
+# Fehlende SLD-Datei -> klare Warnung statt Abbruch. Rückgabe 0 ok / 1 Fehler.
+install_addon_geoserver_mosaic_style() {
+  local user="$1" pw="$2" rest="$3" sld
+  sld="${ADDON_SUPPLEMENT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../supplement" 2>/dev/null && pwd || true)}/styles/friedhofsplan_transparent.sld"
+
+  if [[ ! -f "${sld}" ]]; then
+    log_warn "    SLD-Datei fehlt: ${sld} — Style friedhofsplan_transparent wird NICHT angelegt"
+    return 1
+  fi
+
+  _gs_rest "${user}" "${pw}" POST "${rest}/workspaces/friedhofsplaene/styles" \
+    '{"style":{"name":"friedhofsplan_transparent","filename":"friedhofsplan_transparent.sld"}}' \
+    "201 409 200" \
+    || { log_warn "    Style-Ressource friedhofsplan_transparent nicht angelegt"; return 1; }
+
+  _gs_style_sld_put "${user}" "${pw}" "${rest}" "friedhofsplan_transparent" "${sld}" \
+    || { log_warn "    SLD-Inhalt für friedhofsplan_transparent nicht hochgeladen"; return 1; }
+
+  log_ok "    Style friedhofsplan_transparent angelegt"
+  return 0
+}
+
 install_addon_geoserver() {
   log "=== AddOn 10: GeoServer (GeoTIFF-Mosaic; Vektor-Konfiguration: addon_11) ==="
   install_addon_geoserver_mosaic
@@ -96,6 +134,10 @@ install_addon_geoserver_mosaic() {
     "201 409 200" \
     || log_warn "    Namespace friedhofsplaene nicht angelegt — Folge-Schritte werden fehlschlagen"
 
+  # 9.2a) Raster-Style (einmal pro Install, nicht pro Stadt).
+  install_addon_geoserver_mosaic_style "${admin_user}" "${admin_pw}" "${rest}" \
+    || log_warn "    Style friedhofsplan_transparent nicht angelegt — Layer behalten Default-Style"
+
   # Je Stadt: Granules verteilen + Coveragestore + Coverage + Metadata + ACL.
   local pod_target coveragestore coverage body fail
   local ok_cities=0
@@ -118,19 +160,24 @@ install_addon_geoserver_mosaic() {
     # 9.3) Coveragestore (ImageMosaic; legt KEINE Coverage an). Turn 74: explizites
     #      workspace-Feld im Body nötig, sonst "Store must be part of a workspace".
     body=$(jq -nc --arg name "${coveragestore}" --arg ws "friedhofsplaene" --arg url "file:data/geotiffs/${stadt}" \
-      '{coverageStore:{name:$name,type:"ImageMosaic",workspace:{name:$ws},url:$url}}')
+      '{coverageStore:{name:$name,type:"ImageMosaic",workspace:{name:$ws},url:$url,enabled:true}}')
     _gs_rest "${admin_user}" "${admin_pw}" POST "${rest}/workspaces/friedhofsplaene/coveragestores" "${body}" "201 409 200" \
       || fail=1
 
     # 9.4) Coverage (explizit; nativeCoverageName = Mosaic-TypeName = Ordnername).
     body=$(jq -nc --arg name "${coverage}" --arg native "${stadt}" --arg title "Friedhöfe ${stadt}" \
-      '{coverage:{name:$name,nativeCoverageName:$native,title:$title,srs:"EPSG:25832",projectionPolicy:"REPROJECT_TO_DECLARED"}}')
+      '{coverage:{name:$name,nativeCoverageName:$native,title:$title,srs:"EPSG:25832",projectionPolicy:"REPROJECT_TO_DECLARED",cachingEnabled:false}}')
     _gs_rest "${admin_user}" "${admin_pw}" POST "${rest}/workspaces/friedhofsplaene/coveragestores/${coveragestore}/coverages" "${body}" "201 200" \
+      || fail=1
+
+    # 9.4a) defaultStyle je Stadt auf friedhofsplan_transparent setzen (idempotent).
+    body=$(jq -nc '{layer:{defaultStyle:{name:"friedhofsplan_transparent",workspace:"friedhofsplaene"}}}')
+    _gs_rest "${admin_user}" "${admin_pw}" PUT "${rest}/layers/friedhofsplaene:${coverage}" "${body}" "200 201" \
       || fail=1
 
     # 9.5) ImageMosaic-Kernparameter (Feld heißt metadata, NICHT parameters).
     _gs_rest "${admin_user}" "${admin_pw}" PUT "${rest}/workspaces/friedhofsplaene/coveragestores/${coveragestore}" \
-      '{"coverageStore":{"metadata":{"MergeBehavior":"FLAT","SUGGESTED_TILE_SIZE":"512,512","FootprintBehavior":"Transparent","ExcessGranuleRemoval":"NONE","USE_JAI_IMAGEREAD":"true","RescalePixels":"true","AllowMultithreading":"false"}}}' \
+      '{"coverageStore":{"enabled":true,"metadata":{"MergeBehavior":"FLAT","SUGGESTED_TILE_SIZE":"512,512","FootprintBehavior":"Transparent","ExcessGranuleRemoval":"NONE","USE_JAI_IMAGEREAD":"true","RescalePixels":"true","AllowMultithreading":"false"}}}' \
       "200 201" || fail=1
 
     # 9.6) ACL: offene Lese-Regel (keine Write-Regel für Raster).
@@ -140,18 +187,137 @@ install_addon_geoserver_mosaic() {
       || fail=1
 
     if [[ "${fail}" == "0" ]]; then
-      log_ok "    Stadt ${stadt}: Mosaic angelegt"
+      log_ok "    Stadt ${stadt}: Mosaic-REST-Konfiguration abgeschlossen"
       ok_cities=$((ok_cities + 1))
     else
-      log_warn "    Stadt ${stadt}: Mosaic NICHT vollständig angelegt (siehe Fehler oben)"
+      log_warn "    Stadt ${stadt}: Mosaic-REST-Konfiguration unvollständig (siehe Fehler oben)"
     fi
   done
 
   if [[ "${ok_cities}" -eq "${#cities[@]}" ]]; then
-    log_ok "  Mosaic 'friedhofsplaene' angelegt (${ok_cities}/${#cities[@]} Städte)"
+    log_ok "  Mosaic 'friedhofsplaene' REST-Konfiguration abgeschlossen (${ok_cities}/${#cities[@]} Städte)"
   else
-    log_warn "  Mosaic 'friedhofsplaene' nur teilweise angelegt (${ok_cities}/${#cities[@]} Städte — siehe Fehler oben)"
+    log_warn "  Mosaic 'friedhofsplaene' REST-Konfiguration nur teilweise (${ok_cities}/${#cities[@]} Städte — siehe Fehler oben)"
   fi
+}
+
+# verify_addon_geoserver_mosaic — echte Verifikation (nicht-abbrechend wie
+# verify_addon_geoserver_config): je Stadt Store/Coverage/Layer enabled (kein false),
+# Layer in den anonymen WMS-Capabilities, und ein GetMap (ohne Style, BBox innerhalb
+# der Coverage) liefert 200 image/png. Fehlerpfade mit explizitem return 1.
+verify_addon_geoserver_mosaic() {
+  log "=== AddOn 10: GeoServer-Mosaic verifizieren ==="
+
+  local ns="${ADDON_NS}"
+  local domain="${ADDON_DOMAIN}"
+  local admin_user admin_pw rest wms_base
+  admin_user="$(kubectl -n "$ns" get secret geoserver-geoserver -o jsonpath='{.data.geoserver-user}' 2>/dev/null | base64 -d || true)"
+  admin_pw="$(kubectl -n "$ns" get secret geoserver-geoserver -o jsonpath='{.data.geoserver-password}' 2>/dev/null | base64 -d || true)"
+  rest="https://geoportal.${domain}/geoserver/rest"
+  wms_base="https://geoportal.${domain}/geoserver"
+
+  local geotiff_dir="${ADDON_GEOTIFF_DIR:-}"
+  [[ -n "${geotiff_dir}" ]] || geotiff_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../supplement/geotiffs" 2>/dev/null && pwd || true)"
+
+  local cities=() d stadt
+  if [[ -n "${geotiff_dir}" && -d "${geotiff_dir}" ]]; then
+    for d in "${geotiff_dir}"/*/; do
+      [[ -d "${d}" ]] || continue
+      stadt="$(basename "${d}")"
+      [[ -n "$(find "${d}" -maxdepth 1 -type f \( -iname '*.tif' -o -iname '*.tiff' \) -print -quit 2>/dev/null)" ]] \
+        && cities+=("${stadt}")
+    done
+  fi
+
+  if [[ ${#cities[@]} -eq 0 ]]; then
+    log_warn "Keine GeoTIFF-Unterordner mit TIFFs — Mosaic-Verifikation übersprungen"
+    return 0
+  fi
+
+  local coveragestore coverage rc=0
+  local code store_enabled cov_enabled layer_enabled cap
+  local f_store f_cov f_layer map_meta map_code map_ct nbbox bbox
+  for stadt in "${cities[@]}"; do
+    coveragestore="friedhofsplaene_${stadt}_mosaic"
+    coverage="friedhoefe_${stadt}"
+    log "  Stadt ${stadt}: Verifikation ${coveragestore}/${coverage}"
+
+    # 1) Coveragestore enabled (GET .json; enabled muss true sein).
+    f_store="$(mktemp)"; chmod 600 "$f_store"
+    code=$(curl -sS -o "$f_store" -w '%{http_code}' -u "${admin_user}:${admin_pw}" \
+      "${rest}/workspaces/friedhofsplaene/coveragestores/${coveragestore}.json" 2>/dev/null || true)
+    store_enabled="$(jq -r '.coverageStore.enabled // "false"' "$f_store" 2>/dev/null || true)"
+    rm -f "$f_store"
+    if [[ "${code}" != "200" || "${store_enabled}" != "true" ]]; then
+      log_error "  Stadt ${stadt}: Coveragestore nicht enabled (HTTP ${code}, enabled=${store_enabled:-<fehlt>})"
+      rc=1
+    else
+      log_ok "  Stadt ${stadt}: Coveragestore enabled"
+    fi
+
+    # 2) Coverage enabled + nativeBoundingBox (für GetMap).
+    f_cov="$(mktemp)"; chmod 600 "$f_cov"
+    code=$(curl -sS -o "$f_cov" -w '%{http_code}' -u "${admin_user}:${admin_pw}" \
+      "${rest}/workspaces/friedhofsplaene/coveragestores/${coveragestore}/coverages/${coverage}.json" 2>/dev/null || true)
+    cov_enabled="$(jq -r '.coverage.enabled // "false"' "$f_cov" 2>/dev/null || true)"
+    if [[ "${code}" != "200" || "${cov_enabled}" != "true" ]]; then
+      log_error "  Stadt ${stadt}: Coverage nicht enabled (HTTP ${code}, enabled=${cov_enabled:-<fehlt>})"
+      rc=1
+    else
+      log_ok "  Stadt ${stadt}: Coverage enabled"
+    fi
+
+    # 3) Layer enabled (kein false; bei RASTER-Layern fehlt enabled und gilt als true).
+    f_layer="$(mktemp)"; chmod 600 "$f_layer"
+    code=$(curl -sS -o "$f_layer" -w '%{http_code}' -u "${admin_user}:${admin_pw}" \
+      "${rest}/layers/friedhofsplaene:${coverage}.json" 2>/dev/null || true)
+    layer_enabled="$(jq -r '.layer.enabled // "true"' "$f_layer" 2>/dev/null || true)"
+    rm -f "$f_layer"
+    if [[ "${code}" != "200" || "${layer_enabled}" == "false" ]]; then
+      log_error "  Stadt ${stadt}: Layer nicht enabled (HTTP ${code}, enabled=${layer_enabled:-<fehlt>})"
+      rc=1
+    else
+      log_ok "  Stadt ${stadt}: Layer enabled"
+    fi
+
+    # 4) Layer in anonymen WMS-Capabilities.
+    cap="$(curl -sS --max-time 30 "${wms_base}/wms?service=WMS&version=1.1.1&request=GetCapabilities" 2>/dev/null || true)"
+    if grep -qF "${coverage}" <<< "${cap}"; then
+      log_ok "  Stadt ${stadt}: Layer in anonymen WMS-Capabilities"
+    else
+      log_error "  Stadt ${stadt}: Layer fehlt in anonymen WMS-Capabilities"
+      rc=1
+    fi
+
+    # 5) GetMap ohne Style, BBox = Mittelpunkt der nativeBoundingBox +/- 250 m.
+    nbbox="$(jq -r '[.coverage.nativeBoundingBox.minx,.coverage.nativeBoundingBox.maxx,.coverage.nativeBoundingBox.miny,.coverage.nativeBoundingBox.maxy] | @tsv' "$f_cov" 2>/dev/null || true)"
+    rm -f "$f_cov"
+    if [[ -n "${nbbox}" ]]; then
+      bbox="$(awk '{cx=($1+$2)/2; cy=($3+$4)/2; printf "%.2f,%.2f,%.2f,%.2f", cx-250, cy-250, cx+250, cy+250}' <<< "${nbbox}")"
+    else
+      log_error "  Stadt ${stadt}: nativeBoundingBox nicht lesbar — GetMap übersprungen"
+      rc=1
+      continue
+    fi
+
+    map_meta="$(curl -sS --max-time 30 -o /dev/null -w '%{http_code} %{content_type}' \
+      "${wms_base}/wms?service=WMS&version=1.1.1&request=GetMap&layers=friedhofsplaene:${coverage}&styles=&srs=EPSG:25832&bbox=${bbox}&width=256&height=256&format=image/png" 2>/dev/null || true)"
+    map_code="${map_meta%% *}"
+    map_ct="${map_meta#* }"
+    if [[ "${map_code}" == "200" && "${map_ct}" == "image/png" ]]; then
+      log_ok "  Stadt ${stadt}: GetMap 200 image/png (bbox ${bbox})"
+    else
+      log_error "  Stadt ${stadt}: GetMap fehlgeschlagen (HTTP ${map_code}, Content-Type ${map_ct:-<fehlt>})"
+      rc=1
+    fi
+  done
+
+  if [[ "${rc}" -eq 0 ]]; then
+    log_ok "  Mosaic 'friedhofsplaene' angelegt (verifiziert: ${#cities[@]} Städte)"
+  else
+    log_error "  Mosaic 'friedhofsplaene' Verifikation fehlgeschlagen (Details oben)"
+  fi
+  return "${rc}"
 }
 
 # uninstall_addon_geoserver — Rückbau (Workspaces + WFS-Secrets + Raster-Dateien).
