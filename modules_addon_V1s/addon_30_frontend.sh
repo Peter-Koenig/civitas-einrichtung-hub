@@ -788,13 +788,45 @@ install_addon_frontend_build() {
   return 0
 }
 
+# install_addon_frontend_stage <stage> <tag> — Stage-ConfigMap anwenden, Manifest
+# rendern und anwenden (genau EINE Stage). Gemeinsam genutzt von
+# install_addon_frontend (Schleife) und rebuild-stage.sh (eine Stage).
+# Secrets/Ingress werden hier NICHT behandelt.
+install_addon_frontend_stage() {
+  local stage="$1" tag="$2"
+  local ns="${ADDON_NS}"
+  local overlay_dir
+  overlay_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../overlay_addon_V1s/k8s" && pwd)"
+
+  local key image hash manifest
+  key="$(addon_stage_key "${stage}")"
+
+  addon_configmap_stage "${key}" | kubectl apply -f - \
+    || { log_error "kubectl apply Stage-ConfigMap ${stage} fehlgeschlagen"; return 1; }
+  log_ok "Stage ${stage}: ConfigMap angewendet"
+
+  if [[ -z "${tag}" ]]; then
+    log_error "Image-Tag fehlt für Stage ${stage} — zuerst bauen bzw. übergeben"
+    return 1
+  fi
+
+  image="p2d2-frontend-${stage}:${tag}"
+  hash="$(addon_configmap_hash "${key}")"
+  manifest="${overlay_dir}/stages/${stage}.yaml"
+  if [[ -f "${manifest}" ]]; then
+    addon_render_stage_manifest "${manifest}" "${ns}" "${image}" "${hash}" | kubectl apply -f - \
+      || { log_error "kubectl apply ${manifest} fehlgeschlagen"; return 1; }
+    log_ok "Stage ${stage}: Manifest angewendet (${image})"
+  else
+    log_warn "Stage-Manifest fehlt: ${manifest} — übersprungen"
+  fi
+  return 0
+}
+
 install_addon_frontend() {
   log "=== AddOn 30: Frontend (5 Stages, image-basiert) ==="
   addon_frontend_guard || return 1
 
-  local ns="${ADDON_NS}"
-  local overlay_dir
-  overlay_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../overlay_addon_V1s/k8s" && pwd)"
   local tag_dir="${VM_REMOTE_INSTALL_DIR:-/root/p2d2-addon}"
 
   # 1) Secrets aus .env.p2d2-addon befüllen (Basis + 5 Stages, Merge).
@@ -806,14 +838,8 @@ install_addon_frontend() {
   log_ok "Basis-ConfigMap angewendet (p2d2-base-config)"
 
   # 3) Stage-ConfigMaps generieren, Manifeste rendern und anwenden.
-  local stage key tag_file tag image hash manifest
+  local stage tag_file tag
   for stage in main dev de1 de2 fv; do
-    key="$(addon_stage_key "${stage}")"
-
-    addon_configmap_stage "${key}" | kubectl apply -f - \
-      || { log_error "kubectl apply Stage-ConfigMap ${stage} fehlgeschlagen"; return 1; }
-    log_ok "Stage ${stage}: ConfigMap angewendet"
-
     # Image-Tag aus der Zustandsdatei lesen (install_addon_frontend_build schreibt sie).
     tag_file="${tag_dir}/.frontend-tag-${stage}"
     tag=""
@@ -822,17 +848,7 @@ install_addon_frontend() {
       log_error "Image-Tag fehlt für Stage ${stage} (${tag_file}) — zuerst install_addon_frontend_build ausführen"
       return 1
     fi
-    image="p2d2-frontend-${stage}:${tag}"
-    hash="$(addon_configmap_hash "${key}")"
-
-    manifest="${overlay_dir}/stages/${stage}.yaml"
-    if [[ -f "${manifest}" ]]; then
-      addon_render_stage_manifest "${manifest}" "${ns}" "${image}" "${hash}" | kubectl apply -f - \
-        || { log_error "kubectl apply ${manifest} fehlgeschlagen"; return 1; }
-      log_ok "Stage ${stage}: Manifest angewendet (${image})"
-    else
-      log_warn "Stage-Manifest fehlt: ${manifest} — übersprungen"
-    fi
+    install_addon_frontend_stage "${stage}" "${tag}" || return 1
   done
 
   # 4) Zertifikats-Issuer: Preflight hat ADDON_CERT_ISSUER_RESOLVED gesetzt (F1);
