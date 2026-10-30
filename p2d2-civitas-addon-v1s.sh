@@ -187,29 +187,24 @@ run_in_vm_addon() {
   addon_ssh_select_key
 
   log "Kopiere AddOn-Skriptdateien in die VM (${VM_IP_STATIC}) …"
-  ssh "${ADDON_SSH_OPTS[@]}" \
-      "root@${VM_IP_STATIC}" \
-      "mkdir -p ${VM_REMOTE_INSTALL_DIR}" \
-      || { log_error "VM ${VM_IP_STATIC} nicht per SSH erreichbar"; exit 1; }
+  addon_vm_exec "mkdir -p ${VM_REMOTE_INSTALL_DIR}" \
+    || { log_error "VM ${VM_IP_STATIC} nicht per SSH erreichbar"; exit 1; }
 
-  scp "${ADDON_SSH_OPTS[@]}" -r \
+  addon_vm_copy "${VM_REMOTE_INSTALL_DIR}/" -r \
     "${SCRIPT_DIR}/p2d2-civitas-addon-v1s.sh" \
     "${SCRIPT_DIR}/modules_addon_V1s" \
-    "root@${VM_IP_STATIC}:${VM_REMOTE_INSTALL_DIR}/" \
     || { log_error "scp fehlgeschlagen — VM ${VM_IP_STATIC} nicht erreichbar?"; exit 1; }
   log_ok "Skript + Module kopiert nach ${VM_REMOTE_INSTALL_DIR}"
 
   # Direkt aufgerufene Skripte müssen auf der VM ausführbar sein: scp ohne -p
   # verliert das Execute-Bit. Nur explizit benannte Skripte (kein Wildcard auf
   # ganze Verzeichnisse); Module unter modules_* werden gesourct und brauchen es nicht.
-  ssh "${ADDON_SSH_OPTS[@]}" "root@${VM_IP_STATIC}" \
-    "chmod +x ${VM_REMOTE_INSTALL_DIR}/p2d2-civitas-addon-v1s.sh" \
+  addon_vm_exec "chmod +x ${VM_REMOTE_INSTALL_DIR}/p2d2-civitas-addon-v1s.sh" \
     || { log_error "chmod +x des Hauptskripts fehlgeschlagen"; exit 1; }
 
   if [[ -d "${SCRIPT_DIR}/overlay_addon_V1s" ]]; then
-    scp "${ADDON_SSH_OPTS[@]}" -r \
+    addon_vm_copy "${VM_REMOTE_INSTALL_DIR}/" -r \
       "${SCRIPT_DIR}/overlay_addon_V1s" \
-      "root@${VM_IP_STATIC}:${VM_REMOTE_INSTALL_DIR}/" \
       || { log_error "Overlay-Verzeichnis konnte nicht kopiert werden"; exit 1; }
     log_ok "Overlay-Verzeichnis kopiert"
   else
@@ -220,15 +215,13 @@ run_in_vm_addon() {
   # Supplement-Verzeichnis (GeoTIFF-Mosaic) — optional, aber mitkopieren, damit die
   # Mosaic-Anlage im VM-Kontext ihre Daten nachweisbar aus dem Supplement-Ordner bezieht.
   if [[ -d "${ADDON_SUPPLEMENT_DIR}" ]]; then
-    scp "${ADDON_SSH_OPTS[@]}" -r \
+    addon_vm_copy "${VM_REMOTE_INSTALL_DIR}/" -r \
       "${ADDON_SUPPLEMENT_DIR}" \
-      "root@${VM_IP_STATIC}:${VM_REMOTE_INSTALL_DIR}/" \
       || { log_warn "Supplement-Verzeichnis konnte nicht kopiert werden (nicht fatal)"; }
     log_ok "Supplement-Verzeichnis kopiert"
     # Direkt aufgerufene Supplement-Skripte ausführbar machen (scp ohne -p verliert
     # das Execute-Bit). Explizite Liste, kein Wildcard auf ganze Verzeichnisse.
-    ssh "${ADDON_SSH_OPTS[@]}" "root@${VM_IP_STATIC}" \
-      "chmod +x ${VM_REMOTE_INSTALL_DIR}/supplement/verify-uninstall.sh \
+    addon_vm_exec "chmod +x ${VM_REMOTE_INSTALL_DIR}/supplement/verify-uninstall.sh \
         ${VM_REMOTE_INSTALL_DIR}/supplement/verify-p2d2-schema-dumps.sh \
         ${VM_REMOTE_INSTALL_DIR}/supplement/verify-p2d2-schema-runtime.sh \
         ${VM_REMOTE_INSTALL_DIR}/supplement/p2d2-extract-db-dumps.py \
@@ -241,13 +234,11 @@ run_in_vm_addon() {
   # .env-Datei: auf der VM ins ELTERNVERZEICHNIS des Install-Dirs legen, damit die
   # Konvention `source ../.env.p2d2-addon` dort unverändert funktioniert.
   if [[ -f "${ADDON_ENV_FILE}" ]]; then
-    scp "${ADDON_SSH_OPTS[@]}" \
+    addon_vm_copy "${VM_REMOTE_INSTALL_DIR}/../.env.p2d2-addon" \
       "${ADDON_ENV_FILE}" \
-      "root@${VM_IP_STATIC}:${VM_REMOTE_INSTALL_DIR}/../.env.p2d2-addon" \
       || { log_error "scp $(basename "${ADDON_ENV_FILE}") fehlgeschlagen"; exit 1; }
     # Rechte wie der Installer für .env.local (0600).
-    ssh "${ADDON_SSH_OPTS[@]}" "root@${VM_IP_STATIC}" \
-      "chmod 600 ${VM_REMOTE_INSTALL_DIR}/../.env.p2d2-addon" \
+    addon_vm_exec "chmod 600 ${VM_REMOTE_INSTALL_DIR}/../.env.p2d2-addon" \
       || { log_warn "chmod 600 der .env-Datei fehlgeschlagen (nicht fatal)"; }
     log_ok "$(basename "${ADDON_ENV_FILE}") kopiert nach ${VM_REMOTE_INSTALL_DIR}/../"
   else
@@ -267,9 +258,9 @@ run_in_vm_addon() {
   local tls_vm_file="${VM_REMOTE_INSTALL_DIR}/../p2d2-le-certs-backup.yaml"
   if [[ "${mode}" != "--uninstall" ]]; then
     if [[ -f "${P2D2_TLS_BACKUP_HOST_FILE}" ]]; then
-      scp "${ADDON_SSH_OPTS[@]}" "${P2D2_TLS_BACKUP_HOST_FILE}" "root@${VM_IP_STATIC}:${tls_vm_file}" \
+      addon_vm_copy "${tls_vm_file}" "${P2D2_TLS_BACKUP_HOST_FILE}" \
         || { log_warn "TLS-Backup konnte nicht in die VM kopiert werden"; }
-      ssh "${ADDON_SSH_OPTS[@]}" "root@${VM_IP_STATIC}" "chmod 600 ${tls_vm_file}" \
+      addon_vm_exec "chmod 600 ${tls_vm_file}" \
         || { log_warn "chmod 600 des TLS-Backups fehlgeschlagen (nicht fatal)"; }
     else
       log "Kein p2d2-TLS-Backup gefunden (${P2D2_TLS_BACKUP_HOST_FILE}) — Zertifikate werden ggf. neu ausgestellt"
@@ -282,9 +273,7 @@ run_in_vm_addon() {
   log "  ssh root@${VM_IP_STATIC} \"cd ${VM_REMOTE_INSTALL_DIR} && ${remote_cmd}\""
   log "============================================"
   local ssh_exit=0
-  ssh "${ADDON_SSH_OPTS[@]}" \
-      "root@${VM_IP_STATIC}" \
-      "cd ${VM_REMOTE_INSTALL_DIR} && ${remote_cmd}" \
+  addon_vm_exec "cd ${VM_REMOTE_INSTALL_DIR} && ${remote_cmd}" \
     || ssh_exit=$?
 
   # Teil B: Backup nach dem Hop zurückholen (atomar), auch im Fehlerfall des Hops.

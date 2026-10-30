@@ -119,3 +119,19 @@ addon_ssh_select_key() {
   log_error "Abhilfe: Installer-Schlüssel unter ${INSTALL_KEY_DIR} (prüfe VM_ID und INSTALL_KEY_DIR) oder ADDON_SSH_KEY_FILE auf einen in VM_SSH_PUBKEY eingetragenen Admin-Schlüssel setzen."
   exit 1
 }
+
+# addon_vm_exec <remote_cmd...> — führt ein Kommando in der VM aus (ssh mit den
+# AddOn-SSH-Optionen + root@VM). Exit-Code wird durchgereicht. Gemeinsamer Helfer
+# für das Hauptskript und rebuild-stage.sh.
+addon_vm_exec() {
+  ssh "${ADDON_SSH_OPTS[@]}" "root@${VM_IP_STATIC}" "$@"
+}
+
+# addon_vm_copy <remote_dest> <scp_args...> — kopiert Dateien/Verzeichnisse in die
+# VM (scp mit den AddOn-SSH-Optionen; Ziel root@VM:<remote_dest>). scp-Optionen
+# (z. B. -r) gehören in <scp_args...>. Gemeinsamer Helfer für Hauptskript + Wrapper.
+addon_vm_copy() {
+  local dest="$1"
+  shift
+  scp "${ADDON_SSH_OPTS[@]}" "$@" "root@${VM_IP_STATIC}:${dest}"
+}
