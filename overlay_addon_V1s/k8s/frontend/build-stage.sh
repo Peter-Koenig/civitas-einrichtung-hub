@@ -68,52 +68,11 @@ require_env() {
 # ── Stage-spezifische Produktwerte (Git-Quelle/Build-Skript, NICHT Betreiber) ──
 # Git-Host, Repo-Pfad und Branch sind Produktwerte (p2d2-Quellrepos), nicht Teil
 # des Konfigurationsvertrags. Sie fliessen aber in den deterministischen Tag ein.
-case "${STAGE}" in
-  main)
-    IMAGE="p2d2-frontend-main"
-    KEY="MAIN"
-    GIT_HOST="gitlab.opencode.de"
-    GIT_REPO_PATH="OC000028072444/p2d2.git"
-    GIT_BRANCH="main"
-    BUILD_SCRIPT="build"
-    ;;
-  dev)
-    IMAGE="p2d2-frontend-dev"
-    KEY="DEVELOP"
-    GIT_HOST="gitlab.opencode.de"
-    GIT_REPO_PATH="OC000028072444/p2d2.git"
-    GIT_BRANCH="develop"
-    BUILD_SCRIPT="build:develop"
-    ;;
-  de1)
-    IMAGE="p2d2-frontend-de1"
-    KEY="DE1"
-    GIT_HOST="github.com"
-    GIT_REPO_PATH="Peter-Koenig/p2d2-hub.git"
-    GIT_BRANCH="feature/team-de1/main"
-    BUILD_SCRIPT="build:de1"
-    ;;
-  de2)
-    IMAGE="p2d2-frontend-de2"
-    KEY="DE2"
-    GIT_HOST="github.com"
-    GIT_REPO_PATH="Peter-Koenig/p2d2-hub.git"
-    GIT_BRANCH="feature/team-de2/main"
-    BUILD_SCRIPT="build:de2"
-    ;;
-  fv)
-    IMAGE="p2d2-frontend-fv"
-    KEY="FV"
-    GIT_HOST="github.com"
-    GIT_REPO_PATH="Peter-Koenig/p2d2-hub.git"
-    GIT_BRANCH="feature/team-fv/main"
-    BUILD_SCRIPT="build:fv"
-    ;;
-  *)
-    echo "Fehler: unbekannte Stage '${STAGE}' (main|dev|de1|de2|fv)" >&2
-    exit 1
-    ;;
-esac
+# Gemeinsame Quelle mit rebuild-stage.sh: addon_stage_source (Modul).
+if ! stage_source="$(addon_stage_source "${STAGE}")"; then
+  exit 1
+fi
+eval "${stage_source}"
 
 # ── Buildwerte aus der .env.p2d2-addon (F5, fail-fast ohne Default) ───────────
 PUBLIC_SITE_URL="$(require_env "P2D2_${KEY}_PUBLIC_SITE_URL")"
@@ -123,7 +82,7 @@ PUBLIC_MAPSERVER_URL="$(require_env "P2D2_BASE_PUBLIC_MAPSERVER_URL")"
 DEFAULT_CATEGORY_ICON="$(require_env "P2D2_BASE_DEFAULT_CATEGORY_ICON")"
 
 # ── Skript-Hash (build-stage.sh + Dockerfile + .dockerignore) ──────────────────
-SCRIPT_SHA="$(cat "${SCRIPT_DIR}/build-stage.sh" "${SCRIPT_DIR}/Dockerfile" "${SCRIPT_DIR}/.dockerignore" | sha256sum | awk '{print $1}')"
+SCRIPT_SHA="$(addon_frontend_script_sha "${SCRIPT_DIR}")"
 
 # ── Git-Token je Provider ───────────────────────────────────────────────────
 case "${GIT_HOST}" in

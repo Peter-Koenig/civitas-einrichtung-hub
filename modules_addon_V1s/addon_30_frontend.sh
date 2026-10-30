@@ -150,6 +150,65 @@ addon_stage_key() {
   esac
 }
 
+# addon_stage_source <stage> — Stage-spezifische Produktwerte (Git-Quelle/
+# Build-Skript, NICHT Betreiber). Gibt sie als KEY=VALUE-Zeilen auf stdout aus;
+# der Aufrufer kann sie per `eval "$(addon_stage_source <stage>)"` laden.
+# Unbekannte Stage -> Meldung auf stderr + return 1.
+addon_stage_source() {
+  case "$1" in
+    main)
+      printf '%s\n' \
+        'IMAGE=p2d2-frontend-main' \
+        'KEY=MAIN' \
+        'GIT_HOST=gitlab.opencode.de' \
+        'GIT_REPO_PATH=OC000028072444/p2d2.git' \
+        'GIT_BRANCH=main' \
+        'BUILD_SCRIPT=build' ;;
+    dev)
+      printf '%s\n' \
+        'IMAGE=p2d2-frontend-dev' \
+        'KEY=DEVELOP' \
+        'GIT_HOST=gitlab.opencode.de' \
+        'GIT_REPO_PATH=OC000028072444/p2d2.git' \
+        'GIT_BRANCH=develop' \
+        'BUILD_SCRIPT=build:develop' ;;
+    de1)
+      printf '%s\n' \
+        'IMAGE=p2d2-frontend-de1' \
+        'KEY=DE1' \
+        'GIT_HOST=github.com' \
+        'GIT_REPO_PATH=Peter-Koenig/p2d2-hub.git' \
+        'GIT_BRANCH=feature/team-de1/main' \
+        'BUILD_SCRIPT=build:de1' ;;
+    de2)
+      printf '%s\n' \
+        'IMAGE=p2d2-frontend-de2' \
+        'KEY=DE2' \
+        'GIT_HOST=github.com' \
+        'GIT_REPO_PATH=Peter-Koenig/p2d2-hub.git' \
+        'GIT_BRANCH=feature/team-de2/main' \
+        'BUILD_SCRIPT=build:de2' ;;
+    fv)
+      printf '%s\n' \
+        'IMAGE=p2d2-frontend-fv' \
+        'KEY=FV' \
+        'GIT_HOST=github.com' \
+        'GIT_REPO_PATH=Peter-Koenig/p2d2-hub.git' \
+        'GIT_BRANCH=feature/team-fv/main' \
+        'BUILD_SCRIPT=build:fv' ;;
+    *)
+      printf 'Fehler: unbekannte Stage %q\n' "$1" >&2
+      return 1 ;;
+  esac
+}
+
+# addon_frontend_script_sha <dir> — SHA-256 über die Build-Eingaben
+# build-stage.sh + Dockerfile + .dockerignore im Verzeichnis <dir>.
+addon_frontend_script_sha() {
+  local dir="$1"
+  cat "${dir}/build-stage.sh" "${dir}/Dockerfile" "${dir}/.dockerignore" | sha256sum | awk '{print $1}'
+}
+
 # addon_compute_image_tag <stage> <git_host> <git_repo_path> <git_branch> \
 #     <commit_sha> <script_sha> <build_script> <site_url> <wfst_endpoint> \
 #     <wfst_workspace> <mapserver_url> <icon>
