@@ -43,7 +43,12 @@ FORCE=0
 KEEP_DOCKER=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --stage) STAGE="${2:-}"; shift 2 ;;
+    --stage)
+      if [[ $# -lt 2 || -z "${2:-}" ]]; then
+        log_error "--stage benötigt einen Wert (main|dev|de1|de2|fv)"
+        exit 1
+      fi
+      STAGE="$2"; shift 2 ;;
     --check) CHECK=1; shift ;;
     --force) FORCE=1; shift ;;
     --keep-docker) KEEP_DOCKER=1; shift ;;
@@ -109,6 +114,7 @@ source "${ENV_FILE}"
 set +a
 
 export ADDON_NS="${ADDON_NS:-cc-prd-geodata-stack}"
+export KUBECONFIG="${KUBECONFIG:-${HOME}/.kube/config}"
 addon_derive_domain
 
 # Stage-Quelle laden (IMAGE, KEY, GIT_HOST, GIT_REPO_PATH, GIT_BRANCH, BUILD_SCRIPT).
@@ -141,6 +147,16 @@ esac
 export GIT_TOKEN GIT_AUTH_USER
 
 askpass_file="$(mktemp)"; chmod 700 "${askpass_file}"
+tag_file=""
+# Aufräumen in allen Pfaden (Build-Fehler, Rollout-Fehler, --check, --keep-docker).
+cleanup_rebuild() {
+  [[ -n "${askpass_file}" ]] && rm -f "${askpass_file}"
+  [[ -n "${tag_file}" ]] && rm -f "${tag_file}"
+  if [[ "${KEEP_DOCKER}" -ne 1 ]]; then
+    addon_docker_release
+  fi
+}
+trap cleanup_rebuild EXIT
 cat > "${askpass_file}" <<'EOF'
 #!/usr/bin/env bash
 case "$1" in
@@ -148,12 +164,19 @@ case "$1" in
   *) printf '%s\n' "$GIT_TOKEN" ;;
 esac
 EOF
-trap 'rm -f "${askpass_file}"' EXIT
 
-remote_sha="$(GIT_ASKPASS="${askpass_file}" GIT_TERMINAL_PROMPT=0 \
-  git ls-remote "https://${GIT_HOST}/${GIT_REPO_PATH}" "refs/heads/${GIT_BRANCH}" \
-  | awk '{print $1}')"
-[[ -n "${remote_sha}" ]] || { log_error "git ls-remote lieferte keinen Commit für ${GIT_BRANCH}"; exit 1; }
+ls_remote_rc=0
+ls_remote_out="$(GIT_ASKPASS="${askpass_file}" GIT_TERMINAL_PROMPT=0 \
+  git ls-remote "https://${GIT_HOST}/${GIT_REPO_PATH}" "refs/heads/${GIT_BRANCH}" 2>/dev/null)" || ls_remote_rc=$?
+ls_remote_lines=0
+if [[ -n "${ls_remote_out}" ]]; then
+  ls_remote_lines="$(printf '%s\n' "${ls_remote_out}" | grep -c '^' || true)"
+fi
+if [[ "${ls_remote_rc}" -ne 0 || "${ls_remote_lines}" != "1" ]]; then
+  log_error "git ls-remote lieferte ${ls_remote_lines} Zeile(n) (Exit ${ls_remote_rc}) für ${GIT_BRANCH} (erwartet genau 1)"
+  exit 1
+fi
+remote_sha="${ls_remote_out%%$'\t'*}"
 
 overlay_dir="$(cd "${SCRIPT_DIR}/overlay_addon_V1s/k8s" && pwd)"
 script_sha="$(addon_frontend_script_sha "${overlay_dir}/frontend")"
@@ -169,8 +192,19 @@ expected_tag="$(addon_compute_image_tag "${STAGE}" "${GIT_HOST}" "${GIT_REPO_PAT
   "${site_url}" "${wfst_endpoint}" "${wfst_workspace}" "${mapserver_url}" "${icon}")"
 
 svc="$(addon_frontend_svc "${STAGE}")"
-running_image="$(kubectl -n "${ADDON_NS}" get deploy "${svc}" -o jsonpath='{.spec.template.spec.containers[?(@.name=="astro")].image}' 2>/dev/null || true)"
-running_tag="${running_image##*:}"
+kubectl_rc=0
+running_image="$(kubectl -n "${ADDON_NS}" get deploy "${svc}" --ignore-not-found \
+  -o jsonpath='{.spec.template.spec.containers[?(@.name=="astro")].image}')" || kubectl_rc=$?
+if [[ "${kubectl_rc}" -ne 0 ]]; then
+  log_error "kubectl nicht erreichbar/Fehler (Exit ${kubectl_rc})"
+  exit 1
+fi
+if [[ -z "${running_image}" ]]; then
+  log_warn "Deployment ${svc} existiert nicht — der Wrapper legt weder Ingress noch Secrets an (dazu ./p2d2-civitas-addon-v1s.sh verwenden)"
+  running_tag=""
+else
+  running_tag="${running_image##*:}"
+fi
 
 log "Stage:      ${STAGE}"
 log "Branch:     ${GIT_BRANCH}"
@@ -190,15 +224,11 @@ fi
 
 # Build + Rollout.
 addon_docker_ensure || { log_error "Docker nicht verfügbar"; exit 1; }
-if [[ "${KEEP_DOCKER}" -ne 1 ]]; then
-  trap 'rm -f "${askpass_file}"; addon_docker_release' EXIT
-fi
 
 tag_file="$(mktemp)"; chmod 600 "${tag_file}"
 FRONTEND_TAG_FILE="${tag_file}" "${overlay_dir}/frontend/build-stage.sh" "${STAGE}" \
   || { log_error "Image-Build ${STAGE} fehlgeschlagen"; exit 1; }
 built_tag="$(cat "${tag_file}" 2>/dev/null || true)"
-rm -f "${tag_file}"
 [[ -n "${built_tag}" ]] || { log_error "Image-Build ${STAGE}: kein Tag erzeugt"; exit 1; }
 
 if [[ "${built_tag}" != "${expected_tag}" ]]; then
