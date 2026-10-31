@@ -49,6 +49,8 @@ install_civitas() {
   log "=== Phase 2: CIVITAS/CORE-Plattform ==="
   check_dns_hard
   clone_civitas_repo
+  apply_ipv4_preference            # Schritt 2.0a: IPv4-Präferenz (Workaround IPv6-Reset)
+  check_helm_repo_egress           # Schritt 2.0c: Egress-Preflight (Helm-Repos)
   build_geoportal_backend_image   # Schritt 2.0b: V1s — Portal-Backend-Image bauen und in containerd importieren
   apply_overlay
   patch_masterportal_release_name
@@ -283,27 +285,43 @@ verify_k8s_import() {
 
 # ── Schritt 2.0: Repository klonen ────────────────────────────────────────────
 clone_civitas_repo() {
-  log "Klone CIVITAS/CORE-Repository nach ${CC_V1_REPO_PATH} …"
+  log "Klone CIVITAS/CORE-Repository nach ${CC_V1_REPO_PATH} (Ref: ${CC_V1_REPO_TAG}) …"
+  local core_link="${CIVITAS_CORE_LINK:-/opt/civitas-core}"
 
   if [[ -d "${CC_V1_REPO_PATH}/.git" ]]; then
-    log "Repository bereits vorhanden — führe git pull aus …"
-    git -C "${CC_V1_REPO_PATH}" pull --ff-only origin "${CC_V1_REPO_BRANCH}" \
-      || log_warn "git pull fehlgeschlagen — fahre mit vorhandenem Stand fort"
+    log "Repository bereits vorhanden — aktualisiere auf Ref ${CC_V1_REPO_TAG} …"
+    if [[ -n "$(git -C "${CC_V1_REPO_PATH}" status --porcelain 2>/dev/null)" ]]; then
+      log_error "Working Tree des Repos ist nicht sauber (${CC_V1_REPO_PATH}) — Abbruch"
+      return 1
+    fi
+    git -C "${CC_V1_REPO_PATH}" fetch --tags origin \
+      || { log_error "git fetch --tags fehlgeschlagen — Abbruch"; return 1; }
+    git -C "${CC_V1_REPO_PATH}" checkout --force "${CC_V1_REPO_TAG}" \
+      || { log_error "Ref '${CC_V1_REPO_TAG}' nicht auscheckbar — Abbruch"; return 1; }
   else
     git clone \
-      --branch "${CC_V1_REPO_BRANCH}" \
+      --branch "${CC_V1_REPO_TAG}" \
       --single-branch \
       "${CC_V1_REPO_URL}" \
       "${CC_V1_REPO_PATH}" \
-      || { log_error "git clone fehlgeschlagen: ${CC_V1_REPO_URL}"; return 1; }
+      || { log_error "git clone fehlgeschlagen: ${CC_V1_REPO_URL} (Ref ${CC_V1_REPO_TAG})"; return 1; }
+  fi
+
+  # Gepinnten Stand protokollieren (Tag exakt bzw. Commit-SHA).
+  local describe_out
+  describe_out="$(git -C "${CC_V1_REPO_PATH}" describe --tags --exact-match 2>/dev/null || true)"
+  if [[ -n "${describe_out}" ]]; then
+    log_ok "CIVITAS/CORE-Stand: ${describe_out}"
+  else
+    log_ok "CIVITAS/CORE-Stand: Commit $(git -C "${CC_V1_REPO_PATH}" rev-parse HEAD 2>/dev/null || echo 'unbekannt')"
   fi
 
   # Symlink /opt/civitas-core → /opt/civitas-core-v1
-  if [[ "$(readlink /opt/civitas-core 2>/dev/null)" != "${CC_V1_REPO_PATH}" ]]; then
-    ln -sfn "${CC_V1_REPO_PATH}" /opt/civitas-core
-    log "Symlink gesetzt: /opt/civitas-core → ${CC_V1_REPO_PATH}"
+  if [[ "$(readlink "${core_link}" 2>/dev/null)" != "${CC_V1_REPO_PATH}" ]]; then
+    ln -sfn "${CC_V1_REPO_PATH}" "${core_link}"
+    log "Symlink gesetzt: ${core_link} → ${CC_V1_REPO_PATH}"
   else
-    log "Symlink bereits korrekt: /opt/civitas-core → ${CC_V1_REPO_PATH}"
+    log "Symlink bereits korrekt: ${core_link} → ${CC_V1_REPO_PATH}"
   fi
 
   # Abnahmekriterien
@@ -317,10 +335,100 @@ clone_civitas_repo() {
   fi
   log_ok "cc_cli Arbeitsverzeichnis: ${CC_CLI_PLAYBOOK_DIR}"
 
-  [[ "$(readlink /opt/civitas-core)" == "${CC_V1_REPO_PATH}" ]] \
-    || { log_error "Symlink /opt/civitas-core zeigt nicht auf ${CC_V1_REPO_PATH}"; return 1; }
+  [[ "$(readlink "${core_link}")" == "${CC_V1_REPO_PATH}" ]] \
+    || { log_error "Symlink ${core_link} zeigt nicht auf ${CC_V1_REPO_PATH}"; return 1; }
 
   log_ok "Repository bereit: ${CC_V1_REPO_PATH}"
+}
+
+
+# ── IPv4-Präferenz (Workaround gegen transient gestörte IPv6-Pfade zu GitHub Pages) ─
+# Helm ist ein Go-Binary und respektiert getaddrinfo/gai.conf. NET_PREFER_IPV4=auto
+# prüft per IPv6-Probe (HEAD gegen GitHub Pages), ob IPv6 zuverlässig ist; schlägt
+# sie fehl, wird IPv4 bevorzugt. Idempotent, kein Interface-IPv6-Disable, kein sysctl.
+_enable_ipv4_preference() {
+  local gai="${GAI_CONF:-/etc/gai.conf}"
+  local line="precedence ::ffff:0:0/96 100"
+  if [[ -f "${gai}" ]] && grep -qF "${line}" "${gai}" 2>/dev/null; then
+    log_ok "IPv4-Präferenz bereits in ${gai} aktiv"
+    return 0
+  fi
+  printf '# IPv4-Präferenz (p2d2 V1s, %s): Workaround gegen transiente IPv6-Resets zu GitHub Pages\n%s\n' \
+    "$(date '+%Y-%m-%d')" "${line}" >> "${gai}" \
+    || { log_error "IPv4-Präferenz konnte nicht in ${gai} geschrieben werden"; return 1; }
+  log_ok "IPv4-Präferenz in ${gai} aktiviert (${line})"
+}
+
+apply_ipv4_preference() {
+  case "${NET_PREFER_IPV4:-auto}" in
+    never) return 0 ;;
+    always) _enable_ipv4_preference; return $? ;;
+    auto) ;;
+  esac
+
+  # auto: kurze IPv6-Probe gegen GitHub Pages (dem betroffenen Anycast-Ziel).
+  if curl -6 -sS -I --connect-timeout 5 --max-time 5 -o /dev/null \
+      "https://prometheus-community.github.io/helm-charts/index.yaml" 2>/dev/null; then
+    log "IPv6-Pfad zu GitHub Pages erreichbar — keine IPv4-Präferenz nötig"
+    return 0
+  fi
+  log_warn "IPv6-Probe zu GitHub Pages fehlgeschlagen — bevorzuge IPv4 (Workaround)"
+  _enable_ipv4_preference
+}
+
+
+# ── Schritt 2.0c: Egress-Preflight für Helm-Repos ────────────────────────────
+# Liest die Helm-Repo-URLs aus dem GEKLONTEN Stand (software_references.yml, Feld
+# helm_repo_url) und prüft jede per HEAD, bevor cc_cli validate/exec die Charts
+# laden. Verhindert, dass ein transient gestörter Egress (z. B. IPv6-Reset zu
+# GitHub Pages) erst nach 45 Minuten mitten im Playbook abbricht. Keine hartkodierte
+# URL-Liste im Installer — die 13er-Testliste dient nur als Fixture in den Tests.
+check_helm_repo_egress() {
+  if [[ "${CC_EGRESS_CHECK:-strict}" == "off" ]]; then
+    log "Egress-Check übersprungen (CC_EGRESS_CHECK=off)"
+    return 0
+  fi
+
+  local refs_file="${CC_V1_REPO_PATH:-}/core_platform/vars/software_references.yml"
+  if [[ ! -f "${refs_file}" ]]; then
+    log_warn "software_references.yml nicht gefunden: ${refs_file} — Egress-Check übersprungen"
+    return 0
+  fi
+
+  local urls
+  urls="$(yq -r '.. | objects | select(has("helm_repo_url")) | .helm_repo_url' "${refs_file}" 2>/dev/null \
+    | grep -v '^[[:space:]]*$' | sed 's#/$##' | sort -u)"
+  if [[ -z "${urls}" ]]; then
+    log_warn "Keine helm_repo_url in ${refs_file} gefunden — Egress-Check übersprungen"
+    return 0
+  fi
+
+  log "Egress-Check für Helm-Repos (CC_EGRESS_CHECK=${CC_EGRESS_CHECK:-strict}) …"
+  local url failures=0 warnings=0
+  while IFS= read -r url; do
+    [[ -n "${url}" ]] || continue
+    if curl -sS -I --connect-timeout 10 --max-time 10 -o /dev/null "${url}/index.yaml" 2>/dev/null; then
+      log_ok "  ${url}"
+    elif [[ "${CC_EGRESS_CHECK:-strict}" == "strict" ]]; then
+      log_error "  ${url} — nicht erreichbar"
+      failures=$((failures + 1))
+    else
+      log_warn "  ${url} — nicht erreichbar"
+      warnings=$((warnings + 1))
+    fi
+  done <<< "${urls}"
+
+  if [[ "${failures}" -gt 0 ]]; then
+    log_error "${failures} Helm-Repo(s) nicht erreichbar — Egress-Problem."
+    log_error "Remediation: IPv4 bevorzugen (NET_PREFER_IPV4=always) oder Netzwerk prüfen."
+    log_error "Abbruch vor cc_cli validate/exec."
+    exit 1
+  fi
+  if [[ "${warnings}" -gt 0 ]]; then
+    log_warn "${warnings} Helm-Repo(s) nicht erreichbar (nur Warnung, CC_EGRESS_CHECK=warn)."
+  else
+    log_ok "Egress-Check: alle Helm-Repos erreichbar"
+  fi
 }
 
 
@@ -390,8 +498,8 @@ patch_masterportal_release_name() {
   local task_file="${CC_CLI_PLAYBOOK_DIR}/tasks/geodata/install/components/masterportal.yml"
 
   if [[ ! -f "${task_file}" ]]; then
-    log_warn "Masterportal-Task-Datei nicht gefunden: ${task_file}"
-    return 0
+    log_error "Masterportal-Task-Datei nicht gefunden: ${task_file} — Strukturänderung im Upstream-Repo (Tag v1.8.1)?"
+    exit 1
   fi
 
   if grep -q 'gd_instance.instance_name }}-{{ software.stack_gd.masterportal.helm_release_name' "${task_file}" \
@@ -567,7 +675,7 @@ fatal_stats() {
       if (have && !ignored) {
         n++
         if (index(block, nf) > 0) m++
-        if (block ~ tr) t++
+        if (tolower(block) ~ tr) t++
       }
       have = 1; ignored = 0; block = $0; next
     }
@@ -579,11 +687,34 @@ fatal_stats() {
       if (have && !ignored) {
         n++
         if (index(block, nf) > 0) m++
-        if (block ~ tr) t++
+        if (tolower(block) ~ tr) t++
       }
       print n, m, t
     }
   ' "${log_file}" 2>/dev/null || { echo "0 0 0"; return 0; }
+}
+
+# Prüft, ob der LETZTE nicht-ignorierte fatal:-Block im Ansible-Log Passwort-/Policy-
+# Signale enthält (für die DIAGNOSE-Ausgabe). Exit 0 = ja, 1 = nein (oder kein Block).
+last_fatal_has_policy_signal() {
+  local log_file="$1" last_block
+  [[ -f "${log_file}" ]] || return 1
+  last_block="$(awk '
+    /fatal: \[/ {
+      if (have && !ignored) last = block
+      have = 1; ignored = 0; block = $0; next
+    }
+    {
+      block = block "\n" $0
+      if (/\.\.\.ignoring/) ignored = 1
+    }
+    END {
+      if (have && !ignored) last = block
+      print last
+    }
+  ' "${log_file}" 2>/dev/null)"
+  [[ -n "${last_block}" ]] || return 1
+  grep -Eiq 'password|policy|credentials|invalid_user_credentials' <<< "${last_block}"
 }
 
 # ── Sichtbare Fehlerzusammenfassung aus dem Ansible-Log (Allowlist) ───────────
@@ -787,7 +918,7 @@ run_cc_cli_exec() {
 
   local attempt=1
   local tolerated_404=false
-  local transient_re='Status code was 5[0-9][0-9]|Temporarily Unavailable|Connection refused|timed out|Max retries exceeded'
+  local transient_re='status code was 5[0-9][0-9]|temporarily unavailable|connection (refused|reset by peer)|timed out|max retries exceeded|i/o timeout|tls handshake timeout|unexpected eof'
   local notfound_fixed='Status code was 404 and not [204]'
   while :; do
     # Pro Versuch ein eigenes Log; die Klassifikation liest nur dieses.
@@ -862,7 +993,7 @@ run_cc_cli_exec() {
       tolerated_404=true
       rm -f "${raw_file}"
       break
-    elif grep -Eq "${transient_re}" "${raw_file}" || (( fatal_transient > 0 )); then
+    elif grep -Eiq "${transient_re}" "${raw_file}" || (( fatal_transient > 0 )); then
       transient=true
     fi
 
@@ -916,8 +1047,12 @@ run_cc_cli_exec() {
     fi
     if [[ "${inventory_intakt}" == "true" ]]; then
       log_error "DIAGNOSE: Alle Passwoerter korrekt im Inventory vorhanden."
-      log_error "Fehlerursache liegt vermutlich bei der Ziel-Policy des Dienstes"
-      log_error "(z.B. Keycloak password_policy), NICHT beim Passwort-Rendering."
+      if last_fatal_has_policy_signal "${ansible_log_file}"; then
+        log_error "Fehlerursache liegt vermutlich bei der Ziel-Policy des Dienstes"
+        log_error "(z.B. Keycloak password_policy), NICHT beim Passwort-Rendering."
+      else
+        log_error "Ursache im letzten Fehlerblock pruefen (Netzwerk, Helm-Repo, Chart-Version)."
+      fi
       log_error "Ansible-Log zur Analyse: ${ansible_log_file}"
     else
       log_error "DIAGNOSE: Mindestens ein Passwort wurde beim sed-Rendering"

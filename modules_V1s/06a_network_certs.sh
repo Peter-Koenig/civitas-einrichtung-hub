@@ -153,7 +153,8 @@ patch_playbook_urls() {
   for f in "${files[@]}"; do
     local fullpath="${CC_CLI_PLAYBOOK_DIR}/${f}"
     if [[ ! -f "${fullpath}" ]]; then
-      continue
+      log_error "Patch-Ziel fehlt: ${f} — Strukturänderung im Upstream-Repo (Tag v1.8.1) oder Pfad falsch"
+      exit 1
     fi
     # follow_redirects in role-mappings-Blöcken einfügen
     sed -i '/role-mappings\/clients/,/status_code:/{

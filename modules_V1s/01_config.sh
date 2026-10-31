@@ -67,8 +67,11 @@ ADMIN_EMAIL="${ADMIN_EMAIL:-admin@${DOMAIN_NAME}}"
 ADMIN_PASS="${ADMIN_PASS:?'ADMIN_PASS muss als Umgebungsvariable gesetzt sein'}"
 
 # ── cc-cli (CIVITAS/CORE GitLab Package Registry) ────────────────────────────
-CC_CLI_VERSION="1.5.0"
-ANSIBLE_VERSION="10.6.0"   # ansible-core 2.17.x, kompatibel mit cc-cli 1.5.0
+# Release-Kopplung: cc-cli-Version == Release-Version des gepinnten Plattform-Tags
+# (CC_V1_REPO_TAG). cc-cli 1.8.1 pinnt in seinen Requirements ansible==14.5.0
+# (ansible-core 2.21.x) — daher 1:1 übernehmen.
+CC_CLI_VERSION="1.8.1"
+ANSIBLE_VERSION="14.5.0"   # ansible-core 2.21.x, passend zu cc-cli 1.8.1
 CC_CLI_REGISTRY_URL="https://gitlab.com/api/v4/projects/62227605/packages/pypi/simple"
 CC_CLI_VENV_PATH="/opt/civitas-core-venv"
 # kubernetes-Python-Client: 37.0.0 entfernt den (von kubernetes.core genutzten)
@@ -105,7 +108,9 @@ CC_CLI_WORKDIR="/tmp/civitas-core-deploy"        # CWD für cc_cli validate/exec
 # ── Phase 2.0 — Repository ───────────────────────────────────────────────────
 CC_V1_REPO_URL="https://gitlab.com/civitas-connect/civitas-core/civitas-core-v1/civitas-core.git"
 CC_V1_REPO_PATH="/opt/civitas-core-v1"
-CC_V1_REPO_BRANCH="main"
+# Release-Pinning: auf einen Semver-Tag klonen (Default v1.8.1). "main" ist als
+# Wert weiterhin möglich (bewegliches Ziel -> Drift-Risiko), aber nicht Default.
+CC_V1_REPO_TAG="${CC_V1_REPO_TAG:-v1.8.1}"
 CC_CLI_PLAYBOOK_DIR="${CC_V1_REPO_PATH}/core_platform"   # Verzeichnis mit playbook.yml
 
 # ── V1s — Soft-Fork geoportal-components (statische Masterportal-Config) ─────
@@ -120,7 +125,9 @@ V1S_INSTANCE_NAME="Standard"                           # Instanzname, case-sensi
 V1S_IMAGE_TAG="${V1S_IMAGE_TAG:-v1s-local}"            # Lokaler Image-Tag (z. B. v1s-YYYY-MM-DD)
 V1S_IMAGE_REF="geoportal_backend:${V1S_IMAGE_TAG}"     # Vollständige Image-Referenz für Build + Import
 V1S_DOCKER_INSTALLED_BY_SCRIPT="false"                 # Laufzeit-Flag: Docker vom Skript installiert? (steuert Deinstallation)
-V1S_FORK_REF="${V1S_FORK_REF:-}"                       # optional: Soft-Fork auf Tag/Commit pinnen (leer = Branch-HEAD, ungepinnt)
+# Soft-Fork auf den Plattform-Tag pinnen (Default v1.8.1, konsistent zu
+# CC_V1_REPO_TAG und zum image_tag der default_inventory.yml v1.8.1).
+V1S_FORK_REF="${V1S_FORK_REF:-v1.8.1}"
 
 # ── Timeouts ─────────────────────────────────────────────────────────────────
 TIMEOUT_CC_CLI_EXEC=2700             # Sekunden für cc_cli exec (45 Min; Monitoring-Reaktivierung Turn 5 lädt zusätzliche Helm-Charts)
@@ -139,6 +146,27 @@ for _v in CC_API_MAX_RETRIES CC_DEPLOYMENT_MAX_RETRIES CC_EXEC_ATTEMPTS CC_EXEC_
   [[ "${!_v}" =~ ^[0-9]+$ ]] && (( ${!_v} >= 1 && ${!_v} <= 600 )) \
     || { echo "FEHLER: ${_v}='${!_v}' ungültig (Zahl 1..600)" >&2; exit 1; }
 done; unset _v
+
+# ── Egress-Preflight (Helm-Repos) ────────────────────────────────────────────
+# CC_EGRESS_CHECK: strict = Abbruch vor cc_cli validate/exec, warn = nur Warnung,
+# off = überspringen. Geprüft werden die Helm-Repo-URLs aus dem GEKLONTEN Stand
+# (core_platform/vars/software_references.yml, Feld helm_repo_url) — keine
+# hartkodierte Liste im Installer.
+CC_EGRESS_CHECK="${CC_EGRESS_CHECK:-strict}"
+case "${CC_EGRESS_CHECK}" in
+  strict|warn|off) : ;;
+  *) echo "FEHLER: CC_EGRESS_CHECK='${CC_EGRESS_CHECK}' ungültig (strict|warn|off)" >&2; exit 1 ;;
+esac
+
+# ── IPv4-Präferenz (Workaround gegen transient gestörte IPv6-Pfade zu GitHub Pages) ─
+# NET_PREFER_IPV4: auto = IPv6-Probe, bei Fehlschlag IPv4 bevorzugen; always = direkt;
+# never = unverändert. Umsetzung idempotent über /etc/gai.conf (precedence ::ffff:0:0/96),
+# kein Interface-IPv6-Disable, kein sysctl.
+NET_PREFER_IPV4="${NET_PREFER_IPV4:-auto}"
+case "${NET_PREFER_IPV4}" in
+  auto|always|never) : ;;
+  *) echo "FEHLER: NET_PREFER_IPV4='${NET_PREFER_IPV4}' ungültig (auto|always|never)" >&2; exit 1 ;;
+esac
 
 
 # ── PBS (Proxmox Backup Server) ──────────────────────────────────────────────

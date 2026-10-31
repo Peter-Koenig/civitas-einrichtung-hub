@@ -68,6 +68,24 @@ führt nur die Phasen 0–3 aus.
 **Swap muss deaktiviert sein.** Die Preflight-Phase prüft dies und bricht
 bei aktivem Swap mit einer Fehlermeldung ab.
 
+### 2b. Versionspolitik / Release-Pinning (V1s)
+
+Der V1s-Installer pinnt die CIVITAS/CORE-Quellen 1:1 auf den Release-Stand statt
+auf den beweglichen `main`-Branch. Alle Pins liegen zentral in `modules_V1s/01_config.sh`:
+
+| Variable | Default | Bedeutung |
+|---|---|---|
+| `CC_V1_REPO_TAG` | `v1.8.1` | Semver-Tag des CIVITAS/CORE-Repos. `main` ist als Wert möglich (Drift-Risiko), aber nicht Default. |
+| `CC_CLI_VERSION` | `1.8.1` | cc-cli-Paketversion. Regel: cc-cli-Version == Release-Version des gepinnten Tags. |
+| `ANSIBLE_VERSION` | `14.5.0` | `ansible`-Version, passend zu cc-cli 1.8.1 (ansible-core 2.21.x). |
+| `V1S_FORK_REF` | `v1.8.1` | Ref des geoportal-components-Soft-Forks (konsistent zum `image_tag` der `default_inventory.yml`). |
+| `CC_EGRESS_CHECK` | `strict` | Egress-Preflight für Helm-Repos: `strict` = Abbruch, `warn` = nur Warnung, `off` = überspringen. |
+| `NET_PREFER_IPV4` | `auto` | IPv4-Präferenz gegen transiente IPv6-Resets zu GitHub Pages: `auto` = Probe, `always` = direkt, `never` = aus. |
+
+`clone_civitas_repo()` klont mit `--branch <tag> --single-branch` und protokolliert den
+exakten Tag (`git describe --tags`). Bei einem Release-Wechsel sind `CC_V1_REPO_TAG`,
+`CC_CLI_VERSION`, `ANSIBLE_VERSION` und `V1S_FORK_REF` gemeinsam auf den neuen Stand zu heben.
+
 ### 3. Netzwerk-Abhängigkeiten
 
 Die externe Erreichbarkeit aller CIVITAS/CORE-Endpunkte basiert auf folgendem Aufbau:
