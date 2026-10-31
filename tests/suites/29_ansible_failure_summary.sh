@@ -51,4 +51,13 @@ check "d Exit 0 unter set -e"    "0"   "$?"
 d=$(grep '^E:' "$LOGBUF" | sed 's/^E:  //')
 check "d Fallback-Inhalt"        "yes" "$(printf '%s' "$d" | grep -q 'not valid json' && echo yes || echo no)"
 
+# (e) last_fatal_has_policy_signal: Policy-Signal vs. neutral (A4).
+mk_fatal_block "$T/policy.log" 'Keycloak password_policy violation'
+( last_fatal_has_policy_signal "$T/policy.log" >/dev/null 2>&1 ); rc=$?
+check "e Policy-Signal erkannt"   "0" "$rc"
+
+mk_fatal_block "$T/neutral.log" 'Error: looks like chart repository is not valid'
+( last_fatal_has_policy_signal "$T/neutral.log" >/dev/null 2>&1 ); rc=$?
+check "e neutraler Block nicht erkannt" "1" "$rc"
+
 rm -rf "$T"

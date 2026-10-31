@@ -20,8 +20,8 @@ export CC_CLI_VENV_PATH="$TEST_ROOT/stubs"
 export CC_EXEC_ATTEMPTS=2
 export CC_EXEC_RETRY_DELAY=0
 
-# shellcheck source=../../modules_V1/06_civitas.sh
-source "$REPO/modules_V1/06_civitas.sh"
+# shellcheck source=../../modules_V1s/06_civitas.sh
+source "$REPO/modules_V1s/06_civitas.sh"
 
 reset_state() {
   rm -rf "$T/playbook/logs" "$LOGBUF"
@@ -118,5 +118,16 @@ printf '%s\n' "$SC/l1.log" > "$SC/logfiles"
 printf '%s\n' "$SC/o1.txt" > "$SC/outfiles"
 out=$(run_cc_cli_exec 2>&1)
 check "T7 kein Secret auf Konsole" "no" "$(printf '%s' "$out" | grep -q 'TEST_SECRET_DO_NOT_USE' && echo yes || echo no)"
+
+# T8: connection reset by peer -> transient -> Retry (A3)
+reset_state
+SC="$T/s8"; mkdir -p "$SC"; export STUB_CONTROL="$SC"
+mk_fatal_block "$SC/l1.log" 'read: connection reset by peer'
+printf '' > "$SC/o1.txt"; printf '' > "$SC/o2.txt"
+printf '1\n0\n' > "$SC/rcs"
+printf '%s\n%s\n' "$SC/l1.log" "" > "$SC/logfiles"
+printf '%s\n%s\n' "$SC/o1.txt" "$SC/o2.txt" > "$SC/outfiles"
+( run_cc_cli_exec >/dev/null 2>&1 )
+check "T8 connection reset -> zwei Versuche" "2" "$(cat "$SC/count")"
 
 rm -rf "$T"
