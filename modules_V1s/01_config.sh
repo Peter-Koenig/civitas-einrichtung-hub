@@ -111,6 +111,16 @@ CC_V1_REPO_PATH="/opt/civitas-core-v1"
 # Release-Pinning: auf einen Semver-Tag klonen (Default v1.8.1). "main" ist als
 # Wert weiterhin möglich (bewegliches Ziel -> Drift-Risiko), aber nicht Default.
 CC_V1_REPO_TAG="${CC_V1_REPO_TAG:-v1.8.1}"
+# Commit-Pin zusätzlich zum Tag (ein Tag ist beweglich). Der volle SHA des
+# Default-Tags v1.8.1 wird nur für diesen Default gesetzt; bei anderen Tags
+# bleibt er leer (keine Prüfung), es sei denn, er wird explizit gesetzt.
+if [[ -z "${CC_V1_REPO_COMMIT+x}" ]]; then
+  if [[ "${CC_V1_REPO_TAG}" == "v1.8.1" ]]; then
+    CC_V1_REPO_COMMIT="e2f3c4d73cb74b9804f6ee7a727473d61995c9df"
+  else
+    CC_V1_REPO_COMMIT=""
+  fi
+fi
 CC_CLI_PLAYBOOK_DIR="${CC_V1_REPO_PATH}/core_platform"   # Verzeichnis mit playbook.yml
 
 # ── Patch-Ziele (relative zu CC_CLI_PLAYBOOK_DIR) ─────────────────────────────
@@ -142,6 +152,9 @@ V1S_DOCKER_INSTALLED_BY_SCRIPT="false"                 # Laufzeit-Flag: Docker v
 # Soft-Fork auf den Plattform-Tag pinnen (Default v1.8.1, konsistent zu
 # CC_V1_REPO_TAG und zum image_tag der default_inventory.yml v1.8.1).
 V1S_FORK_REF="${V1S_FORK_REF:-v1.8.1}"
+# Optionaler Commit-Pin des Soft-Forks (voller SHA). Leer = keine Prüfung;
+# der SHA wird nach dem ersten Testbuild aus dem Log ("Fork-Commit: …") eingetragen.
+V1S_FORK_COMMIT="${V1S_FORK_COMMIT:-}"
 
 # ── Timeouts ─────────────────────────────────────────────────────────────────
 TIMEOUT_CC_CLI_EXEC=2700             # Sekunden für cc_cli exec (45 Min; Monitoring-Reaktivierung Turn 5 lädt zusätzliche Helm-Charts)

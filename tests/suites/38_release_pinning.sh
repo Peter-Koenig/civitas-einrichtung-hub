@@ -50,6 +50,7 @@ done
 git -C "$REMOTE" add -A
 git -C "$REMOTE" commit -qm 'fixture v1.8.1'
 git -C "$REMOTE" tag v1.8.1
+PIN_SHA="$(git -C "$REMOTE" rev-parse 'v1.8.1^{commit}')"
 
 export CC_V1_REPO_URL="$REMOTE"
 export CC_V1_REPO_PATH="$T/repo"
@@ -105,6 +106,48 @@ export CC_V1_REPO_TAG="v1.8.2"
 ( clone_civitas_repo >/dev/null 2>&1 ); rc=$?
 check "Tag-Wechsel rc=0" "0" "$rc"
 check "describe v1.8.2" "yes" "$(grep -q 'CIVITAS/CORE-Stand: v1.8.2' "$LOGBUF" && echo yes || echo no)"
+
+# ── 5b) Commit-Pin (zusätzlich zum Tag) ─────────────────────────────────────
+export CC_V1_REPO_TAG=v1.8.1
+
+# 5b.1 Pin passt.
+export CC_V1_REPO_COMMIT="$PIN_SHA"
+( clone_civitas_repo >/dev/null 2>&1 ); rc=$?
+check "Pin passt -> rc=0" "0" "$rc"
+
+# 5b.2 Pin falsch -> rc=1 mit dem tatsächlichen SHA in der Meldung.
+export CC_V1_REPO_COMMIT="0000000000000000000000000000000000000000"
+: > "$LOGBUF"
+( clone_civitas_repo >/dev/null 2>&1 ); rc=$?
+check "Pin falsch -> rc=1" "1" "$rc"
+check "SHA in Pin-Meldung" "yes" "$(grep -q "$PIN_SHA" "$LOGBUF" && echo yes || echo no)"
+
+# 5b.3 Leerer Pin -> Warnung, ok.
+export CC_V1_REPO_COMMIT=""
+: > "$LOGBUF"
+( clone_civitas_repo >/dev/null 2>&1 ); rc=$?
+check "leerer Pin -> rc=0" "0" "$rc"
+check "Warnung Kein Commit-Pin" "yes" "$(grep -q 'Kein Commit-Pin' "$LOGBUF" && echo yes || echo no)"
+
+# 5b.4 Anderer Tag ohne Pin -> Warnung, ok.
+export CC_V1_REPO_TAG=v1.8.2
+export CC_V1_REPO_COMMIT=""
+: > "$LOGBUF"
+( clone_civitas_repo >/dev/null 2>&1 ); rc=$?
+check "anderer Tag ohne Pin -> rc=0" "0" "$rc"
+check "anderer Tag Warnung" "yes" "$(grep -q 'Kein Commit-Pin' "$LOGBUF" && echo yes || echo no)"
+
+# 5b.5 Tag auf dem Remote verschieben -> fetch (ohne --force) oder Pin bricht ab.
+printf 'moved\n' > "$REMOTE/core_platform/playbook.yml"
+git -C "$REMOTE" add -A
+git -C "$REMOTE" commit -qm 'move v1.8.1'
+git -C "$REMOTE" tag -f v1.8.1
+export CC_V1_REPO_TAG=v1.8.1
+export CC_V1_REPO_COMMIT="$PIN_SHA"
+: > "$LOGBUF"
+( clone_civitas_repo >/dev/null 2>&1 ); rc=$?
+check "verschobener Tag -> Abbruch" "1" "$rc"
+check "Abbruch-Meldung fetch/Pin" "yes" "$(grep -q -e 'git fetch --tags fehlgeschlagen' -e 'Commit-Pin verletzt' "$LOGBUF" && echo yes || echo no)"
 
 # ── 6) Statisch: Patch-Funktionen nutzen das gemeinsame Array ────────────────
 check "patch_playbook_urls nutzt Array" "yes" "$(grep -q 'CIVITAS_PATCH_TARGETS' "$REPO/modules_V1s/06a_network_certs.sh" && echo yes || echo no)"

@@ -368,6 +368,17 @@ clone_civitas_repo() {
       || { log_error "git clone fehlgeschlagen: ${CC_V1_REPO_URL} (Ref ${CC_V1_REPO_TAG})"; return 1; }
   fi
 
+  # Commit-Pin prüfen (zusätzlich zum Tag; verhindert stilles Driften bei
+  # verschobenem Tag). head_sha wird prefix-vergleichen, damit auch ein
+  # abgekürzter Pin akzeptiert wird.
+  local head_sha
+  head_sha="$(git -C "${CC_V1_REPO_PATH}" rev-parse HEAD 2>/dev/null || echo '')"
+  if [[ -n "${CC_V1_REPO_COMMIT:-}" && "${head_sha}" != "${CC_V1_REPO_COMMIT}"* ]]; then
+    log_error "Commit-Pin verletzt: ${CC_V1_REPO_TAG} zeigt auf ${head_sha}, erwartet ${CC_V1_REPO_COMMIT} (Tag verschoben?)"
+    return 1
+  fi
+  [[ -n "${CC_V1_REPO_COMMIT:-}" ]] || log_warn "Kein Commit-Pin: Stand ${head_sha} nicht gegen ein Soll geprueft"
+
   # Gepinnten Stand protokollieren (Tag exakt bzw. Commit-SHA).
   local describe_out
   describe_out="$(git -C "${CC_V1_REPO_PATH}" describe --tags --exact-match 2>/dev/null || true)"

@@ -149,6 +149,16 @@ build_geoportal_backend_image() {
   fi
 
   log "Fork-Commit: $(git -C "${V1S_FORK_PATH}" rev-parse HEAD 2>/dev/null || echo '?')"
+
+  # Commit-Pin prüfen (zusätzlich zu V1S_FORK_REF). head_sha wird prefix-vergleichen.
+  local fork_head_sha
+  fork_head_sha="$(git -C "${V1S_FORK_PATH}" rev-parse HEAD 2>/dev/null || echo '')"
+  if [[ -n "${V1S_FORK_COMMIT:-}" && "${fork_head_sha}" != "${V1S_FORK_COMMIT}"* ]]; then
+    log_error "Fork-Commit-Pin verletzt: ${V1S_FORK_REF} zeigt auf ${fork_head_sha}, erwartet ${V1S_FORK_COMMIT} (Ref verschoben?)"
+    return 1
+  fi
+  [[ -n "${V1S_FORK_COMMIT:-}" ]] || log_warn "Kein Fork-Commit-Pin: Stand ${fork_head_sha} nicht gegen ein Soll geprueft"
+
   log_ok "Soft-Fork-Klon bereit: ${V1S_FORK_PATH}"
 
   # ── 2. Instanzverzeichnis umbenennen ────────────────────────────────────
