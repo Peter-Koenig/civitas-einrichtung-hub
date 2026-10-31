@@ -9,6 +9,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 T=$(mktemp -d)
 LOGBUF="$T/console.log"
 ORDER="$T/order.log"
+PATCH_ORDER="$T/patch_order.log"
 
 log()      { echo "L:$*" >> "$LOGBUF"; }
 log_ok()   { echo "O:$*" >> "$LOGBUF"; }
@@ -30,12 +31,13 @@ clone_civitas_repo() { :; }
 check_helm_repo_egress() { :; }
 build_geoportal_backend_image() { :; }
 apply_overlay() { :; }
+apply_patches() { echo "APPLY_PATCHES" >> "$PATCH_ORDER"; }
 patch_masterportal_release_name() { :; }
 install_cc_cli() { :; }
 verify_k8s_import() { :; }
 render_inventory() { :; }
 setup_wireguard() { :; }
-patch_playbook_urls() { :; }
+patch_playbook_urls() { echo "PATCH_URLS" >> "$PATCH_ORDER"; }
 cleanup_geodata_ingress() { :; }
 run_cc_cli_validate() { :; }
 run_cc_cli_exec() { :; }
@@ -55,6 +57,7 @@ rc=$?
 check "IDM-Fehler -> rc=1" "1" "$rc"
 check "write_le_backup VOR IDM" "WRITE_BACKUP" "$(head -1 "$ORDER")"
 check "IDM wurde aufgerufen" "yes" "$(grep -q 'IDM' "$ORDER" && echo yes || echo no)"
+check "apply_patches vor patch_playbook_urls" "APPLY_PATCHES PATCH_URLS" "$(tr '\n' ' ' < "$PATCH_ORDER" | sed 's/ $//')"
 
 # ── run_preflight-Reihenfolge: apply_ipv4_preference nach check_tools ────────
 # run_preflight wird extrahiert (03_preflight.sh setzt set -euo pipefail beim

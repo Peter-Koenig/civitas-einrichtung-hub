@@ -90,6 +90,23 @@ auf den beweglichen `main`-Branch. Alle Pins liegen zentral in `modules_V1s/01_c
 exakten Tag (`git describe --tags`). Bei einem Release-Wechsel sind `CC_V1_REPO_TAG`,
 `CC_CLI_VERSION`, `ANSIBLE_VERSION` und `V1S_FORK_REF` gemeinsam auf den neuen Stand zu heben.
 
+### 2c. Patches auf den gepinnten Upstream-Stand (V1s)
+
+Unversionierte Änderungen am geklonten CIVITAS/CORE-Stand liegen als `git apply`-Patches
+in `patches_V1s/` und werden von `apply_patches()` angewendet (in `install_civitas()` nach
+`apply_overlay`, vor `patch_playbook_urls`). Passt ein Patch nicht (z. B. weil der
+Upstream-Tag sich geändert hat), bricht der Installer hart ab — kein stilles Driften.
+
+Aktueller Patch:
+
+- `0001-geoserver-wait-after-admin-password.patch` — fügt nach „GeoServer: Set admin
+  password for GeoServer“ einen `ansible.builtin.wait_for: timeout: 10` ein. Hintergrund:
+  GeoServer übernimmt ein per REST gesetztes Admin-Passwort für Logins erst nach dem
+  nächsten Reload des Benutzerspeichers. Empirisch (Messung 31.10.2026, GeoServer 3.0.1)
+  wird das neue Passwort mind. ca. 2,8 s lang abgelehnt (HTTP 401); der Datei-Watcher
+  meldet den Reload 3–4 s nach dem Speichern. `10 s` ist ein ca. 2,5-facher
+  Sicherheitsabstand, kein dokumentierter GeoServer-Wert.
+
 ### 3. Netzwerk-Abhängigkeiten
 
 Die externe Erreichbarkeit aller CIVITAS/CORE-Endpunkte basiert auf folgendem Aufbau:

@@ -293,4 +293,58 @@ printf '%s\n%s\n' "$SC/o1.txt" "$SC/o2.txt" > "$SC/outfiles"
 ( run_cc_cli_exec >/dev/null 2>&1 )
 check "T17b Sammler-Fehler -> trotzdem zwei Versuche" "2" "$(cat "$SC/count")"
 
+# ── Turn 13 Teil B/C: Performance, einzeiliges JSON, ignorierter Fatal, Ursachenzeile ──
+NF404='Status code was 404 and not [204]'
+TR_RE='status code was 5[0-9][0-9]|www_authenticate[^a-z]*basic realm=[^a-z]*geoserver realm'
+GEO_RE='www_authenticate[^a-z]*basic realm=[^a-z]*geoserver realm'
+
+# T18 (Turn 13 B): fatal_stats/last_fatal_matches auf 120k-Zeilen-Log unter 10 s.
+reset_state
+BIG="$T/big.log"
+{ seq 1 120000 | sed 's/.*/preamble line/'; } > "$BIG"
+mk_geo401 "$T/geo.fatal"
+cat "$T/geo.fatal" >> "$BIG"
+t0=$(date +%s)
+stats="$(fatal_stats "$BIG" "$NF404" "$TR_RE")"
+t1=$(date +%s)
+el=$((t1 - t0))
+check "T18 fatal_stats 120k -> 1 0 1" "1 0 1" "$stats"
+check "T18 fatal_stats < 10s" "yes" "$([[ $el -le 10 ]] && echo yes || echo no)"
+t0=$(date +%s)
+last_fatal_matches "$BIG" "$GEO_RE"; lmrc=$?
+t1=$(date +%s)
+el=$((t1 - t0))
+check "T18 last_fatal_matches findet geo401" "0" "$lmrc"
+check "T18 last_fatal_matches < 10s" "yes" "$([[ $el -le 10 ]] && echo yes || echo no)"
+
+# T19 (Turn 13 B): einzeiliges JSON + 50k Zeilen danach -> terminiert, Ergebnis korrekt.
+reset_state
+printf '%s\n' 'fatal: [localhost]: FAILED! => {"msg": "Status code was 401 and not [200]: HTTP Error 401: ", "www_authenticate": "Basic realm=\"GeoServer Realm\""}' > "$T/single.log"
+seq 1 50000 | sed 's/.*/after line/' >> "$T/single.log"
+stats="$(fatal_stats "$T/single.log" "$NF404" "$TR_RE")"
+check "T19 einzeiliges JSON -> 1 0 1" "1 0 1" "$stats"
+
+# T20 (Turn 13 B): ignorierter Fatal vor echtem Fatal -> Zaehlung unveraendert.
+reset_state
+mk_fatal_block "$T/ign.log" 'some error that should be ignored'
+printf '...ignoring\n' >> "$T/ign.log"
+mk_geo401 "$T/geo2.fatal"
+cat "$T/geo2.fatal" >> "$T/ign.log"
+stats="$(fatal_stats "$T/ign.log" "$NF404" "$TR_RE")"
+check "T20 ignorierter Fatal zaehlt nicht -> 1 0 1" "1 0 1" "$stats"
+
+# T21 (Turn 13 C): Ursachenzeile enthaelt msg(401) + url, nicht die cc_cli-Fusszeile.
+reset_state
+SC="$T/s21"; mkdir -p "$SC"; export STUB_CONTROL="$SC"
+mk_geo401 "$SC/l1.log"
+printf 'Logs saved at: /tmp/foo\n' > "$SC/o1.txt"
+printf '' > "$SC/o2.txt"
+printf '1\n0\n' > "$SC/rcs"
+printf '%s\n%s\n' "$SC/l1.log" "" > "$SC/logfiles"
+printf '%s\n%s\n' "$SC/o1.txt" "$SC/o2.txt" > "$SC/outfiles"
+( run_cc_cli_exec >/dev/null 2>&1 )
+check "T21 Ursache enthaelt 401" "yes" "$(grep -q 'Ursache:.*401' "$LOGBUF" && echo yes || echo no)"
+check "T21 Ursache enthaelt URL" "yes" "$(grep -q 'geoportal.example.org/geoserver/rest/security/authfilters' "$LOGBUF" && echo yes || echo no)"
+check "T21 Ursache ohne cc_cli-Fusszeile" "no" "$(grep -q 'Ursache:.*Logs saved at' "$LOGBUF" && echo yes || echo no)"
+
 rm -rf "$T"

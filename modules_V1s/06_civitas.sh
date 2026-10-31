@@ -44,6 +44,29 @@
 CC_CLI_VENV_PATH="${CC_CLI_VENV_PATH:-/opt/civitas-core-venv}"
 
 
+# ── Schritt 2.1b: Patches_V1s anwenden ──────────────────────────────────────
+# Wendet unversionierte Patches auf den GEKLONTEN Stand an. Ein Patch muss auf
+# der unveraenderten Upstream-Datei laufen; deshalb Aufruf NACH apply_overlay,
+# aber VOR patch_masterportal_release_name/patch_playbook_urls (die per sed
+# dieselben Dateien aendern). Harte Abbruch, wenn ein Patch nicht passt
+# (Upstream geaendert), kein stilles Driften.
+apply_patches() {
+  local dir="${SCRIPT_DIR}/patches_V1s" p
+  [[ -d "${dir}" ]] || { log "Keine Patches (${dir})"; return 0; }
+  for p in "${dir}"/*.patch; do
+    [[ -f "${p}" ]] || continue
+    if git -C "${CC_V1_REPO_PATH}" apply --check "${p}" 2>/dev/null; then
+      git -C "${CC_V1_REPO_PATH}" apply "${p}" && log_ok "Patch angewendet: $(basename "${p}")"
+    elif git -C "${CC_V1_REPO_PATH}" apply --check -R "${p}" 2>/dev/null; then
+      log "Patch bereits angewendet: $(basename "${p}")"
+    else
+      log_error "Patch $(basename "${p}") passt nicht auf den Stand ${CC_V1_REPO_TAG} (Upstream geaendert?) - Abbruch"
+      exit 1
+    fi
+  done
+}
+
+
 # ── Hauptfunktion (aufgerufen vom Entry-Point) ────────────────────────────────
 install_civitas() {
   log "=== Phase 2: CIVITAS/CORE-Plattform ==="
@@ -52,6 +75,7 @@ install_civitas() {
   check_helm_repo_egress           # Schritt 2.0c: Egress-Preflight (Helm-Repos)
   build_geoportal_backend_image   # Schritt 2.0b: V1s — Portal-Backend-Image bauen und in containerd importieren
   apply_overlay
+  apply_patches                   # Schritt 2.1b: patches_V1s (vor sed-Patches)
   patch_masterportal_release_name
   install_cc_cli
   verify_k8s_import
@@ -816,53 +840,59 @@ run_cc_cli_validate() {
 #   T = davon, die ein transientes Muster (ERE) enthalten
 # Ein fatal:-Eintrag gilt als ignoriert, wenn er bis zum nächsten "fatal: ["
 # die Markierung "...ignoring" enthält (Ansible ignore_errors).
-fatal_stats() {
-  local log_file="$1" notfound="$2" transient="$3"
-  [[ -f "${log_file}" ]] || { echo "0 0 0"; return 0; }
-  awk -v nf="${notfound}" -v tr="${transient}" '
-    BEGIN { n = 0; m = 0; t = 0 }
-    /fatal: \[/ {
+
+# Gemeinsame awk-Scan-Funktion für fatal-Blöcke (performant, Turn 13 Teil B).
+# mode=stats -> "N M T"; mode=last -> letzter nicht-ignorierter fatal-Block (roh).
+# Zeilen VOR dem ersten "fatal: [" werden nicht angehängt (verhindert das
+# quadratische Verhalten bei grossen Logs). Ein Block wird nur bis zur
+# schliessenden "}" am Zeilenanfang gesammelt; einzeiliges JSON (fatal-Zeile
+# endet mit "}") gilt sofort als geschlossen. Harte Obergrenze 400 Zeilen.
+# "...ignoring" wird auf ALLEN Zeilen bis zum nächsten "fatal: [" geprüft.
+_fatal_scan() {
+  local log_file="$1" mode="$2" nf="${3:-}" tr="${4:-}"
+  [[ -f "${log_file}" ]] || { if [[ "$mode" == "last" ]]; then return 1; else echo "0 0 0"; return 0; fi; }
+  awk -v mode="${mode}" -v nf="${nf}" -v tr="${tr}" '
+    function finish(blk) {
       if (have && !ignored) {
         n++
-        if (index(block, nf) > 0) m++
-        if (tolower(block) ~ tr) t++
+        if (index(blk, nf) > 0) m++
+        if (tolower(blk) ~ tr) t++
+        last = blk
       }
-      have = 1; ignored = 0; block = $0; next
     }
+    BEGIN { n = 0; m = 0; t = 0; have = 0; ignored = 0; closed = 0; lines = 0; block = ""; last = "" }
+    /fatal: \[/ {
+      finish(block)
+      have = 1; ignored = 0; closed = 0; lines = 1; block = $0
+      if ($0 ~ /[}]$/) closed = 1
+      next
+    }
+    !have { next }
     {
-      block = block "\n" $0
+      if (!closed && lines < 400) {
+        block = block "\n" $0
+        lines++
+        if ($0 ~ /^[}]/) closed = 1
+      }
       if (/\.\.\.ignoring/) ignored = 1
     }
     END {
-      if (have && !ignored) {
-        n++
-        if (index(block, nf) > 0) m++
-        if (tolower(block) ~ tr) t++
-      }
-      print n, m, t
+      finish(block)
+      if (mode == "last") { print last } else { print n, m, t }
     }
-  ' "${log_file}" 2>/dev/null || { echo "0 0 0"; return 0; }
+  ' "${log_file}" 2>/dev/null
+}
+
+fatal_stats() {
+  local log_file="$1" notfound="$2" transient="$3"
+  _fatal_scan "${log_file}" stats "${notfound}" "${transient}" || echo "0 0 0"
 }
 
 # Prüft, ob der LETZTE nicht-ignorierte fatal:-Block im Ansible-Log Passwort-/Policy-
 # Signale enthält (für die DIAGNOSE-Ausgabe). Exit 0 = ja, 1 = nein (oder kein Block).
 last_fatal_has_policy_signal() {
   local log_file="$1" last_block
-  [[ -f "${log_file}" ]] || return 1
-  last_block="$(awk '
-    /fatal: \[/ {
-      if (have && !ignored) last = block
-      have = 1; ignored = 0; block = $0; next
-    }
-    {
-      block = block "\n" $0
-      if (/\.\.\.ignoring/) ignored = 1
-    }
-    END {
-      if (have && !ignored) last = block
-      print last
-    }
-  ' "${log_file}" 2>/dev/null)"
+  last_block="$(_fatal_scan "${log_file}" last)" || return 1
   [[ -n "${last_block}" ]] || return 1
   grep -Eiq 'password|policy|credentials|invalid_user_credentials' <<< "${last_block}"
 }
@@ -871,21 +901,7 @@ last_fatal_has_policy_signal() {
 # (ERE, kleingeschrieben) enthält. Exit 0 = ja, 1 = nein (oder kein Block).
 last_fatal_matches() {
   local log_file="$1" ere="$2" last_block
-  [[ -f "${log_file}" ]] || return 1
-  last_block="$(awk '
-    /fatal: \[/ {
-      if (have && !ignored) last = block
-      have = 1; ignored = 0; block = $0; next
-    }
-    {
-      block = block "\n" $0
-      if (/\.\.\.ignoring/) ignored = 1
-    }
-    END {
-      if (have && !ignored) last = block
-      print last
-    }
-  ' "${log_file}" 2>/dev/null)"
+  last_block="$(_fatal_scan "${log_file}" last)" || return 1
   [[ -n "${last_block}" ]] || return 1
   grep -Eiq "${ere}" <<< "${last_block}"
 }
@@ -1066,14 +1082,34 @@ log_ansible_log_metadata() {
   log "Ansible-Log lokal vorhanden: ${log_file} (${lines} Zeilen)"
 }
 
-# Letzte nicht-leere Zeile eines Logs, geschwaerzt und auf 300 Zeichen gekuerzt.
+# Ursachenzeile für den Retry-Pfad: msg + url des letzten nicht-ignorierten
+# fatal-Blocks (aus dem Ansible-Log), jeweils geschwaerzt und auf 300 Zeichen
+# gekuerzt. Nur wenn kein fatal-Block existiert (Absturz/Timeout), Rueckgriff auf
+# das raw_file, unter Ausschluss der cc_cli-Fusszeilen.
 _local_cause_line() {
-  local file="$1" line
-  [[ -f "${file}" ]] || return 0
-  line="$(grep -Ev '^[[:space:]]*$' "${file}" 2>/dev/null | tail -1 || true)"
+  local log_file="$1" raw_file="$2" block msg url line
+  local redact='s#(pass[[:alnum:]_]*|token|secret[[:alnum:]_]*|authorization|api[ _-]?key)[[:space:]]*[=:][[:space:]]*[^[:space:],;}]+#\1=****#gI'
+  if [[ -f "${log_file}" ]]; then
+    block="$(_fatal_scan "${log_file}" last)" || block=""
+  fi
+  if [[ -n "${block}" ]]; then
+    msg="$(printf '%s' "${block}" | sed -n 's/.*"msg"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+    url="$(printf '%s' "${block}" | sed -n 's/.*"url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+    msg="$(printf '%s' "${msg}" | sed -E "${redact}" | cut -c1-300)"
+    url="$(printf '%s' "${url}" | sed -E "${redact}" | cut -c1-300)"
+    if [[ -n "${msg}" && -n "${url}" ]]; then
+      printf '%s (%s)' "${msg}" "${url}"
+    elif [[ -n "${msg}" ]]; then
+      printf '%s' "${msg}"
+    else
+      # msg/url nicht extrahierbar: gekuerzten Block (geschwaerzt) zurueckgeben.
+      printf '%s' "${block}" | sed -E "${redact}" | cut -c1-300
+    fi
+    return 0
+  fi
+  line="$(grep -Ev '^[[:space:]]*$|Logs saved at|Execution time|^PLAY RECAP' "${raw_file}" 2>/dev/null | tail -1 || true)"
   [[ -n "${line}" ]] || return 0
-  line="$(printf '%s' "${line}" | sed -E 's#(pass[[:alnum:]_]*|token|secret[[:alnum:]_]*|authorization|api[ _-]?key)[[:space:]]*[=:][[:space:]]*[^[:space:],;}]+#\1=****#gI')"
-  printf '%s' "${line}" | cut -c1-300
+  printf '%s' "${line}" | sed -E "${redact}" | cut -c1-300
 }
 
 # ── GeoServer-Authentifizierungsdiagnose (Teil B) ────────────────────────────
@@ -1218,7 +1254,7 @@ run_cc_cli_exec() {
 
     if [[ "${transient}" == "true" && ${attempt} -lt ${CC_EXEC_ATTEMPTS} ]]; then
       local cause
-      cause="$(_local_cause_line "${raw_file}")"
+      cause="$(_local_cause_line "${ansible_log_file}" "${raw_file}")"
       if [[ "${geo_401}" == "true" ]]; then
         log_warn "cc_cli exec: GeoServer lehnte die Anmeldung ab (401, Versuch ${attempt}/${CC_EXEC_ATTEMPTS}) - moeglicherweise Zeitfenster nach der Passwortaenderung; wiederhole mit demselben Inventory"
       else

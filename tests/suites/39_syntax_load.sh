@@ -48,7 +48,7 @@ done
   # shellcheck disable=SC1090,SC1091
   source "$REPO/modules_V1s/06_civitas.sh"
   declare -F request_fresh_prod_certificates patch_playbook_urls verify_certificates >/dev/null
-  declare -F clone_civitas_repo install_civitas check_helm_repo_egress >/dev/null
+  declare -F clone_civitas_repo install_civitas check_helm_repo_egress apply_patches >/dev/null
 ); rc=$?
 check "06a/06_civitas definieren Kernfunktionen" "0" "$rc"
 
