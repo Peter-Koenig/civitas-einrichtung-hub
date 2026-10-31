@@ -18,8 +18,8 @@
 #
 # Läuft auf dem Proxmox-Host ODER in der Ziel-VM:
 #   - Auf dem Proxmox-Host: VM provisionieren (Phase -1), dann automatischer
-#     SSH-Hop in die VM (scp + ssh) für Phasen 0–2
-#   - In der Ziel-VM: CIVITAS_CONTEXT=vm → Phasen 0–2 ohne VM-Provisionierung
+#     SSH-Hop in die VM (scp + ssh) für Phasen 0–3
+#   - In der Ziel-VM: CIVITAS_CONTEXT=vm → Phasen 0–3 ohne VM-Provisionierung
 #
 # Siehe: skriptarchitektur.md (V1), installationsphasen-und-abnahme.md (V1)
 #

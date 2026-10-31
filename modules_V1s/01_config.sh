@@ -14,8 +14,8 @@
 # limitations under the Licence.
 # ──────────────────────────────────────────────────────────────────────────────
 # 01_config.sh — CIVITAS/CORE Installationsskript: Konfiguration
-# Alle konfigurierbaren Parameter zentral definiert. Kein anderes Modul
-# enthält hartcodierte Werte.
+# Alle konfigurierbaren Parameter zentral definiert. Ausnahme: hartcodierte
+# Download-URLs und die Prometheus-Operator-CRD-Version in 05_addons.sh.
 # ──────────────────────────────────────────────────────────────────────────────
 
 # ── Versionspinning ──────────────────────────────────────────────────────────
@@ -157,7 +157,7 @@ V1S_FORK_REF="${V1S_FORK_REF:-v1.8.1}"
 V1S_FORK_COMMIT="${V1S_FORK_COMMIT:-}"
 
 # ── Timeouts ─────────────────────────────────────────────────────────────────
-TIMEOUT_CC_CLI_EXEC=2700             # Sekunden für cc_cli exec (45 Min; Monitoring-Reaktivierung Turn 5 lädt zusätzliche Helm-Charts)
+TIMEOUT_CC_CLI_EXEC=2700             # Sekunden für cc_cli exec (45 Min; das Monitoring aktiviert zusätzliche Helm-Charts)
 TIMEOUT_POD_READY=300               # Sekunden für kubectl wait
 
 # Wartezeit/Wiederholung für cc_cli exec (per .env überschreibbar)
@@ -260,8 +260,8 @@ CERT_BACKUP_HOST_FILE="${CERT_BACKUP_HOST_FILE:-${HOME}/le-certs-backup.yaml}"
 # ── Credentials-Ausgabe ─────────────────────────────────────────────────────
 CREDENTIALS_OUTPUT_PATH="${CREDENTIALS_OUTPUT_PATH:-/root/civitas-install/credentials.env}"
 # Zielpfad für automatisch generierte Dienst-Passwörter (chmod 600).
-# Darf NICHT im CC_CLI_PLAYBOOK_DIR liegen, da dieses nach cc_cli exec
-# bereinigt wird.
+# Darf NICHT im CC_CLI_PLAYBOOK_DIR liegen (getrennte Ablage von Inventory
+# und Credentials).
 
 # ROOT_PASSWORD optional. Wenn gesetzt, wird es nach dem SSH-Zugang per stdin
 # (chpasswd) in der VM gesetzt, NICHT per qm set --cipassword. Nie hartcoden.

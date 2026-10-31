@@ -608,7 +608,7 @@ patch_masterportal_release_name() {
 
 # ── Schritt 2.2: Inventory aus Template erzeugen ──────────────────────────────
 # cc_cli erwartet die Datei als cc_cli_inventory.yml im CWD (kein --inventory-Flag).
-# Die Datei enthält Secrets im Klartext; der EXIT-Trap im Entry-Point loescht sie.
+# Die Datei enthält Secrets im Klartext; wird mit Modus 600 geschrieben (kein automatisches Löschen).
 render_inventory() {
   log "Erzeuge Inventory aus Template …"
 
