@@ -206,6 +206,7 @@ run_in_vm() {
   fi
 
   log "Starte Installation in der VM (SSH-Hop) …"
+  local ssh_exit=0
   ssh "${VM_SSH_OPTS[@]}" \
       "root@${VM_IP_STATIC}" \
       "CIVITAS_CONTEXT=vm CIVITAS_DEBUG=${CIVITAS_DEBUG:-false} bash -lc '
@@ -216,8 +217,8 @@ run_in_vm() {
           set +a
         fi
         ./install_civitas_core_V1s.sh
-      '"
-  local ssh_exit=$?
+      '" \
+    || ssh_exit=$?
 
   # LE-Zertifikats-Backup VOR der SSH-Exitcode-Auswertung zurückholen, damit
   # ein in der VM bereits geschriebenes Backup auch im Fehlerfall gesichert
