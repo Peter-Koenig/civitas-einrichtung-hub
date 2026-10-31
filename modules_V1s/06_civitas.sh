@@ -390,15 +390,42 @@ check_helm_repo_egress() {
   fi
 
   local refs_file="${CC_V1_REPO_PATH:-}/core_platform/vars/software_references.yml"
+  local rc=0 err_file urls
+
+  # Konfigurationsprobleme (Datei fehlt, yq-Fehler, leere Liste) werden nach
+  # CC_EGRESS_CHECK behandelt: strict -> harter Abbruch, warn -> nur Warnung.
   if [[ ! -f "${refs_file}" ]]; then
+    if [[ "${CC_EGRESS_CHECK:-strict}" == "strict" ]]; then
+      log_error "software_references.yml nicht gefunden: ${refs_file} — Egress-Check kann nicht laufen"
+      exit 1
+    fi
     log_warn "software_references.yml nicht gefunden: ${refs_file} — Egress-Check übersprungen"
     return 0
   fi
 
-  local urls
-  urls="$(yq -r '.. | objects | select(has("helm_repo_url")) | .helm_repo_url' "${refs_file}" 2>/dev/null \
-    | grep -v '^[[:space:]]*$' | sed 's#/$##' | sort -u)"
+  # Filter: mikefarah-yq (tag == "!!map" statt jq-`objects`). stderr getrennt
+  # erfassen, damit ein yq-Fehler nicht durch set -e pipefail verschluckt wird.
+  err_file="$(mktemp)"
+  urls="$(yq -r '.. | select(tag == "!!map") | select(has("helm_repo_url")) | .helm_repo_url' "${refs_file}" 2>"${err_file}")" || rc=$?
+  if (( rc != 0 )); then
+    if [[ "${CC_EGRESS_CHECK:-strict}" == "strict" ]]; then
+      log_error "yq-Filter fehlgeschlagen (rc=${rc}): $(head -c 300 "${err_file}")"
+      rm -f "${err_file}"
+      exit 1
+    fi
+    log_warn "yq-Filter fehlgeschlagen (rc=${rc}): $(head -c 300 "${err_file}")"
+    rm -f "${err_file}"
+    return 0
+  fi
+  rm -f "${err_file}"
+
+  # Normalisieren + deduplizieren; grep -v darf bei leerer Eingabe nicht abbrechen.
+  urls="$(printf '%s\n' "${urls}" | sed 's#/$##' | { grep -v '^[[:space:]]*$' || true; } | sort -u)"
   if [[ -z "${urls}" ]]; then
+    if [[ "${CC_EGRESS_CHECK:-strict}" == "strict" ]]; then
+      log_error "Keine helm_repo_url in ${refs_file} gefunden (Schema-/Filterproblem) — Egress-Check kann nicht laufen"
+      exit 1
+    fi
     log_warn "Keine helm_repo_url in ${refs_file} gefunden — Egress-Check übersprungen"
     return 0
   fi

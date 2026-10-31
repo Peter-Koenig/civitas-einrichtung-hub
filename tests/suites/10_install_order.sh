@@ -27,6 +27,8 @@ source "$REPO/modules_V1s/06_civitas.sh"
 # überschreiben sie die realen Definitionen bzw. ergänzen ausgelagerte Module).
 check_dns_hard() { :; }
 clone_civitas_repo() { :; }
+apply_ipv4_preference() { :; }
+check_helm_repo_egress() { :; }
 build_geoportal_backend_image() { :; }
 apply_overlay() { :; }
 patch_masterportal_release_name() { :; }

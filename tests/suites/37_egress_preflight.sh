@@ -21,7 +21,11 @@ cat > "$STUBS/yq" <<'YQ'
 #!/usr/bin/env bash
 case "$*" in
   *helm_repo_url*)
-    printf 'https://charts.jetstack.io/\nhttps://helm.runix.net/\n'
+    case "${YQ_MODE:-ok}" in
+      ok)    printf 'https://charts.jetstack.io/\nhttps://helm.runix.net/\n' ;;
+      empty) : ;;
+      error) echo "yq: Error: unknown operator 'objects'" >&2; exit 1 ;;
+    esac
     ;;
 esac
 exit 0
@@ -78,6 +82,57 @@ export CC_EGRESS_CHECK=off
 : > "$LOGBUF"
 check_helm_repo_egress >/dev/null 2>&1
 check "off übersprungen" "yes" "$(grep -q 'übersprungen' "$LOGBUF" && echo yes || echo no)"
+
+# ── F1: yq-Fehler / leere Liste / fehlende Datei ────────────────────────────
+export CC_EGRESS_CHECK=strict
+export YQ_MODE=error
+( check_helm_repo_egress >/dev/null 2>&1 ); rc=$?
+check "F1 yq-Fehler strict -> rc=1" "1" "$rc"
+
+export CC_EGRESS_CHECK=warn
+export YQ_MODE=error
+( check_helm_repo_egress >/dev/null 2>&1 ); rc=$?
+check "F1 yq-Fehler warn -> rc=0" "0" "$rc"
+
+export CC_EGRESS_CHECK=strict
+export YQ_MODE=empty
+( check_helm_repo_egress >/dev/null 2>&1 ); rc=$?
+check "F1 leere Liste strict -> rc=1" "1" "$rc"
+
+export CC_EGRESS_CHECK=warn
+export YQ_MODE=empty
+( check_helm_repo_egress >/dev/null 2>&1 ); rc=$?
+check "F1 leere Liste warn -> rc=0" "0" "$rc"
+
+export CC_EGRESS_CHECK=strict
+export YQ_MODE=ok
+rm -f "$CC_V1_REPO_PATH/core_platform/vars/software_references.yml"
+( check_helm_repo_egress >/dev/null 2>&1 ); rc=$?
+check "F1 fehlende Datei strict -> rc=1" "1" "$rc"
+
+export CC_EGRESS_CHECK=warn
+( check_helm_repo_egress >/dev/null 2>&1 ); rc=$?
+check "F1 fehlende Datei warn -> rc=0" "0" "$rc"
+touch "$CC_V1_REPO_PATH/core_platform/vars/software_references.yml"
+
+# ── Echter mikefarah-yq gegen eine strukturell echte Fixture ───────────────
+if yq --version 2>/dev/null | grep -q mikefarah; then
+  cat > "$T/fixture.yml" <<'FIX'
+software:
+  stack_op:
+    pgadmin:
+      helm_repo_url: https://helm.runix.net/
+    velero:
+      helm_repo_url: https://vmware-tanzu.github.io/helm-charts
+  stack_access:
+    apisix:
+      helm_repo_url: https://apache.github.io/apisix-helm-chart
+FIX
+  out="$(yq -r '.. | select(tag == "!!map") | select(has("helm_repo_url")) | .helm_repo_url' "$T/fixture.yml" 2>/dev/null | sort -u)"
+  check "F1 echter yq-Filter liefert 3 URLs" "3" "$(printf '%s' "$out" | grep -c '^https')"
+else
+  echo "SKIP: kein mikefarah-yq im Testumfeld (sdt hat Python-yq) — echter-yq-Filter-Test entfällt"
+fi
 
 # ── apply_ipv4_preference (GAI_CONF auf Temp-Pfad) ────────────────────────────
 export GAI_CONF="$T/gai.conf"
