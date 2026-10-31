@@ -141,17 +141,11 @@ setup_wireguard() {
 # Ohne diesen Patch scheitern POST-Rollenzuweisungen mit 404.
 patch_playbook_urls() {
   log "Patch: follow_redirects in Ansible-Playbooks …"
-  local files=(
-    "tasks/geodata/configure/integrated_keycloak.yml"
-    "tasks/geodata/install/geoserver_setup_role_service.yml"
-    "tasks/access/keycloak/idm-config/keycloak_8_users.yml"
-    "tasks/access/keycloak/idm-config/keycloak_5_clients.yml"
-    "tasks/dashboard/superset.yml"
-    "tasks/datacatalog/piveau.yml"
-  )
-  local patched=0
-  for f in "${files[@]}"; do
-    local fullpath="${CC_CLI_PLAYBOOK_DIR}/${f}"
+  local patched=0 f fullpath
+  for f in "${CIVITAS_PATCH_TARGETS[@]}"; do
+    # masterportal.yml wird separat (release_name) gepatcht, hier nicht.
+    [[ "${f}" == *masterportal.yml ]] && continue
+    fullpath="${CC_CLI_PLAYBOOK_DIR}/${f}"
     if [[ ! -f "${fullpath}" ]]; then
       log_error "Patch-Ziel fehlt: ${f} — Strukturänderung im Upstream-Repo (Tag v1.8.1) oder Pfad falsch"
       exit 1

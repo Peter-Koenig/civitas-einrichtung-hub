@@ -283,6 +283,71 @@ verify_k8s_import() {
 }
 
 
+# ── Re-Run-Guard: erwartete vs. unerwartete Änderungen im Klon ─────────────────
+# Der Installer macht den Klon bei jedem Lauf selbst unsauber (Overlay, sed-Patches,
+# ungetracktes Inventory/Logs/Backup). Diese erwarteten Änderungen werden beim
+# Re-Run zurückgesetzt; unerwartete (manuelle Edits) führen zum harten Abbruch,
+# außer CC_V1_REPO_FORCE_CLEAN=true.
+
+_civitas_overlay_targets=()
+_civitas_collect_overlay_targets() {
+  _civitas_overlay_targets=()
+  local script_dir="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+  local src="${script_dir}/overlay_V1s" rel f
+  [[ -d "${src}" ]] || return 0
+  while IFS= read -r -d '' f; do
+    rel="${f#"${src}"/}"
+    _civitas_overlay_targets+=("${rel}")
+  done < <(find "${src}" -type f -print0)
+}
+
+# _civitas_is_expected <pfad-relativ-zum-repo> — 0 = erwartet (Allowlist), 1 = unerwartet.
+_civitas_is_expected() {
+  local p="$1" rel
+  for rel in "${_civitas_overlay_targets[@]}" "${CIVITAS_PATCH_TARGETS[@]}"; do
+    [[ "${p}" == "core_platform/${rel}" ]] && return 0
+  done
+  [[ "${p}" == "core_platform/cc_cli_inventory.yml" ]] && return 0
+  [[ "${p}" == "core_platform/logs/"* ]] && return 0
+  [[ "${p}" == "core_platform/.overlay_backup/"* ]] && return 0
+  return 1
+}
+
+# _civitas_repo_unexpected_changes <repo> — stdout: unerwartete Pfade, einer je Zeile.
+_civitas_repo_unexpected_changes() {
+  local repo="$1" entry status pathpart old new
+  _civitas_collect_overlay_targets
+  while IFS= read -r -d '' entry; do
+    status="${entry:0:2}"
+    pathpart="${entry:3}"
+    if [[ "${status:0:1}" == "R" ]]; then
+      old="${pathpart%% -> *}"; new="${pathpart#* -> }"
+      _civitas_is_expected "${old}" || printf '%s\n' "${old}"
+      _civitas_is_expected "${new}" || printf '%s\n' "${new}"
+    else
+      _civitas_is_expected "${pathpart}" || printf '%s\n' "${pathpart}"
+    fi
+  done < <(git -C "${repo}" status --porcelain=v1 -z 2>/dev/null)
+}
+
+# _civitas_repo_reset_installer_changes <repo> — 0 = ok/zurückgesetzt, 1 = Abbruch.
+_civitas_repo_reset_installer_changes() {
+  local repo="$1" unexpected p
+  unexpected="$(_civitas_repo_unexpected_changes "${repo}")"
+  if [[ -n "${unexpected}" && "${CC_V1_REPO_FORCE_CLEAN:-false}" != "true" ]]; then
+    log_error "Unerwartete Änderungen im Klon ${repo}:"
+    while IFS= read -r p; do
+      [[ -n "${p}" ]] && log_error "  ${p}"
+    done <<< "${unexpected}"
+    log_error "Manuell prüfen oder CC_V1_REPO_FORCE_CLEAN=true setzen."
+    return 1
+  fi
+  log "Setze erwartete Installer-Änderungen im Klon zurück …"
+  git -C "${repo}" reset --hard -q HEAD
+  git -C "${repo}" clean -fdq -e 'core_platform/logs' -e 'core_platform/cc_cli_inventory.yml'
+}
+
+
 # ── Schritt 2.0: Repository klonen ────────────────────────────────────────────
 clone_civitas_repo() {
   log "Klone CIVITAS/CORE-Repository nach ${CC_V1_REPO_PATH} (Ref: ${CC_V1_REPO_TAG}) …"
@@ -290,10 +355,7 @@ clone_civitas_repo() {
 
   if [[ -d "${CC_V1_REPO_PATH}/.git" ]]; then
     log "Repository bereits vorhanden — aktualisiere auf Ref ${CC_V1_REPO_TAG} …"
-    if [[ -n "$(git -C "${CC_V1_REPO_PATH}" status --porcelain 2>/dev/null)" ]]; then
-      log_error "Working Tree des Repos ist nicht sauber (${CC_V1_REPO_PATH}) — Abbruch"
-      return 1
-    fi
+    _civitas_repo_reset_installer_changes "${CC_V1_REPO_PATH}" || return 1
     git -C "${CC_V1_REPO_PATH}" fetch --tags origin \
       || { log_error "git fetch --tags fehlgeschlagen — Abbruch"; return 1; }
     git -C "${CC_V1_REPO_PATH}" checkout --force "${CC_V1_REPO_TAG}" \
@@ -522,10 +584,12 @@ apply_overlay() {
 # gd_instance.instance_name aus dem Inventory enthaelt Grossbuchstaben (z. B.
 # "Standard"), was zu "Error: release name is invalid" fuehrt.
 patch_masterportal_release_name() {
-  local task_file="${CC_CLI_PLAYBOOK_DIR}/tasks/geodata/install/components/masterportal.yml"
-
-  if [[ ! -f "${task_file}" ]]; then
-    log_error "Masterportal-Task-Datei nicht gefunden: ${task_file} — Strukturänderung im Upstream-Repo (Tag v1.8.1)?"
+  local task_file="" f
+  for f in "${CIVITAS_PATCH_TARGETS[@]}"; do
+    [[ "${f}" == *masterportal.yml ]] && task_file="${CC_CLI_PLAYBOOK_DIR}/${f}"
+  done
+  if [[ -z "${task_file}" || ! -f "${task_file}" ]]; then
+    log_error "Masterportal-Task-Datei nicht gefunden (erwartet in CIVITAS_PATCH_TARGETS): ${task_file:-<fehlt>} — Strukturänderung im Upstream-Repo (Tag v1.8.1)?"
     exit 1
   fi
 

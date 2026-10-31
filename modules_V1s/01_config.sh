@@ -113,6 +113,20 @@ CC_V1_REPO_PATH="/opt/civitas-core-v1"
 CC_V1_REPO_TAG="${CC_V1_REPO_TAG:-v1.8.1}"
 CC_CLI_PLAYBOOK_DIR="${CC_V1_REPO_PATH}/core_platform"   # Verzeichnis mit playbook.yml
 
+# ── Patch-Ziele (relative zu CC_CLI_PLAYBOOK_DIR) ─────────────────────────────
+# Gemeinsame Quelle für patch_playbook_urls (06a), patch_masterportal_release_name
+# (06) und den Re-Run-Guard in clone_civitas_repo. Fehlt ein Ziel, bricht der
+# Installer hart ab (Strukturänderung im Upstream-Tag).
+CIVITAS_PATCH_TARGETS=(
+  "tasks/geodata/configure/integrated_keycloak.yml"
+  "tasks/geodata/install/geoserver_setup_role_service.yml"
+  "tasks/access/keycloak/idm-config/keycloak_8_users.yml"
+  "tasks/access/keycloak/idm-config/keycloak_5_clients.yml"
+  "tasks/dashboard/superset.yml"
+  "tasks/datacatalog/piveau.yml"
+  "tasks/geodata/install/components/masterportal.yml"
+)
+
 # ── V1s — Soft-Fork geoportal-components (statische Masterportal-Config) ─────
 # V1s = CIVITAS/CORE V1 mit statischer statt S3-basierter Masterportal-
 # Konfiguration. Das Portal-Backend-Image wird aus einem Soft-Fork von
@@ -156,6 +170,15 @@ CC_EGRESS_CHECK="${CC_EGRESS_CHECK:-strict}"
 case "${CC_EGRESS_CHECK}" in
   strict|warn|off) : ;;
   *) echo "FEHLER: CC_EGRESS_CHECK='${CC_EGRESS_CHECK}' ungültig (strict|warn|off)" >&2; exit 1 ;;
+esac
+
+# ── Re-Run-Override ───────────────────────────────────────────────────────────
+# CC_V1_REPO_FORCE_CLEAN=true setzt bei unerwarteten Änderungen im Klon trotzdem
+# zurück (statt Abbruch). Nur für manuell verifizierte Fälle gedacht.
+CC_V1_REPO_FORCE_CLEAN="${CC_V1_REPO_FORCE_CLEAN:-false}"
+case "${CC_V1_REPO_FORCE_CLEAN,,}" in
+  true|false) CC_V1_REPO_FORCE_CLEAN="${CC_V1_REPO_FORCE_CLEAN,,}" ;;
+  *) echo "FEHLER: CC_V1_REPO_FORCE_CLEAN='${CC_V1_REPO_FORCE_CLEAN}' ungültig (true|false)" >&2; exit 1 ;;
 esac
 
 # ── IPv4-Präferenz (Workaround gegen transient gestörte IPv6-Pfade zu GitHub Pages) ─

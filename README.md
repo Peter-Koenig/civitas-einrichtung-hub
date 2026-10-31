@@ -81,6 +81,7 @@ auf den beweglichen `main`-Branch. Alle Pins liegen zentral in `modules_V1s/01_c
 | `V1S_FORK_REF` | `v1.8.1` | Ref des geoportal-components-Soft-Forks (konsistent zum `image_tag` der `default_inventory.yml`). |
 | `CC_EGRESS_CHECK` | `strict` | Egress-Preflight für Helm-Repos: `strict` = Abbruch, `warn` = nur Warnung, `off` = überspringen. |
 | `NET_PREFER_IPV4` | `auto` | IPv4-Präferenz gegen transiente IPv6-Resets zu GitHub Pages: `auto` = Probe, `always` = direkt, `never` = aus. |
+| `CC_V1_REPO_FORCE_CLEAN` | `false` | Bei `true` werden unerwartete Änderungen im Klon beim Re-Run trotzdem zurückgesetzt (statt Abbruch). Nur für manuell verifizierte Fälle. |
 
 `clone_civitas_repo()` klont mit `--branch <tag> --single-branch` und protokolliert den
 exakten Tag (`git describe --tags`). Bei einem Release-Wechsel sind `CC_V1_REPO_TAG`,
