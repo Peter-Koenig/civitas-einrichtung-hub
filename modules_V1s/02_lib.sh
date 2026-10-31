@@ -153,3 +153,13 @@ warn_changeme_values() {
   fi
   return 0
 }
+
+# ── Escaping-Hilfen für Inventory-Rendering ────────────────────────────────────
+# Escaped einen Wert für die Ersetzung in sed "s|...|WERT|g" (Trennzeichen '|').
+# Relevant sind Backslash, Ampersand und das Trennzeichen selbst.
+sed_escape_repl() { printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'; }
+
+# Escaped einen Wert für einen doppelt gequoteten YAML-Skalar ("..."), also
+# Backslash und doppeltes Anführungszeichen. Steuerzeichen (Zeilenumbruch/NUL)
+# müssen vorher separat abgelehnt werden (render_inventory).
+yaml_dq_escape() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }

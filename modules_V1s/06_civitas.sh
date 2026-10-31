@@ -625,65 +625,105 @@ render_inventory() {
     log_warn "ADMIN_PASS erfüllt nicht die Keycloak-Passwort-Policy"
     log_warn "Erforderlich: ≥12 Zeichen, min. 1 Ziffer, 1 Groß-, 1 Kleinbuchstabe, 1 Sonderzeichen"
   fi
-  # Alle anderen werden frisch generiert – kein Wiederverwenden zwischen Läufen,
-  # da das Inventory nach cc_cli exec gelöscht wird.
-  local pw_keycloak; pw_keycloak="$(echo "${ADMIN_PASS}" | sed 's/[&|\\$]/\\&/g')"
-  local pw_pgadmin;            pw_pgadmin="$(gen_policy_password 24 | sed 's/[&|\\$]/\\&/g' || echo "CHANGEME_pgadmin")"
-  local pw_apisix_admin_role;    pw_apisix_admin_role="$(gen_policy_password 24 | sed 's/[&|\\$]/\\&/g' || echo "CHANGEME_adminrole")"
-  local pw_apisix_viewer_role;   pw_apisix_viewer_role="$(gen_policy_password 24 | sed 's/[&|\\$]/\\&/g' || echo "CHANGEME_viewerrole")"
-  local pw_superset_db;        pw_superset_db="$(gen_policy_password 42 | sed 's/[&|\\$]/\\&/g' || echo "CHANGEME_superset_db")"
-  local pw_superset_redis;     pw_superset_redis="$(gen_policy_password 24 | sed 's/[&|\\$]/\\&/g' || echo "CHANGEME_superset_redis")"
-  local pw_superset_admin;     pw_superset_admin="$(gen_policy_password 24 | sed 's/[&|\\$]/\\&/g' || echo "CHANGEME_superset_admin")"
-  local pw_grafana;            pw_grafana="$(gen_policy_password 24 | sed 's/[&|\\$]/\\&/g' || echo "CHANGEME_grafana")"
-  local pw_geoserver;          pw_geoserver="$(gen_policy_password 16 | sed 's/[&|\\$]/\\&/g' || echo "CHANGEME_geoserver")"
-  local pw_pivau;              pw_pivau="$(gen_policy_password 24 | sed 's/[&|\\$]/\\&/g' || echo "CHANGEME_pivau")"
+  # Rohwerte halten (kein vorab-Escaping). Escaped wird erst beim sed-Einsetzen
+  # ueber sed_escape_repl + yaml_dq_escape, damit die Credentials-Datei die
+  # unverfaelschten Werte enthaelt. Die generierten Passwoerter werden nicht
+  # zwischen Laeufen wiederverwendet (kein Persistieren ueber den Lauf hinaus).
+  local pw_keycloak; pw_keycloak="${ADMIN_PASS}"
+  local pw_pgadmin;            pw_pgadmin="$(gen_policy_password 24 || echo "CHANGEME_pgadmin")"
+  local pw_apisix_admin_role;    pw_apisix_admin_role="$(gen_policy_password 24 || echo "CHANGEME_adminrole")"
+  local pw_apisix_viewer_role;   pw_apisix_viewer_role="$(gen_policy_password 24 || echo "CHANGEME_viewerrole")"
+  local pw_superset_db;        pw_superset_db="$(gen_policy_password 42 || echo "CHANGEME_superset_db")"
+  local pw_superset_redis;     pw_superset_redis="$(gen_policy_password 24 || echo "CHANGEME_superset_redis")"
+  local pw_superset_admin;     pw_superset_admin="$(gen_policy_password 24 || echo "CHANGEME_superset_admin")"
+  local pw_grafana;            pw_grafana="$(gen_policy_password 24 || echo "CHANGEME_grafana")"
+  local pw_geoserver;          pw_geoserver="$(gen_policy_password 16 || echo "CHANGEME_geoserver")"
+  local pw_pivau;              pw_pivau="$(gen_policy_password 24 || echo "CHANGEME_pivau")"
   local tenant_admin_password
   if [[ -n "${TENANT_ADMIN_PASS:-}" ]]; then
     if ! echo "${TENANT_ADMIN_PASS}" | grep -qP '(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^a-zA-Z0-9]).{12,}'; then
       log_warn "TENANT_ADMIN_PASS erfüllt nicht die Keycloak-Passwort-Policy"
       log_warn "Erforderlich: ≥12 Zeichen, min. 1 Ziffer, 1 Groß-, 1 Kleinbuchstabe, 1 Sonderzeichen"
     fi
-    tenant_admin_password="$(echo "${TENANT_ADMIN_PASS}" | sed 's/[&|\\$]/\\&/g')"
+    tenant_admin_password="${TENANT_ADMIN_PASS}"
   else
-    tenant_admin_password="$(gen_policy_password 24 | sed 's/[&|\\$]/\\&/g' || echo "CHANGEME_tenantadmin")"
+    tenant_admin_password="$(gen_policy_password 24 || echo "CHANGEME_tenantadmin")"
   fi
-  local pw_apisix_etcd_root;  pw_apisix_etcd_root="$(gen_policy_password 24 | sed 's/[&|\\$]/\\&/g' || echo "CHANGEME_etcdroot")"
+  local pw_apisix_etcd_root;  pw_apisix_etcd_root="$(gen_policy_password 24 || echo "CHANGEME_etcdroot")"
 
   # sed-Trennzeichen '|' vermeidet Konflikte mit '/' in URLs und Pfaden.
-  # Reihenfolge: spezifischere Token vor generischeren (kein Überschreiben).
-  sed \
-    -e "s|PLACEHOLDER_DOMAIN|${DOMAIN}|g" \
-    -e "s|PLACEHOLDER_ENVIRONMENT|${CC_ENVIRONMENT:-cc-prd}|g" \
-    -e "s|PLACEHOLDER_K8S_CONTEXT|${K8S_CONTEXT:-default}|g" \
-    -e "s|PLACEHOLDER_STORAGECLASS_RWO|${STORAGECLASS_RWO:-local-path}|g" \
-    -e "s|PLACEHOLDER_STORAGECLASS_RWX|${STORAGECLASS_RWX:-local-path}|g" \
-    -e "s|PLACEHOLDER_STORAGECLASS_LOC|${STORAGECLASS_LOC:-local-path}|g" \
-    -e "s|PLACEHOLDER_CERTMANAGER_ISSUER|${CERT_MANAGER_ISSUER:-selfsigned-issuer}|g" \
-    -e "s|PLACEHOLDER_APISIX_DASHBOARD|${APISIX_DASHBOARD:-false}|g" \
-    -e "s|PLACEHOLDER_INGRESSCLASS|${INGRESS_CLASS:-nginx}|g" \
-    -e "s|PLACEHOLDER_ADMINEMAIL|${ADMIN_EMAIL}|g" \
-    -e "s|PLACEHOLDER_SMTP_HOST|${SMTP_HOST}|g" \
-    -e "s|PLACEHOLDER_SMTP_USER|${SMTP_USER}|g" \
-    -e "s|PLACEHOLDER_SMTP_PASS|${SMTP_PASS}|g" \
-    -e "s|PLACEHOLDER_SMTP_FROM|${SMTP_FROM:-no-reply@${DOMAIN_NAME}}|g" \
-    -e "s|PLACEHOLDER_KEYCLOAK_ADMIN_PASSWORD|${pw_keycloak}|g" \
-    -e "s|PLACEHOLDER_TENANT_ADMIN_PASSWORD|${tenant_admin_password}|g" \
-    -e "s|PLACEHOLDER_APISIX_ETCD_ROOT_PASSWORD|${pw_apisix_etcd_root}|g" \
-    -e "s|PLACEHOLDER_PGADMIN_PASSWORD|${pw_pgadmin}|g" \
-    -e "s|PLACEHOLDER_APISIX_ADMIN_ROLE_KEY|${pw_apisix_admin_role}|g" \
-    -e "s|PLACEHOLDER_APISIX_VIEWER_ROLE_KEY|${pw_apisix_viewer_role}|g" \
-    -e "s|PLACEHOLDER_SUPERSET_DB_SECRET|${pw_superset_db}|g" \
-    -e "s|PLACEHOLDER_SUPERSET_ADMIN_PASSWORD|${pw_superset_admin}|g" \
-    -e "s|PLACEHOLDER_SUPERSET_REDIS_PASSWORD|${pw_superset_redis}|g" \
-    -e "s|PLACEHOLDER_GRAFANA_PASSWORD|${pw_grafana}|g" \
-    -e "s|PLACEHOLDER_GEOSERVER_PASSWORD|${pw_geoserver}|g" \
-    -e "s|PLACEHOLDER_PIVAU_PASSWORD|${pw_pivau}|g" \
-    -e "s|PLACEHOLDER_V1S_IMAGE_REPOSITORY|${V1S_IMAGE_REF%%:*}|g" \
-    -e "s|PLACEHOLDER_V1S_IMAGE_TAG|${V1S_IMAGE_REF##*:}|g" \
-    -e "s|PLACEHOLDER_API_MAX_RETRIES|${CC_API_MAX_RETRIES}|g" \
-    -e "s|PLACEHOLDER_DEPLOYMENT_MAX_RETRIES|${CC_DEPLOYMENT_MAX_RETRIES}|g" \
-    -e "s|PLACEHOLDER_KUBECONFIG|config|g" \
-    "${tpl}" > "${out}"
+  # Geordnete Paare <Platzhalter> <Rohwert>. Die Reihenfolge bleibt erhalten;
+  # das Escaping passiert erst an der Ersetzungsstelle (sed_escape_repl, ggf.
+  # zusaetzlich yaml_dq_escape fuer doppelt gequotete Platzhalter).
+  local -a pairs=(
+    PLACEHOLDER_DOMAIN                    "${DOMAIN}"
+    PLACEHOLDER_ENVIRONMENT               "${CC_ENVIRONMENT:-cc-prd}"
+    PLACEHOLDER_K8S_CONTEXT               "${K8S_CONTEXT:-default}"
+    PLACEHOLDER_STORAGECLASS_RWO          "${STORAGECLASS_RWO:-local-path}"
+    PLACEHOLDER_STORAGECLASS_RWX          "${STORAGECLASS_RWX:-local-path}"
+    PLACEHOLDER_STORAGECLASS_LOC          "${STORAGECLASS_LOC:-local-path}"
+    PLACEHOLDER_CERTMANAGER_ISSUER        "${CERT_MANAGER_ISSUER:-selfsigned-issuer}"
+    PLACEHOLDER_APISIX_DASHBOARD          "${APISIX_DASHBOARD:-false}"
+    PLACEHOLDER_INGRESSCLASS              "${INGRESS_CLASS:-nginx}"
+    PLACEHOLDER_ADMINEMAIL                "${ADMIN_EMAIL}"
+    PLACEHOLDER_SMTP_HOST                 "${SMTP_HOST}"
+    PLACEHOLDER_SMTP_USER                 "${SMTP_USER}"
+    PLACEHOLDER_SMTP_PASS                 "${SMTP_PASS}"
+    PLACEHOLDER_SMTP_FROM                 "${SMTP_FROM:-no-reply@${DOMAIN_NAME}}"
+    PLACEHOLDER_KEYCLOAK_ADMIN_PASSWORD   "${pw_keycloak}"
+    PLACEHOLDER_TENANT_ADMIN_PASSWORD     "${tenant_admin_password}"
+    PLACEHOLDER_APISIX_ETCD_ROOT_PASSWORD "${pw_apisix_etcd_root}"
+    PLACEHOLDER_PGADMIN_PASSWORD          "${pw_pgadmin}"
+    PLACEHOLDER_APISIX_ADMIN_ROLE_KEY     "${pw_apisix_admin_role}"
+    PLACEHOLDER_APISIX_VIEWER_ROLE_KEY    "${pw_apisix_viewer_role}"
+    PLACEHOLDER_SUPERSET_DB_SECRET        "${pw_superset_db}"
+    PLACEHOLDER_SUPERSET_ADMIN_PASSWORD   "${pw_superset_admin}"
+    PLACEHOLDER_SUPERSET_REDIS_PASSWORD   "${pw_superset_redis}"
+    PLACEHOLDER_GRAFANA_PASSWORD          "${pw_grafana}"
+    PLACEHOLDER_GEOSERVER_PASSWORD        "${pw_geoserver}"
+    PLACEHOLDER_PIVAU_PASSWORD            "${pw_pivau}"
+    PLACEHOLDER_V1S_IMAGE_REPOSITORY      "${V1S_IMAGE_REF%%:*}"
+    PLACEHOLDER_V1S_IMAGE_TAG             "${V1S_IMAGE_REF##*:}"
+    PLACEHOLDER_API_MAX_RETRIES           "${CC_API_MAX_RETRIES}"
+    PLACEHOLDER_DEPLOYMENT_MAX_RETRIES    "${CC_DEPLOYMENT_MAX_RETRIES}"
+    PLACEHOLDER_KUBECONFIG                "config"
+  )
+
+  # Blank (ungequotet) im Template gesetzte Platzhalter: deren Werte duerfen
+  # keine YAML-/Shell-Sonderzeichen enthalten und werden nicht YAML-escaped.
+  local -A plain=(
+    [PLACEHOLDER_ENVIRONMENT]=1
+    [PLACEHOLDER_KUBECONFIG]=1
+    [PLACEHOLDER_APISIX_DASHBOARD]=1
+    [PLACEHOLDER_API_MAX_RETRIES]=1
+    [PLACEHOLDER_DEPLOYMENT_MAX_RETRIES]=1
+  )
+
+  local -a sed_args=() i token value
+  for (( i = 0; i < ${#pairs[@]}; i += 2 )); do
+    token="${pairs[i]}"
+    value="${pairs[i+1]}"
+    # Zeilenumbruch frueh ablehnen. NUL kann in Bash-Strings nicht vorkommen
+    # (Env-Variablen und Command-Substitution strippen NUL), daher keine
+    # separate Pruefung.
+    if [[ "${value}" == *$'\n'* ]]; then
+      log_error "Wert für ${token} enthält Zeilenumbruch — Abbruch"
+      exit 1
+    fi
+    if [[ -n "${plain[${token}]:-}" ]]; then
+      # Blank gesetzt: nur gegen YAML-/Shell-Risiken absichern, nicht escapen.
+      if [[ "${value}" =~ [^A-Za-z0-9._:@/+-] ]]; then
+        log_error "Wert für ${token} (blank im Template) enthält unzulässige Zeichen: '${value}' — Abbruch"
+        exit 1
+      fi
+      sed_args+=( -e "s|${token}|$(sed_escape_repl "${value}")|g" )
+    else
+      # Doppelt gequotet: erst YAML-, dann sed-escapen.
+      sed_args+=( -e "s|${token}|$(sed_escape_repl "$(yaml_dq_escape "${value}")")|g" )
+    fi
+  done
+
+  ( umask 077; sed "${sed_args[@]}" "${tpl}" > "${out}" )
 
   # Sicherheits-Check: keine ungefüllten Platzhalter übrig (Kommentarzeilen ignorieren)
   if grep -v '^#' "${out}" | grep -q "PLACEHOLDER_"; then
@@ -698,36 +738,52 @@ render_inventory() {
     exit 1
   fi
 
-  # Pfad exportieren damit Entry-Point EXIT-Trap löschen kann
+  # YAML-Parse-Check (ohne Inhaltsausgabe). Nur mit mikefarah-yq (go-yq) zuverlaessig;
+  # das Python-yq (3.x) versteht den yq-eval-Aufruf nicht.
+  if command -v yq >/dev/null 2>&1 && yq --version 2>/dev/null | grep -q 'mikefarah'; then
+    if ! yq eval '.' "${out}" >/dev/null 2>&1; then
+      log_error "Inventory ist kein gültiges YAML — Rendering prüfen"
+      exit 1
+    fi
+    log_ok "Inventory YAML-Parse erfolgreich"
+  else
+    log_warn "mikefarah-yq nicht vorhanden — YAML-Parse des Inventory übersprungen"
+  fi
+
+  # Pfad exportieren (Entry-Point liest ihn für die Login-Zusammenfassung).
+  # Es gibt keinen automatischen Löschmechanismus; siehe Warnung unten.
   CONFIG_YAML_PATH="${out}"
   export CONFIG_YAML_PATH
   log_ok "Inventory erzeugt: ${out}"
-  log_warn "Inventory enthält Secrets im Klartext – wird nach cc_cli exec gelöscht"
+  log_warn "Inventory liegt mit Modus 600 in ${out}; nach erfolgreicher Installation manuell entfernen oder den Zugriff beschraenken"
 
   # ── Credentials-Datei schreiben ───────────────────────────────────────
   # Enthaelt die automatisch generierten Dienst-Passwoerter (chmod 600).
-  # Darf NICHT im CC_CLI_PLAYBOOK_DIR liegen (wird dort bereinigt).
+  # Darf NICHT im CC_CLI_PLAYBOOK_DIR liegen (getrennte Ablage von Inventory
+  # und Credentials; das Inventory kann im Fehlerfall mit ins Log gezogen werden).
   mkdir -p "$(dirname "${CREDENTIALS_OUTPUT_PATH}")"
-  cat > "${CREDENTIALS_OUTPUT_PATH}" << CREDENTIALS_EOF
-# CIVITAS/CORE V1 — Dienst-Credentials
-# Erzeugt durch render_inventory() am $(date '+%Y-%m-%d %H:%M:%S')
-# chmod 600 — nur root lesbar
-PGADMIN_EMAIL="${ADMIN_EMAIL}"
-PGADMIN_PASSWORD="${pw_pgadmin}"
-GEOSERVER_USER="admin"
-GEOSERVER_PASSWORD="${pw_geoserver}"
-SUPERSET_USER="admin"
-SUPERSET_PASSWORD="${pw_superset_admin}"
-GRAFANA_PASSWORD="${pw_grafana}"
-APISIX_ADMIN_ROLE_KEY="${pw_apisix_admin_role}"
-APISIX_VIEWER_ROLE_KEY="${pw_apisix_viewer_role}"
-SUPERSET_DB_SECRET="${pw_superset_db}"
-SUPERSET_REDIS_PASSWORD="${pw_superset_redis}"
-PIVAU_PASSWORD="${pw_pivau}"
-TENANT_ADMIN_USER="tenantadmin@${DOMAIN}"
-TENANT_ADMIN_PASSWORD="${tenant_admin_password}"
-APISIX_ETCD_ROOT_PASSWORD="${pw_apisix_etcd_root}"
-CREDENTIALS_EOF
+  ( umask 077
+    {
+      echo "# CIVITAS/CORE V1 — Dienst-Credentials"
+      echo "# Erzeugt durch render_inventory() am $(date '+%Y-%m-%d %H:%M:%S')"
+      echo "# chmod 600 — nur root lesbar"
+      printf 'PGADMIN_EMAIL=%q\n' "${ADMIN_EMAIL}"
+      printf 'PGADMIN_PASSWORD=%q\n' "${pw_pgadmin}"
+      printf 'GEOSERVER_USER=%q\n' "admin"
+      printf 'GEOSERVER_PASSWORD=%q\n' "${pw_geoserver}"
+      printf 'SUPERSET_USER=%q\n' "admin"
+      printf 'SUPERSET_PASSWORD=%q\n' "${pw_superset_admin}"
+      printf 'GRAFANA_PASSWORD=%q\n' "${pw_grafana}"
+      printf 'APISIX_ADMIN_ROLE_KEY=%q\n' "${pw_apisix_admin_role}"
+      printf 'APISIX_VIEWER_ROLE_KEY=%q\n' "${pw_apisix_viewer_role}"
+      printf 'SUPERSET_DB_SECRET=%q\n' "${pw_superset_db}"
+      printf 'SUPERSET_REDIS_PASSWORD=%q\n' "${pw_superset_redis}"
+      printf 'PIVAU_PASSWORD=%q\n' "${pw_pivau}"
+      printf 'TENANT_ADMIN_USER=%q\n' "tenantadmin@${DOMAIN}"
+      printf 'TENANT_ADMIN_PASSWORD=%q\n' "${tenant_admin_password}"
+      printf 'APISIX_ETCD_ROOT_PASSWORD=%q\n' "${pw_apisix_etcd_root}"
+    } > "${CREDENTIALS_OUTPUT_PATH}"
+  )
   chmod 600 "${CREDENTIALS_OUTPUT_PATH}"
   log_ok "Credentials gespeichert: ${CREDENTIALS_OUTPUT_PATH}"
 }
@@ -1131,9 +1187,14 @@ run_cc_cli_exec() {
         local token="${pw_tokens[${pw_name}]}"
         grep -q "${token}" "${tpl}" 2>/dev/null || continue
         local pw_value
-        pw_value="$(grep -oP "(?<=^${pw_name}=).*" "${CREDENTIALS_OUTPUT_PATH}" 2>/dev/null || true)"
+        # Rohwert per source in Subshell lesen (credentials.env ist %q-gequotet,
+        # source rekonstruiert den exakten Wert). Kein Grep-Lookbehind auf
+        # Sonderzeichen mehr (Werte mit fuehrendem '-' wurden als Option gelesen).
+        # shellcheck disable=SC1090
+        pw_value="$( source "${CREDENTIALS_OUTPUT_PATH}" 2>/dev/null && printf '%s\n' "${!pw_name:-}" )"
         if [[ -n "${pw_value}" ]]; then
-          if ! grep -qF "${pw_value}" "${CONFIG_YAML_PATH}" 2>/dev/null; then
+          # Im Inventory steht der YAML-escapte Wert (doppelt gequotet).
+          if ! grep -qF -- "$(yaml_dq_escape "${pw_value}")" "${CONFIG_YAML_PATH}" 2>/dev/null; then
             log_error "  ✗ ${pw_name}: NICHT im Inventory gefunden -> Rendering-Fehler (sed)"
             inventory_intakt=false
           fi
