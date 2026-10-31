@@ -867,6 +867,29 @@ last_fatal_has_policy_signal() {
   grep -Eiq 'password|policy|credentials|invalid_user_credentials' <<< "${last_block}"
 }
 
+# Prüft, ob der LETZTE nicht-ignorierte fatal:-Block im Ansible-Log ein Muster
+# (ERE, kleingeschrieben) enthält. Exit 0 = ja, 1 = nein (oder kein Block).
+last_fatal_matches() {
+  local log_file="$1" ere="$2" last_block
+  [[ -f "${log_file}" ]] || return 1
+  last_block="$(awk '
+    /fatal: \[/ {
+      if (have && !ignored) last = block
+      have = 1; ignored = 0; block = $0; next
+    }
+    {
+      block = block "\n" $0
+      if (/\.\.\.ignoring/) ignored = 1
+    }
+    END {
+      if (have && !ignored) last = block
+      print last
+    }
+  ' "${log_file}" 2>/dev/null)"
+  [[ -n "${last_block}" ]] || return 1
+  grep -Eiq "${ere}" <<< "${last_block}"
+}
+
 # ── Sichtbare Fehlerzusammenfassung aus dem Ansible-Log (Allowlist) ───────────
 # Gibt hoechstens 12 Zeilen (je max. 300 Zeichen) ueber log_error aus: Task-Name,
 # Host und aus dem letzten nicht-ignorierten fatal:-Block nur die Allowlist-Felder
@@ -1068,7 +1091,8 @@ run_cc_cli_exec() {
 
   local attempt=1
   local tolerated_404=false
-  local transient_re='status code was 5[0-9][0-9]|temporarily unavailable|connection (refused|reset by peer)|timed out|max retries exceeded|i/o timeout|tls handshake timeout|unexpected eof'
+  local geoserver_401_re='www_authenticate[^a-z]*basic realm=[^a-z]*geoserver realm'
+  local transient_re="status code was 5[0-9][0-9]|temporarily unavailable|connection (refused|reset by peer)|timed out|max retries exceeded|i/o timeout|tls handshake timeout|unexpected eof|${geoserver_401_re}"
   local notfound_fixed='Status code was 404 and not [204]'
   while :; do
     # Pro Versuch ein eigenes Log; die Klassifikation liest nur dieses.
@@ -1154,10 +1178,20 @@ run_cc_cli_exec() {
       tail -n 200 "${raw_file}" | grep -Eiq "${transient_re}" && transient=true
     fi
 
+    # GeoServer-401 im letzten Fatal-Block? (Teil A: benannte Warnung)
+    local geo_401=false
+    if (( fatal_count > 0 )) && last_fatal_matches "${ansible_log_file}" "${geoserver_401_re}"; then
+      geo_401=true
+    fi
+
     if [[ "${transient}" == "true" && ${attempt} -lt ${CC_EXEC_ATTEMPTS} ]]; then
       local cause
       cause="$(_local_cause_line "${raw_file}")"
-      log_warn "cc_cli exec: vorübergehender Fehler (Versuch ${attempt}/${CC_EXEC_ATTEMPTS}, rc=${rc}) — wiederhole in ${CC_EXEC_RETRY_DELAY}s mit demselben Inventory"
+      if [[ "${geo_401}" == "true" ]]; then
+        log_warn "cc_cli exec: GeoServer lehnte die Anmeldung ab (401, Versuch ${attempt}/${CC_EXEC_ATTEMPTS}) - moeglicherweise Zeitfenster nach der Passwortaenderung; wiederhole mit demselben Inventory"
+      else
+        log_warn "cc_cli exec: vorübergehender Fehler (Versuch ${attempt}/${CC_EXEC_ATTEMPTS}, rc=${rc}) — wiederhole in ${CC_EXEC_RETRY_DELAY}s mit demselben Inventory"
+      fi
       [[ -n "${cause}" ]] && log_warn "  Ursache: ${cause}"
       sleep "${CC_EXEC_RETRY_DELAY}"
       attempt=$((attempt + 1))

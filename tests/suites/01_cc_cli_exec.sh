@@ -31,6 +31,15 @@ reset_state() {
 
 mk_404()  { mk_fatal_block "$1" 'Status code was 404 and not [204]'; }
 mk_503()  { mk_fatal_block "$1" 'Status code was 503 and not [200]: HTTP Error 503: Service Temporarily Unavailable'; }
+mk_geo401() {
+  local f="$1"
+  printf '%s\n' \
+    '2026-10-31 18:12:46,479 p=11442 u=root n=ansible | fatal: [localhost]: FAILED! => {' \
+    '    "msg": "Status code was 401 and not [200]: HTTP Error 401: ",' \
+    '    "url": "https://geoportal.example.org/geoserver/rest/security/authfilters",' \
+    '    "www_authenticate": "Basic realm=\"GeoServer Realm\", charset=\"UTF-8\""' \
+    '}' > "$f"
+}
 
 # T1: 503 nur im Versuch-1-Log → Retry → Erfolg, zwei Logdateien
 reset_state
@@ -178,5 +187,56 @@ printf '%s\n%s\n' "$SC/l1.log" "$SC/l2.log" > "$SC/logfiles"
 printf '%s\n%s\n' "$SC/o1.txt" "$SC/o2.txt" > "$SC/outfiles"
 ( run_cc_cli_exec >/dev/null 2>&1 )
 check "T12 rc 124 -> zwei Versuche" "2" "$(cat "$SC/count")"
+
+# T13 (Turn 11 A): GeoServer-401 (www_authenticate geoserver realm) -> transient -> Retry
+reset_state
+SC="$T/s13"; mkdir -p "$SC"; export STUB_CONTROL="$SC"
+mk_geo401 "$SC/l1.log"
+printf '' > "$SC/o1.txt"; printf '' > "$SC/o2.txt"
+printf '1\n0\n' > "$SC/rcs"
+printf '%s\n%s\n' "$SC/l1.log" "" > "$SC/logfiles"
+printf '%s\n%s\n' "$SC/o1.txt" "$SC/o2.txt" > "$SC/outfiles"
+( run_cc_cli_exec >/dev/null 2>&1 )
+check "T13 GeoServer-401 -> zwei Versuche" "2" "$(cat "$SC/count")"
+check "T13 Warnung nennt GeoServer" "yes" "$(grep -q 'GeoServer' "$LOGBUF" && echo yes || echo no)"
+
+# T14 (Turn 11 A): Keycloak-401 ohne GeoServer-Realm -> KEIN Retry
+reset_state
+SC="$T/s14"; mkdir -p "$SC"; export STUB_CONTROL="$SC"
+mk_fatal_block "$SC/l1.log" 'Status code was 401 and not [200]: invalid_user_credentials'
+printf '' > "$SC/o1.txt"
+printf '1\n' > "$SC/rcs"
+printf '%s\n' "$SC/l1.log" > "$SC/logfiles"
+printf '%s\n' "$SC/o1.txt" > "$SC/outfiles"
+( run_cc_cli_exec >/dev/null 2>&1 )
+check "T14 Keycloak-401 -> ein Versuch" "1" "$(cat "$SC/count")"
+
+# T15 (Turn 11 A): zwei Fatals (GeoServer-401 + nicht transient) -> KEIN Retry
+reset_state
+SC="$T/s15"; mkdir -p "$SC"; export STUB_CONTROL="$SC"
+mk_geo401 "$SC/l1.log"
+printf '\n' >> "$SC/l1.log"
+mk_fatal_block "$SC/f2.log" 'release name is invalid'
+cat "$SC/f2.log" >> "$SC/l1.log"
+printf '' > "$SC/o1.txt"
+printf '1\n' > "$SC/rcs"
+printf '%s\n' "$SC/l1.log" > "$SC/logfiles"
+printf '%s\n' "$SC/o1.txt" > "$SC/outfiles"
+( run_cc_cli_exec >/dev/null 2>&1 )
+check "T15 zwei Fatals gemischt -> ein Versuch" "1" "$(cat "$SC/count")"
+
+# T16 (Turn 11 A): zwei GeoServer-401-Fatals -> Retry
+reset_state
+SC="$T/s16"; mkdir -p "$SC"; export STUB_CONTROL="$SC"
+mk_geo401 "$SC/l1.log"
+printf '\n' >> "$SC/l1.log"
+mk_geo401 "$SC/f2.log"
+cat "$SC/f2.log" >> "$SC/l1.log"
+printf '' > "$SC/o1.txt"; printf '' > "$SC/o2.txt"
+printf '1\n0\n' > "$SC/rcs"
+printf '%s\n%s\n' "$SC/l1.log" "" > "$SC/logfiles"
+printf '%s\n%s\n' "$SC/o1.txt" "$SC/o2.txt" > "$SC/outfiles"
+( run_cc_cli_exec >/dev/null 2>&1 )
+check "T16 zwei GeoServer-401 -> zwei Versuche" "2" "$(cat "$SC/count")"
 
 rm -rf "$T"
