@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Suite 37: check_helm_repo_egress + apply_ipv4_preference — Egress-Preflight und
-# IPv4-Präferenz. Nur Stubs (curl, yq), kein Cluster/Netz.
+# IPv4-Präferenz. Nur Stubs (helm, curl, yq), kein Cluster/Netz.
 
 begin_suite "egress_preflight"
 
@@ -34,6 +34,7 @@ chmod +x "$STUBS/yq"
 
 cat > "$STUBS/curl" <<'CURL'
 #!/usr/bin/env bash
+touch "${CURL_CALLED_FILE:-/tmp/curl-called}" 2>/dev/null
 url=""
 ipv6=0
 for a in "$@"; do
@@ -54,6 +55,22 @@ exit 0
 CURL
 chmod +x "$STUBS/curl"
 
+cat > "$STUBS/helm" <<'HELM'
+#!/usr/bin/env bash
+# helm-Stub: Verhalten über HELM_MODE (ok|fail|flaky), Aufrufe in HELM_COUNT_FILE.
+cnt=0
+[ -f "${HELM_COUNT_FILE:-/tmp/helm-count}" ] && cnt=$(cat "${HELM_COUNT_FILE:-/tmp/helm-count}")
+cnt=$((cnt + 1))
+printf '%s' "$cnt" > "${HELM_COUNT_FILE:-/tmp/helm-count}"
+case "${HELM_MODE:-ok}" in
+  ok)    exit 0 ;;
+  fail)  echo "helm: repo add fehlgeschlagen (connection reset)" >&2; exit 1 ;;
+  flaky) [ "$cnt" -eq 1 ] && { echo "helm: transient reset" >&2; exit 1; }; exit 0 ;;
+esac
+exit 0
+HELM
+chmod +x "$STUBS/helm"
+
 # Fixture-Repositorystruktur (die yq-Query liefert die URLs aus dem Stub).
 export CC_V1_REPO_PATH="$T/repo"
 mkdir -p "$CC_V1_REPO_PATH/core_platform/vars"
@@ -62,19 +79,19 @@ touch "$CC_V1_REPO_PATH/core_platform/vars/software_references.yml"
 # shellcheck source=../../modules_V1s/06_civitas.sh
 source "$REPO/modules_V1s/06_civitas.sh"
 
-# ── CC_EGRESS_CHECK-Modi ─────────────────────────────────────────────────────
+# ── CC_EGRESS_CHECK-Modi (helm-Stub statt curl) ───────────────────────────────
 export CC_EGRESS_CHECK=strict
-export CURL_FAIL_URLS=""
+export HELM_MODE=ok
 ( check_helm_repo_egress >/dev/null 2>&1 ); rc=$?
 check "strict alle erreichbar -> rc=0" "0" "$rc"
 
 export CC_EGRESS_CHECK=strict
-export CURL_FAIL_URLS="https://charts.jetstack.io"
+export HELM_MODE=fail
 ( check_helm_repo_egress >/dev/null 2>&1 ); rc=$?
 check "strict eine nicht erreichbar -> rc=1" "1" "$rc"
 
 export CC_EGRESS_CHECK=warn
-export CURL_FAIL_URLS="https://charts.jetstack.io"
+export HELM_MODE=fail
 ( check_helm_repo_egress >/dev/null 2>&1 ); rc=$?
 check "warn eine nicht erreichbar -> rc=0" "0" "$rc"
 
@@ -82,6 +99,37 @@ export CC_EGRESS_CHECK=off
 : > "$LOGBUF"
 check_helm_repo_egress >/dev/null 2>&1
 check "off übersprungen" "yes" "$(grep -q 'übersprungen' "$LOGBUF" && echo yes || echo no)"
+
+# ── Helm-Probe direkt: ok/fail/flaky, Erschöpfung, letzte Meldung ─────────────
+export HELM_COUNT_FILE="$T/helm-count"
+export CC_EGRESS_ATTEMPTS=3
+export CC_EGRESS_RETRY_DELAY=0
+
+export HELM_MODE=ok
+: > "$HELM_COUNT_FILE"
+_egress_probe_helm "https://charts.jetstack.io/" >/dev/null 2>&1; rc=$?
+check "Probe ok -> rc=0" "0" "$rc"
+
+export HELM_MODE=fail
+: > "$HELM_COUNT_FILE"
+: > "$LOGBUF"
+_egress_probe_helm "https://charts.jetstack.io/" >/dev/null 2>&1; rc=$?
+check "Probe fail (erschöpft) -> rc=1" "1" "$rc"
+check "Erschöpfung -> genau 3 helm-Aufrufe" "3" "$(cat "$HELM_COUNT_FILE")"
+check "letzte helm-Meldung protokolliert" "yes" "$(grep -q 'letzte helm-Meldung' "$LOGBUF" && echo yes || echo no)"
+
+export HELM_MODE=flaky
+: > "$HELM_COUNT_FILE"
+_egress_probe_helm "https://charts.jetstack.io/" >/dev/null 2>&1; rc=$?
+check "Probe flaky (1. fehl, 2. ok) -> rc=0" "0" "$rc"
+check "flaky -> genau 2 helm-Aufrufe" "2" "$(cat "$HELM_COUNT_FILE")"
+
+# Kein curl mehr in check_helm_repo_egress (der curl-Stub bleibt für die IPv6-Probe).
+export CC_EGRESS_CHECK=strict
+export HELM_MODE=ok
+export CURL_CALLED_FILE="$T/curl-called"; rm -f "$CURL_CALLED_FILE"
+( check_helm_repo_egress >/dev/null 2>&1 ); rc=$?
+check "kein curl mehr im Egress-Check" "no" "$([[ -f "$CURL_CALLED_FILE" ]] && echo yes || echo no)"
 
 # ── F1: yq-Fehler / leere Liste / fehlende Datei ────────────────────────────
 export CC_EGRESS_CHECK=strict

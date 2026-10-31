@@ -172,6 +172,16 @@ case "${CC_EGRESS_CHECK}" in
   *) echo "FEHLER: CC_EGRESS_CHECK='${CC_EGRESS_CHECK}' ungültig (strict|warn|off)" >&2; exit 1 ;;
 esac
 
+# Wiederhol-/Timeout-Werte für die Helm-Egress-Probe (helm repo add in ein
+# temporäres Helm-Verzeichnis; berührt das echte repositories.yaml nicht).
+CC_EGRESS_ATTEMPTS="${CC_EGRESS_ATTEMPTS:-3}"        # Versuche je Helm-Repo
+CC_EGRESS_TIMEOUT="${CC_EGRESS_TIMEOUT:-60}"         # Sekunden Timeout je Versuch
+CC_EGRESS_RETRY_DELAY="${CC_EGRESS_RETRY_DELAY:-5}"  # Sekunden Pause zwischen Versuchen
+for _v in CC_EGRESS_ATTEMPTS CC_EGRESS_TIMEOUT CC_EGRESS_RETRY_DELAY; do
+  [[ "${!_v}" =~ ^[0-9]+$ ]] && (( ${!_v} >= 1 && ${!_v} <= 600 )) \
+    || { echo "FEHLER: ${_v}='${!_v}' ungültig (Zahl 1..600)" >&2; exit 1; }
+done; unset _v
+
 # ── Re-Run-Override ───────────────────────────────────────────────────────────
 # CC_V1_REPO_FORCE_CLEAN=true setzt bei unerwarteten Änderungen im Klon trotzdem
 # zurück (statt Abbruch). Nur für manuell verifizierte Fälle gedacht.

@@ -80,6 +80,9 @@ auf den beweglichen `main`-Branch. Alle Pins liegen zentral in `modules_V1s/01_c
 | `ANSIBLE_VERSION` | `14.5.0` | `ansible`-Version, passend zu cc-cli 1.8.1 (ansible-core 2.21.x). |
 | `V1S_FORK_REF` | `v1.8.1` | Ref des geoportal-components-Soft-Forks (konsistent zum `image_tag` der `default_inventory.yml`). |
 | `CC_EGRESS_CHECK` | `strict` | Egress-Preflight für Helm-Repos: `strict` = Abbruch, `warn` = nur Warnung, `off` = überspringen. |
+| `CC_EGRESS_ATTEMPTS` | `3` | Versuche je Helm-Repo bei der Egress-Probe (`helm repo add` in ein temporäres Helm-Verzeichnis). |
+| `CC_EGRESS_TIMEOUT` | `60` | Sekunden Timeout je Probe-Versuch. |
+| `CC_EGRESS_RETRY_DELAY` | `5` | Sekunden Pause zwischen Probe-Versuchen. |
 | `NET_PREFER_IPV4` | `auto` | IPv4-Präferenz gegen transiente IPv6-Resets zu GitHub Pages: `auto` = Probe, `always` = direkt, `never` = aus. |
 | `CC_V1_REPO_FORCE_CLEAN` | `false` | Bei `true` werden unerwartete Änderungen im Klon beim Re-Run trotzdem zurückgesetzt (statt Abbruch). Nur für manuell verifizierte Fälle. |
 

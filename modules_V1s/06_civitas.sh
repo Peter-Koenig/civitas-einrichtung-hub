@@ -441,10 +441,28 @@ apply_ipv4_preference() {
 
 # ── Schritt 2.0c: Egress-Preflight für Helm-Repos ────────────────────────────
 # Liest die Helm-Repo-URLs aus dem GEKLONTEN Stand (software_references.yml, Feld
-# helm_repo_url) und prüft jede per HEAD, bevor cc_cli validate/exec die Charts
-# laden. Verhindert, dass ein transient gestörter Egress (z. B. IPv6-Reset zu
-# GitHub Pages) erst nach 45 Minuten mitten im Playbook abbricht. Keine hartkodierte
-# URL-Liste im Installer — die 13er-Testliste dient nur als Fixture in den Tests.
+# helm_repo_url) und prüft jede über `helm repo add` in ein temporäres Helm-
+# Verzeichnis (das Binary, das später auch lädt), bevor cc_cli validate/exec die
+# Charts laden. Verhindert, dass ein transient gestörter Egress (z. B. IPv6-Reset
+# zu GitHub Pages) erst nach 45 Minuten mitten im Playbook abbricht. Keine
+# hartkodierte URL-Liste im Installer — die 13er-Testliste dient nur als Fixture
+# in den Tests.
+_egress_probe_helm() {   # $1 = URL; rc 0 = index.yaml per helm geladen und geparst
+  local url="$1" tmp rc=0 attempt
+  tmp="$(mktemp -d)"; mkdir -p "${tmp}/cfg" "${tmp}/cache/repository" "${tmp}/data"
+  for (( attempt = 1; attempt <= ${CC_EGRESS_ATTEMPTS:-3}; attempt++ )); do
+    rc=0
+    HELM_CONFIG_HOME="${tmp}/cfg" HELM_CACHE_HOME="${tmp}/cache" HELM_DATA_HOME="${tmp}/data" \
+    HELM_REPOSITORY_CONFIG="${tmp}/cfg/repositories.yaml" HELM_REPOSITORY_CACHE="${tmp}/cache/repository" \
+      timeout "${CC_EGRESS_TIMEOUT:-60}" helm repo add --force-update egress-probe "${url}" >"${tmp}/out" 2>&1 || rc=$?
+    (( rc == 0 )) && break
+    sleep "${CC_EGRESS_RETRY_DELAY:-5}"
+  done
+  (( rc == 0 )) || log_warn "    letzte helm-Meldung: $(tail -n 1 "${tmp}/out" | cut -c1-200)"
+  rm -rf "${tmp}"
+  return "${rc}"
+}
+
 check_helm_repo_egress() {
   if [[ "${CC_EGRESS_CHECK:-strict}" == "off" ]]; then
     log "Egress-Check übersprungen (CC_EGRESS_CHECK=off)"
@@ -492,11 +510,20 @@ check_helm_repo_egress() {
     return 0
   fi
 
+  if ! command -v helm >/dev/null 2>&1; then
+    if [[ "${CC_EGRESS_CHECK:-strict}" == "strict" ]]; then
+      log_error "helm nicht gefunden — Egress-Check kann nicht laufen"
+      exit 1
+    fi
+    log_warn "helm nicht gefunden — Egress-Check übersprungen"
+    return 0
+  fi
+
   log "Egress-Check für Helm-Repos (CC_EGRESS_CHECK=${CC_EGRESS_CHECK:-strict}) …"
   local url failures=0 warnings=0
   while IFS= read -r url; do
     [[ -n "${url}" ]] || continue
-    if curl -sS -I --connect-timeout 10 --max-time 10 -o /dev/null "${url}/index.yaml" 2>/dev/null; then
+    if _egress_probe_helm "${url}"; then
       log_ok "  ${url}"
     elif [[ "${CC_EGRESS_CHECK:-strict}" == "strict" ]]; then
       log_error "  ${url} — nicht erreichbar"
