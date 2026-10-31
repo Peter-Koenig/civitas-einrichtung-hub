@@ -27,6 +27,7 @@ run_preflight() {
   check_swap
   check_network
   check_tools
+  apply_ipv4_preference    # curl ist nach check_tools garantiert; vor check_k3s_version
   check_timezone
   check_inotify
   check_dns_warn
@@ -411,4 +412,40 @@ check_nonfree_source() {
     log_warn "Keine apt-Quellen-Datei gefunden (weder ${sources_file} noch ${sources_legacy})"
     log_warn "  non-free kann nicht automatisch aktiviert werden"
   fi
+}
+
+# ── IPv4-Präferenz (Workaround gegen transient gestörte IPv6-Pfade zu GitHub Pages) ─
+# Wirkt für glibc-basierte Clients (curl, apt) über getaddrinfo/gai.conf. Für Helm
+# (Go-Binary) ist eine Wirkung nicht belegt; deshalb prüft der Egress-Check über
+# `helm repo add` (Punkt 2) statt per curl. NET_PREFER_IPV4=auto prüft per IPv6-Probe
+# (HEAD gegen GitHub Pages), ob IPv6 zuverlässig ist; schlägt sie fehl, wird IPv4
+# bevorzugt. Idempotent, kein Interface-IPv6-Disable, kein sysctl.
+_enable_ipv4_preference() {
+  local gai="${GAI_CONF:-/etc/gai.conf}"
+  local line="precedence ::ffff:0:0/96 100"
+  if [[ -f "${gai}" ]] && grep -qF "${line}" "${gai}" 2>/dev/null; then
+    log_ok "IPv4-Präferenz bereits in ${gai} aktiv"
+    return 0
+  fi
+  printf '# IPv4-Präferenz (p2d2 V1s, %s): Workaround gegen transiente IPv6-Resets zu GitHub Pages\n%s\n' \
+    "$(date '+%Y-%m-%d')" "${line}" >> "${gai}" \
+    || { log_error "IPv4-Präferenz konnte nicht in ${gai} geschrieben werden"; return 1; }
+  log_ok "IPv4-Präferenz in ${gai} aktiviert (${line})"
+}
+
+apply_ipv4_preference() {
+  case "${NET_PREFER_IPV4:-auto}" in
+    never) return 0 ;;
+    always) _enable_ipv4_preference; return $? ;;
+    auto) ;;
+  esac
+
+  # auto: kurze IPv6-Probe gegen GitHub Pages (dem betroffenen Anycast-Ziel).
+  if curl -6 -sS -I --connect-timeout 5 --max-time 5 -o /dev/null \
+      "https://prometheus-community.github.io/helm-charts/index.yaml" 2>/dev/null; then
+    log "IPv6-Pfad zu GitHub Pages erreichbar — keine IPv4-Präferenz nötig"
+    return 0
+  fi
+  log_warn "IPv6-Probe zu GitHub Pages fehlgeschlagen — bevorzuge IPv4 (Workaround)"
+  _enable_ipv4_preference
 }

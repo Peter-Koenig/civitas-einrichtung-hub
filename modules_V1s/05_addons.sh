@@ -54,7 +54,8 @@ install_helm() {
   tmpdir="$(mktemp -d)"
   local url="https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
 
-  curl -fsSL "${url}" -o "${tmpdir}/helm.tar.gz"
+  retry 3 10 curl -fsSL "${url}" -o "${tmpdir}/helm.tar.gz" \
+    || { log_error "Helm-Tarball-Download fehlgeschlagen: ${url}"; exit 1; }
   tar -xzf "${tmpdir}/helm.tar.gz" -C "${tmpdir}"
   install "${tmpdir}/linux-amd64/helm" /usr/local/bin/helm
   rm -rf "${tmpdir}"
@@ -71,8 +72,9 @@ install_gateway_api_crds() {
     return 0
   fi
 
-  kubectl apply -f \
-    "https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml"
+  retry 3 10 kubectl apply -f \
+    "https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml" \
+    || { log_error "Gateway-API-CRDs Installation fehlgeschlagen"; exit 1; }
 
   local waited=0
   until kubectl get crd gateways.gateway.networking.k8s.io &>/dev/null; do
@@ -95,7 +97,7 @@ install_prometheus_operator_crds() {
     return 0
   fi
 
-  kubectl apply --server-side -f \
+  retry 3 10 kubectl apply --server-side -f \
     "https://github.com/prometheus-operator/prometheus-operator/releases/download/v0.89.0/stripped-down-crds.yaml" \
     || { log_error "Prometheus-Operator-CRDs Installation fehlgeschlagen"; exit 1; }
 
@@ -120,7 +122,8 @@ install_cert_manager() {
     return 0
   fi
 
-  helm repo add jetstack https://charts.jetstack.io --force-update
+  retry 3 10 helm repo add jetstack https://charts.jetstack.io --force-update \
+    || { log_error "helm repo add jetstack fehlgeschlagen"; exit 1; }
 
   helm upgrade --install cert-manager jetstack/cert-manager \
     --namespace "${CERT_MANAGER_NAMESPACE}" \
@@ -265,7 +268,7 @@ setup_ca_trust() {
   # strukturell nicht möglich. Der Download läuft bei jedem Durchlauf; bei
   # Fehlschlag wird die finale Verifikation am Funktionsende zuschlagen.
   local le_root_url="https://letsencrypt.org/certs/isrgrootx1.pem"
-  if curl -fsSL "${le_root_url}" >> "${ca_cert_local}"; then
+  if retry 3 10 curl -fsSL "${le_root_url}" >> "${ca_cert_local}"; then
     log_ok "ISRG Root X1 ergänzt in ${ca_cert_local}"
   else
     log_warn "ISRG Root X1 konnte nicht heruntergeladen werden — ${le_root_url}"
@@ -312,7 +315,8 @@ install_nginx_ingress() {
     return 0
   fi
 
-  helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx --force-update
+  retry 3 10 helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx --force-update \
+    || { log_error "helm repo add ingress-nginx fehlgeschlagen"; exit 1; }
 
   local values_file
   values_file="$(mktemp)"

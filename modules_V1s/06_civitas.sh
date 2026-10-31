@@ -49,7 +49,6 @@ install_civitas() {
   log "=== Phase 2: CIVITAS/CORE-Plattform ==="
   check_dns_hard
   clone_civitas_repo
-  apply_ipv4_preference            # Schritt 2.0a: IPv4-Präferenz (Workaround IPv6-Reset)
   check_helm_repo_egress           # Schritt 2.0c: Egress-Preflight (Helm-Repos)
   build_geoportal_backend_image   # Schritt 2.0b: V1s — Portal-Backend-Image bauen und in containerd importieren
   apply_overlay
@@ -403,41 +402,7 @@ clone_civitas_repo() {
   log_ok "Repository bereit: ${CC_V1_REPO_PATH}"
 }
 
-
-# ── IPv4-Präferenz (Workaround gegen transient gestörte IPv6-Pfade zu GitHub Pages) ─
-# Helm ist ein Go-Binary und respektiert getaddrinfo/gai.conf. NET_PREFER_IPV4=auto
-# prüft per IPv6-Probe (HEAD gegen GitHub Pages), ob IPv6 zuverlässig ist; schlägt
-# sie fehl, wird IPv4 bevorzugt. Idempotent, kein Interface-IPv6-Disable, kein sysctl.
-_enable_ipv4_preference() {
-  local gai="${GAI_CONF:-/etc/gai.conf}"
-  local line="precedence ::ffff:0:0/96 100"
-  if [[ -f "${gai}" ]] && grep -qF "${line}" "${gai}" 2>/dev/null; then
-    log_ok "IPv4-Präferenz bereits in ${gai} aktiv"
-    return 0
-  fi
-  printf '# IPv4-Präferenz (p2d2 V1s, %s): Workaround gegen transiente IPv6-Resets zu GitHub Pages\n%s\n' \
-    "$(date '+%Y-%m-%d')" "${line}" >> "${gai}" \
-    || { log_error "IPv4-Präferenz konnte nicht in ${gai} geschrieben werden"; return 1; }
-  log_ok "IPv4-Präferenz in ${gai} aktiviert (${line})"
-}
-
-apply_ipv4_preference() {
-  case "${NET_PREFER_IPV4:-auto}" in
-    never) return 0 ;;
-    always) _enable_ipv4_preference; return $? ;;
-    auto) ;;
-  esac
-
-  # auto: kurze IPv6-Probe gegen GitHub Pages (dem betroffenen Anycast-Ziel).
-  if curl -6 -sS -I --connect-timeout 5 --max-time 5 -o /dev/null \
-      "https://prometheus-community.github.io/helm-charts/index.yaml" 2>/dev/null; then
-    log "IPv6-Pfad zu GitHub Pages erreichbar — keine IPv4-Präferenz nötig"
-    return 0
-  fi
-  log_warn "IPv6-Probe zu GitHub Pages fehlgeschlagen — bevorzuge IPv4 (Workaround)"
-  _enable_ipv4_preference
-}
-
+# ── Schritt 2.0c: Egress-Preflight für Helm-Repos ─
 
 # ── Schritt 2.0c: Egress-Preflight für Helm-Repos ────────────────────────────
 # Liest die Helm-Repo-URLs aus dem GEKLONTEN Stand (software_references.yml, Feld

@@ -27,7 +27,6 @@ source "$REPO/modules_V1s/06_civitas.sh"
 # überschreiben sie die realen Definitionen bzw. ergänzen ausgelagerte Module).
 check_dns_hard() { :; }
 clone_civitas_repo() { :; }
-apply_ipv4_preference() { :; }
 check_helm_repo_egress() { :; }
 build_geoportal_backend_image() { :; }
 apply_overlay() { :; }
@@ -56,5 +55,32 @@ rc=$?
 check "IDM-Fehler -> rc=1" "1" "$rc"
 check "write_le_backup VOR IDM" "WRITE_BACKUP" "$(head -1 "$ORDER")"
 check "IDM wurde aufgerufen" "yes" "$(grep -q 'IDM' "$ORDER" && echo yes || echo no)"
+
+# ── run_preflight-Reihenfolge: apply_ipv4_preference nach check_tools ────────
+# run_preflight wird extrahiert (03_preflight.sh setzt set -euo pipefail beim
+# Sourcen). Nur check_tools und apply_ipv4_preference protokollieren die
+# Reihenfolge, alle übrigen Aufrufe sind No-ops.
+sed -n '/^run_preflight()/,/^}/p' "$REPO/modules_V1s/03_preflight.sh" > "$T/run_preflight.sh"
+wait_for_apt_lock() { :; }
+check_os() { :; }
+check_cpu() { :; }
+check_ram() { :; }
+check_disk() { :; }
+check_swap() { :; }
+check_network() { :; }
+check_tools() { echo "CHECK_TOOLS" >> "$ORDER"; }
+apply_ipv4_preference() { echo "IPV4" >> "$ORDER"; }
+check_timezone() { :; }
+check_inotify() { :; }
+check_dns_warn() { :; }
+check_smtp() { :; }
+check_k3s_version() { :; }
+check_pbs_backup() { :; }
+check_nonfree_source() { :; }
+# shellcheck disable=SC1090
+source "$T/run_preflight.sh"
+: > "$ORDER"
+( run_preflight ) >/dev/null 2>&1
+check "apply_ipv4_preference nach check_tools" "CHECK_TOOLS IPV4" "$(tr '\n' ' ' < "$ORDER" | sed 's/ $//')"
 
 rm -rf "$T"

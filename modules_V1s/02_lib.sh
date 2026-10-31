@@ -76,6 +76,23 @@ assert_success() {
   fi
 }
 
+# ── Wiederholungs-Hilfe für transiente Netzfehler ────────────────────────────
+# retry <versuche> <pause_s> <befehl...>
+# Wiederholt <befehl...> bis zu <versuche> Mal; zwischen den Versuchen wird
+# <pause_s> Sekunden gewartet. Gibt 0 zurück, sobald ein Versuch gelingt,
+# sonst 1 (Erschöpfung).
+retry() {
+  local tries="$1" pause="$2" i; shift 2
+  for (( i = 1; i <= tries; i++ )); do
+    if "$@"; then return 0; fi
+    if (( i < tries )); then
+      log_warn "Versuch ${i}/${tries} fehlgeschlagen: $* - wiederhole in ${pause}s"
+      sleep "${pause}"
+    fi
+  done
+  return 1
+}
+
 # ── Passwort-Generierung nach Policy ──────────────────────────────────────────
 # Erzeugt ein Passwort das folgende Policy erfüllt:
 #   - mind. 12 Zeichen (konfigurierbar via $1)

@@ -79,6 +79,14 @@ touch "$CC_V1_REPO_PATH/core_platform/vars/software_references.yml"
 # shellcheck source=../../modules_V1s/06_civitas.sh
 source "$REPO/modules_V1s/06_civitas.sh"
 
+# apply_ipv4_preference lebt jetzt in 03_preflight.sh (setzt beim Sourcen
+# set -euo pipefail). Nur die beiden Funktionen extrahieren, um set -e im
+# Suite-Kontext zu vermeiden.
+sed -n '/^_enable_ipv4_preference()/,/^}/p;/^apply_ipv4_preference()/,/^}/p' \
+  "$REPO/modules_V1s/03_preflight.sh" > "$T/ipv4.sh"
+# shellcheck disable=SC1090
+source "$T/ipv4.sh"
+
 # ── CC_EGRESS_CHECK-Modi (helm-Stub statt curl) ───────────────────────────────
 export CC_EGRESS_CHECK=strict
 export HELM_MODE=ok
