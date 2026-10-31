@@ -130,4 +130,53 @@ printf '%s\n%s\n' "$SC/o1.txt" "$SC/o2.txt" > "$SC/outfiles"
 ( run_cc_cli_exec >/dev/null 2>&1 )
 check "T8 connection reset -> zwei Versuche" "2" "$(cat "$SC/count")"
 
+# T9 (Punkt 3a): frühes "Connection refused" in der Rohdatei + finales Fatal
+# "password policy" -> KEIN Retry (die Rohdatei zählt bei vorhandenen Fatals nicht).
+reset_state
+SC="$T/s9"; mkdir -p "$SC"; export STUB_CONTROL="$SC"
+mk_fatal_block "$SC/l1.log" 'Keycloak password_policy violation'
+printf 'FAILED - RETRYING ... Connection refused\nsome other output\n' > "$SC/o1.txt"
+printf '1\n' > "$SC/rcs"
+printf '%s\n' "$SC/l1.log" > "$SC/logfiles"
+printf '%s\n' "$SC/o1.txt" > "$SC/outfiles"
+( run_cc_cli_exec >/dev/null 2>&1 )
+check "T9 frühes Connection refused + Fatal policy -> ein Versuch" "1" "$(cat "$SC/count")"
+
+# T10 (Punkt 3c): zwei Fatals (einer transient, einer nicht) -> KEIN Retry.
+reset_state
+SC="$T/s10"; mkdir -p "$SC"; export STUB_CONTROL="$SC"
+mk_fatal_block "$SC/l1.log" 'read: connection reset by peer'
+printf '\n' >> "$SC/l1.log"
+mk_fatal_block "$SC/f2.log" 'Keycloak password_policy violation'
+cat "$SC/f2.log" >> "$SC/l1.log"
+printf '' > "$SC/o1.txt"
+printf '1\n' > "$SC/rcs"
+printf '%s\n' "$SC/l1.log" > "$SC/logfiles"
+printf '%s\n' "$SC/o1.txt" > "$SC/outfiles"
+( run_cc_cli_exec >/dev/null 2>&1 )
+check "T10 zwei Fatals gemischt -> ein Versuch" "1" "$(cat "$SC/count")"
+
+# T11 (Punkt 3d): kein Fatal, rc != 0, Ende der Rohdatei enthält connection reset -> Retry.
+reset_state
+SC="$T/s11"; mkdir -p "$SC"; export STUB_CONTROL="$SC"
+printf '' > "$SC/l1.log"; printf '' > "$SC/l2.log"
+printf 'some output\nread: connection reset by peer\n' > "$SC/o1.txt"
+printf '' > "$SC/o2.txt"
+printf '1\n0\n' > "$SC/rcs"
+printf '%s\n%s\n' "$SC/l1.log" "$SC/l2.log" > "$SC/logfiles"
+printf '%s\n%s\n' "$SC/o1.txt" "$SC/o2.txt" > "$SC/outfiles"
+( run_cc_cli_exec >/dev/null 2>&1 )
+check "T11 kein Fatal, tail connection reset -> zwei Versuche" "2" "$(cat "$SC/count")"
+
+# T12 (Punkt 3e): rc == 124 -> Retry.
+reset_state
+SC="$T/s12"; mkdir -p "$SC"; export STUB_CONTROL="$SC"
+printf '' > "$SC/l1.log"; printf '' > "$SC/l2.log"
+printf '' > "$SC/o1.txt"; printf '' > "$SC/o2.txt"
+printf '124\n0\n' > "$SC/rcs"
+printf '%s\n%s\n' "$SC/l1.log" "$SC/l2.log" > "$SC/logfiles"
+printf '%s\n%s\n' "$SC/o1.txt" "$SC/o2.txt" > "$SC/outfiles"
+( run_cc_cli_exec >/dev/null 2>&1 )
+check "T12 rc 124 -> zwei Versuche" "2" "$(cat "$SC/count")"
+
 rm -rf "$T"

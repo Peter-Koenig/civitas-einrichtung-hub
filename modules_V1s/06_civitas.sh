@@ -1084,8 +1084,15 @@ run_cc_cli_exec() {
       tolerated_404=true
       rm -f "${raw_file}"
       break
-    elif grep -Eiq "${transient_re}" "${raw_file}" || (( fatal_transient > 0 )); then
-      transient=true
+    elif (( fatal_count > 0 )); then
+      # transient nur, wenn ALLE nicht-ignorierten fatal:-Bloecke transient sind.
+      # (Die Rohdatei wird bei vorhandenen Fatals nicht ausgewertet — sonst würde
+      # ein früheres "RETRYING ... Connection refused" fälschlich als transient gelten.)
+      (( fatal_transient == fatal_count )) && transient=true
+    else
+      # kein auswertbarer fatal-Block (Absturz vor/außerhalb des Playbooks):
+      # nur das Ende der Rohdatei prüfen.
+      tail -n 200 "${raw_file}" | grep -Eiq "${transient_re}" && transient=true
     fi
 
     if [[ "${transient}" == "true" && ${attempt} -lt ${CC_EXEC_ATTEMPTS} ]]; then
