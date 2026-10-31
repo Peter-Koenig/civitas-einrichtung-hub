@@ -1076,6 +1076,35 @@ _local_cause_line() {
   printf '%s' "${line}" | cut -c1-300
 }
 
+# ── GeoServer-Authentifizierungsdiagnose (Teil B) ────────────────────────────
+# Sammelt gefilterte GeoServer-Logzeilen (keine Passwoerter) in eine Datei
+# (Modus 0600). Der Sammler darf den Installer NIE abbrechen und die
+# Retry-Entscheidung nicht veraendern (|| true).
+collect_geoserver_auth_diag() {
+  local attempt="$1"
+  local diag_file="${CC_CLI_PLAYBOOK_DIR}/logs/geoserver_auth_diag_${attempt}.txt"
+  local ns pod
+  mkdir -p "$(dirname "${diag_file}")" 2>/dev/null || true
+  ( umask 077
+    {
+      date -u '+%Y-%m-%dT%H:%M:%SZ'
+      kubectl get pods -A -l app=geoserver-geoserver -o wide 2>/dev/null || true
+      # Namespace und neuesten Pod ermitteln (wie im Task: sortiert nach
+      # creationTimestamp, letzter Eintrag).
+      ns="$(kubectl get pods -A -l app=geoserver-geoserver --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1].metadata.namespace}' 2>/dev/null || true)"
+      pod="$(kubectl get pods -A -l app=geoserver-geoserver --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1].metadata.name}' 2>/dev/null || true)"
+      if [[ -n "${ns}" && -n "${pod}" ]]; then
+        timeout 30 kubectl logs -n "${ns}" "${pod}" -c geoserver-geoserver --since=20m 2>/dev/null \
+          | grep -E 'Failed login|Storing user/groups|Start reloading|Reloading .* successful|Brute force|Server startup|Successful lock|concurrent' || true
+      fi
+    } > "${diag_file}" 2>/dev/null
+  ) || true
+  if [[ -f "${diag_file}" ]]; then
+    chmod 600 "${diag_file}" 2>/dev/null || true
+    log "GeoServer-Diagnose gespeichert: ${diag_file}"
+  fi
+}
+
 # ── Schritt 2.4: cc_cli exec ─────────────────────────────────────────────────
 # Timeout schützt vor unbegrenzt hängenden Deployments.
 run_cc_cli_exec() {
@@ -1178,10 +1207,13 @@ run_cc_cli_exec() {
       tail -n 200 "${raw_file}" | grep -Eiq "${transient_re}" && transient=true
     fi
 
-    # GeoServer-401 im letzten Fatal-Block? (Teil A: benannte Warnung)
+    # GeoServer-401 im letzten Fatal-Block? (Teil A/B: Diagnose + benannte Warnung)
     local geo_401=false
     if (( fatal_count > 0 )) && last_fatal_matches "${ansible_log_file}" "${geoserver_401_re}"; then
       geo_401=true
+    fi
+    if [[ "${geo_401}" == "true" ]]; then
+      collect_geoserver_auth_diag "${attempt}"
     fi
 
     if [[ "${transient}" == "true" && ${attempt} -lt ${CC_EXEC_ATTEMPTS} ]]; then

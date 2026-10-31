@@ -239,4 +239,58 @@ printf '%s\n%s\n' "$SC/o1.txt" "$SC/o2.txt" > "$SC/outfiles"
 ( run_cc_cli_exec >/dev/null 2>&1 )
 check "T16 zwei GeoServer-401 -> zwei Versuche" "2" "$(cat "$SC/count")"
 
+# T17 (Turn 11 B): GeoServer-401 loest den Sammler aus (Datei existiert, 600, gefiltert)
+reset_state
+SC="$T/s17"; mkdir -p "$SC"; export STUB_CONTROL="$SC"
+cat > "$SC/kubectl.sh" <<'KUBE'
+#!/usr/bin/env bash
+case "$*" in
+  *"logs"*)
+    printf '2026-10-31 17:12:41 INFO Failed login for user admin from 10.0.0.1\n'
+    printf '2026-10-31 17:12:45 INFO Storing user/groups successful for service named default\n'
+    printf 'some unrelated line\n'
+    ;;
+  *".metadata.namespace"*)
+    printf 'cc-prd-geodata-stack'
+    ;;
+  *".metadata.name"*)
+    printf 'geoserver-geoserver-abc123'
+    ;;
+  *)
+    printf 'cc-prd-geodata-stack  geoserver-geoserver-abc123  1/1  Running\n'
+    ;;
+esac
+exit 0
+KUBE
+chmod +x "$SC/kubectl.sh"
+export KUBECTL_SCRIPT="$SC/kubectl.sh"
+mk_geo401 "$SC/l1.log"
+printf '' > "$SC/o1.txt"; printf '' > "$SC/o2.txt"
+printf '1\n0\n' > "$SC/rcs"
+printf '%s\n%s\n' "$SC/l1.log" "" > "$SC/logfiles"
+printf '%s\n%s\n' "$SC/o1.txt" "$SC/o2.txt" > "$SC/outfiles"
+( run_cc_cli_exec >/dev/null 2>&1 )
+DIAG="$CC_CLI_PLAYBOOK_DIR/logs/geoserver_auth_diag_1.txt"
+check "T17 Sammler-Datei existiert" "yes" "$([[ -f "$DIAG" ]] && echo yes || echo no)"
+check "T17 Sammler-Datei Modus 600" "600" "$(stat -c %a "$DIAG" 2>/dev/null || echo 0)"
+check "T17 enthaelt gefilterte Zeile" "yes" "$(grep -q 'Failed login' "$DIAG" 2>/dev/null && echo yes || echo no)"
+check "T17 filtert Unerwuenschtes" "no" "$(grep -q 'some unrelated line' "$DIAG" 2>/dev/null && echo yes || echo no)"
+
+# T17b (Turn 11 B): Sammler-Fehler (kubectl rc 1) aendert die Retry-Entscheidung nicht.
+reset_state
+SC="$T/s17b"; mkdir -p "$SC"; export STUB_CONTROL="$SC"
+cat > "$SC/kubectl.sh" <<'KUBE'
+#!/usr/bin/env bash
+exit 1
+KUBE
+chmod +x "$SC/kubectl.sh"
+export KUBECTL_SCRIPT="$SC/kubectl.sh"
+mk_geo401 "$SC/l1.log"
+printf '' > "$SC/o1.txt"; printf '' > "$SC/o2.txt"
+printf '1\n0\n' > "$SC/rcs"
+printf '%s\n%s\n' "$SC/l1.log" "" > "$SC/logfiles"
+printf '%s\n%s\n' "$SC/o1.txt" "$SC/o2.txt" > "$SC/outfiles"
+( run_cc_cli_exec >/dev/null 2>&1 )
+check "T17b Sammler-Fehler -> trotzdem zwei Versuche" "2" "$(cat "$SC/count")"
+
 rm -rf "$T"
