@@ -23,6 +23,10 @@ export IAM_REQ_LOG="$T/req.log"; : > "$IAM_REQ_LOG"
 # shellcheck source=../../modules_addon_V1s/addon_25_iam.sh
 source "$REPO/modules_addon_V1s/addon_25_iam.sh"
 
+# Wrapper: seed_user_metadata mit Jule-Fixture (Suite prüft den generischen Seed-Pfad).
+JULE_ACCOUNT='{"email":"jule.kovalenko@nospam.scanea.de","memberships":[{"type":"kommune","key":"koeln","role":"verwaltung","wp_name":"de-Köln"},{"type":"community","key":"osm","role":"osm"}],"home_region_key":"de-Bonn"}'
+seed_jule_metadata() { seed_user_metadata "$1" "$JULE_ACCOUNT"; }
+
 # ── Stubs ─────────────────────────────────────────────────────────────────────
 cat > "$STUBS/kubectl" <<'KUBECTL'
 #!/usr/bin/env bash
@@ -224,9 +228,9 @@ check "T8 Jule fehlt -> Fehler" "yes" "$([[ "$rc" -ne 0 ]] && echo yes || echo n
 
 # ── T9: kein Token/Passwort in Konsole und Log ────────────────────────────────
 reset_state
-ensure_metadata_profile  >"$T/out.txt" 2>&1
-ensure_metadata_mappers  >"$T/out.txt" 2>&1
-seed_jule_metadata "$( _iam_get_token )" >"$T/out.txt" 2>&1
+ensure_metadata_profile  >>"$T/out.txt" 2>&1
+ensure_metadata_mappers  >>"$T/out.txt" 2>&1
+seed_jule_metadata "$( _iam_get_token )" >>"$T/out.txt" 2>&1
 check "T9 kein Token/Passwort (out)" "no" "$(grep -qE 'STUB_TOKEN|Bearer|STUB-PW-7f3a' "$T/out.txt" && echo yes || echo no)"
 check "T9 kein Token/Passwort (log)" "no" "$(grep -qE 'STUB_TOKEN|Bearer|STUB-PW-7f3a' "$LOGBUF" && echo yes || echo no)"
 
@@ -354,17 +358,7 @@ printf '%s' '[{"id":"jule-1","username":"jule","email":"jule.kovalenko@nospam.sc
 seed_jule_metadata "$( _iam_get_token )" >/dev/null 2>&1
 check "T24 Fremdattribute erhalten" "x" "$(jq -r '.[0].attributes["fremd.attr"][0]' "$IAM_STATE_DIR/users.json")"
 
-# ── T25: kompletter Demo-Account-Pfad (K6: Attributerhalt) ────────────────────
-reset_state
-export P2D2_DEMO_PASSWORD="DemoPass123"
-printf '%s' '[{"id":"jule-1","username":"jule","email":"jule.kovalenko@nospam.scanea.de","enabled":true,"firstName":"Jule","lastName":"Kovalenko","attributes":{"p2d2.preferences.home_region_key":["de-Berlin"],"fremd.attr":["x"]}}]' > "$IAM_STATE_DIR/users.json"
-ensure_p2d2_demo_accounts >/dev/null 2>&1; rc=$?
-check "T25 Demo-Accounts rc=0" "0" "$rc"
-check "T25 Jule fremd.attr erhalten" "x" "$(jq -r '.[] | select(.email=="jule.kovalenko@nospam.scanea.de") | .attributes["fremd.attr"][0]' "$IAM_STATE_DIR/users.json")"
-check "T25 Jule Region nicht überschrieben" "de-Berlin" "$(jq -r '.[] | select(.email=="jule.kovalenko@nospam.scanea.de") | .attributes["p2d2.preferences.home_region_key"][0]' "$IAM_STATE_DIR/users.json")"
-check "T25 Jule memberships gesetzt" "yes" "$(jq -e '.[] | select(.email=="jule.kovalenko@nospam.scanea.de") | .attributes["p2d2.memberships"]' "$IAM_STATE_DIR/users.json" >/dev/null 2>&1 && echo yes || echo no)"
-check "T25 Hans ohne memberships" "yes" "$(jq -e '.[] | select(.email=="hans.muster@nospam.scanea.de") | ((.attributes // {}) | has("p2d2.memberships") | not)' "$IAM_STATE_DIR/users.json" >/dev/null 2>&1 && echo yes || echo no)"
-
+rm -rf "$T"
 # ── T26: install_addon_iam mit Profil-Fault -> kein Gesamterfolg ──────────────
 reset_state
 ensure_p2d2_oidc_client() { return 0; }

@@ -53,7 +53,7 @@ valid_env() {
   export P2D2_OSM_IDP_CLIENT_SECRET="osm-secret"
   export P2D2_GITHUB_TOKEN="gh-token"
   export P2D2_GITLAB_TOKEN="gl-token"
-  export P2D2_DEMO_ACCOUNTS="false"
+  export ADDON_SUPPLEMENT_DIR="$T/supplement"
   export P2D2_OSM_IDP_ENABLE="false"
   local key site_prefix
   for key in MAIN DEVELOP DE1 DE2 FV; do

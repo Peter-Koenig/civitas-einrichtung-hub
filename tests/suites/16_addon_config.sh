@@ -46,7 +46,7 @@ valid_env() {
   export P2D2_GITHUB_TOKEN="gh-token"
   export P2D2_GITLAB_TOKEN="gl-token"
 
-  export P2D2_DEMO_ACCOUNTS="false"
+  export ADDON_SUPPLEMENT_DIR="$T/supplement"
   export P2D2_OSM_IDP_ENABLE="false"
 
   local key site_prefix
@@ -103,8 +103,8 @@ b="true";  addon_normalize_bool b; check "7 true→true" "true" "$b"
 b="false"; addon_normalize_bool b; check "7 false→false" "false" "$b"
 b="TRUE";  addon_normalize_bool b; check "7 TRUE→true" "true" "$b"
 b="FALSE"; addon_normalize_bool b; check "7 FALSE→false" "false" "$b"
-check "7 bool leer Fehler" "1" "$(rc_of export P2D2_DEMO_ACCOUNTS='')"
-check "7 bool ungültig Fehler" "1" "$(rc_of export P2D2_DEMO_ACCOUNTS='maybe')"
+check "7 bool leer Fehler" "1" "$(rc_of export P2D2_OSM_IDP_ENABLE='')"
+check "7 bool ungültig Fehler" "1" "$(rc_of export P2D2_OSM_IDP_ENABLE='maybe')"
 
 # ── Test 8: fehlender/CHANGEME nicht-sensitiver Stage-Wert → Fehler ────────────
 check "8 Stage-Wert fehlt Fehler" "1" "$(rc_of unset P2D2_MAIN_DB_USER)"
@@ -127,5 +127,14 @@ check "11 kein privater Schlüssel" "0" "$(grep -cE 'BEGIN (RSA |EC |OPENSSH )?P
 check "11 kein GitLab-Token" "0" "$(grep -cE 'glpat-[A-Za-z0-9_-]+' "$TEMPLATE")"
 check "11 kein GitHub-Token" "0" "$(grep -cE 'gh[pousr]_[A-Za-z0-9]+' "$TEMPLATE")"
 check "11 kein AWS-Key" "0" "$(grep -cE 'AKIA[0-9A-Z]{16}' "$TEMPLATE")"
+
+# ── E-Tests: Demo-Accounts über Datei + bedingtes Kennwort ───────────────────
+rm -f "$T/supplement/demo-accounts.md"
+check "E-T1 Datei fehlt + PW leer valid" "0" "$(rc_of unset P2D2_DEMO_PASSWORD)"
+mkdir -p "$T/supplement"
+touch "$T/supplement/demo-accounts.md"
+check "E-T2 Datei + PW leer Fehler" "1" "$(rc_of unset P2D2_DEMO_PASSWORD)"
+rm -f "$T/supplement/demo-accounts.md"
+check "E-T4 P2D2_DEMO_ACCOUNTS ignoriert (Warnung, rc 0)" "0" "$(rc_of export P2D2_DEMO_ACCOUNTS='true')"
 
 rm -rf "$T"
