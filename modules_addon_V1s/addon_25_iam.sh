@@ -46,15 +46,9 @@ ADDON_IAM_HOSTS=(
 )
 ADDON_IAM_DEV_ORIGIN="http://localhost:4321"
 
-# 6 Demo-Accounts (Turn 43; username|email|vorname|nachname|rollen space-getrennt).
-ADDON_IAM_DEMO_USERS=(
-  "hans|hans.muster@nospam.scanea.de|Hans|Meier|editor verwaltung"
-  "jule|jule.kovalenko@nospam.scanea.de|Jule|Kovalenko|verwaltung osm"
-  "Chisom|chisom.eze@nospam.scanea.de|Chisom|Eze|verwaltung"
-  "arman|arman.ekov@nospam.scanea.de|Arman|Ekov|verwaltung"
-  "meera|meera.pillai@nospam.scanea.de|Meera|Pillai|osm qs1_reviewer"
-  "valentina|valentina.cruz@nospam.scanea.de|Valentina|Cruz|qs2_reviewer qs1_reviewer osm export_admin"
-)
+# Gemeinsame Client-Rollen (eine Quelle für ensure_p2d2_client_roles und die
+# Demo-Account-Validierung). Demo-Accounts selbst kommen aus supplement/demo-accounts.md.
+ADDON_IAM_CLIENT_ROLES=(editor export_admin qs1_reviewer qs2_reviewer osm verwaltung)
 
 # ── Helfer ─────────────────────────────────────────────────────────────────────
 # Master-Token holen (admin-cli Password Grant). Gibt das Token auf stdout aus.
@@ -90,11 +84,10 @@ _iam_get_token() {
 # 0 Treffer -> leer (Aufrufer meldet "nicht gefunden"); mehr als 1 -> Fehler.
 _iam_get_client_uid() {
   local token="$1"
-  local clients count
-  clients=$(curl -sk --max-time 15 \
-    "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/clients" \
-    -H "Authorization: Bearer ${token}" 2>/dev/null || true)
-  count=$(printf '%s' "${clients}" | jq "[.[] | select(.clientId==\"${ADDON_IAM_CLIENT_ID}\")] | length" 2>/dev/null || echo 0)
+  local count
+  _iam_call "${token}" GET "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/clients" || return 2
+  _iam_body_is 'type=="array"' || { log_error "OIDC-Client-Liste: unerwartete JSON-Form"; return 2; }
+  count=$(printf '%s' "${IAM_HTTP_BODY}" | jq "[.[] | select(.clientId==\"${ADDON_IAM_CLIENT_ID}\")] | length" 2>/dev/null || echo 0)
   if [[ "${count}" == "0" ]]; then
     return 0
   fi
@@ -102,7 +95,7 @@ _iam_get_client_uid() {
     log_error "OIDC-Client ${ADDON_IAM_CLIENT_ID} mehrdeutig (${count} Treffer)"
     return 1
   fi
-  printf '%s' "${clients}" | jq -r ".[] | select(.clientId==\"${ADDON_IAM_CLIENT_ID}\") | .id" 2>/dev/null
+  printf '%s' "${IAM_HTTP_BODY}" | jq -r ".[] | select(.clientId==\"${ADDON_IAM_CLIENT_ID}\") | .id" 2>/dev/null
 }
 
 # Keycloak-HTTP-Fehlercode in Klartext uebersetzen (fuer klare Log-Meldungen).
@@ -158,7 +151,7 @@ ensure_p2d2_oidc_client() {
   local token client_id_json client_uid http_code create_resp create_code create_body
   token=$(_iam_get_token) || return 1
 
-  client_uid=$(_iam_get_client_uid "${token}")
+  client_uid=$(_iam_get_client_uid "${token}") || return 1
 
   if [[ -n "${client_uid}" ]]; then
     log_ok "OIDC-Client ${ADDON_IAM_CLIENT_ID} existiert bereits (id ${client_uid})"
@@ -201,7 +194,7 @@ ensure_p2d2_oidc_client() {
     create_body=$(printf '%s' "${create_resp}" | sed '$d')
     if [[ "${create_code}" == "201" ]]; then
       log_ok "OIDC-Client ${ADDON_IAM_CLIENT_ID} angelegt"
-      client_uid=$(_iam_get_client_uid "${token}")
+      client_uid=$(_iam_get_client_uid "${token}") || return 1
     else
       log_warn "OIDC-Client anlegen fehlgeschlagen (HTTP ${create_code}): ${create_body}"
     fi
@@ -237,7 +230,7 @@ ensure_p2d2_client_roles() {
   log "=== AddOn 25: Keycloak Client-Rollen (6) ==="
   local token client_uid roles_json
   token=$(_iam_get_token) || return 1
-  client_uid=$(_iam_get_client_uid "${token}")
+  client_uid=$(_iam_get_client_uid "${token}") || return 1
   if [[ -z "${client_uid}" ]]; then
     log_error "OIDC-Client ${ADDON_IAM_CLIENT_ID} nicht gefunden — zuerst ensure_p2d2_oidc_client"
     return 1
@@ -248,7 +241,7 @@ ensure_p2d2_client_roles() {
     -H "Authorization: Bearer ${token}" 2>/dev/null || echo "[]")
 
   local role
-  for role in editor export_admin qs1_reviewer qs2_reviewer osm verwaltung; do
+  for role in "${ADDON_IAM_CLIENT_ROLES[@]}"; do
     if printf '%s' "${roles_json}" | jq -e ".[] | select(.name==\"${role}\")" >/dev/null 2>&1; then
       log_ok "Rolle ${role} existiert bereits"
       continue
@@ -272,7 +265,7 @@ ensure_p2d2_role_token_mapper() {
   log "=== AddOn 25: Rollen-Token-Mapper (ID-Token) ==="
   local token client_uid mappers_json
   token=$(_iam_get_token) || return 1
-  client_uid=$(_iam_get_client_uid "${token}")
+  client_uid=$(_iam_get_client_uid "${token}") || return 1
   if [[ -z "${client_uid}" ]]; then
     log_error "OIDC-Client ${ADDON_IAM_CLIENT_ID} nicht gefunden"
     return 1
@@ -474,7 +467,7 @@ ensure_metadata_mappers() {
   log "=== AddOn 25: Metadaten-Protocol-Mapper (2) ==="
   local token client_uid
   token=$(_iam_get_token) || return 1
-  client_uid=$(_iam_get_client_uid "${token}")
+  client_uid=$(_iam_get_client_uid "${token}") || return 1
   if [[ -z "${client_uid}" ]]; then
     log_error "OIDC-Client ${ADDON_IAM_CLIENT_ID} nicht gefunden"
     return 1
@@ -565,131 +558,199 @@ ensure_osm_identity_provider() {
   _iam_ensure_idp_mapper "${token}" "osm" "OSM display_name" "${display_payload}"
 }
 
+# ── Demo-Accounts: Datei + Loader + Validierung ────────────────────────────────
+# Extrahiert den ersten YAML-Block (ohne Fences) der Demo-Account-Datei.
+_iam_demo_extract_yaml() {
+  local fence='```'
+  awk -v f="${fence}" '
+    $0 ~ "^" f "yaml[[:space:]]*$" { in_block=1; next }
+    in_block && $0 ~ "^" f "[[:space:]]*$" { exit }
+    in_block { print }
+  ' "$1"
+}
+
+# Validiert das geparste JSON; je Verstoß eine Fehlerzeile. 0 nur ohne Verstoß.
+_iam_demo_validate() {
+  local doc="$1" roles_json errors
+  roles_json=$(printf '%s\n' "${ADDON_IAM_CLIENT_ROLES[@]}" | jq -R . | jq -sc .)
+  errors=$(jq -r --argjson allowed "${roles_json}" '
+    def bad_str($n): (type != "string") or (length == 0) or (length > $n);
+    def opt_str($n): (type != "null") and ((type != "string") or (length == 0) or (length > $n));
+    (if .version != 1 then "version: erwartet 1" else empty end),
+    (if (.accounts | type) != "array" then "accounts: Liste erwartet" else empty end),
+    ((.accounts // [])[]? | . as $a
+      | (if ($a.username | bad_str(64)) then "\($a.username // "?"): username ungültig" else empty end),
+        (if ($a.email | bad_str(200)) then "\($a.username): email ungültig" else empty end),
+        (if ($a.first_name | bad_str(200)) then "\($a.username): first_name ungültig" else empty end),
+        (if ($a.last_name | bad_str(200)) then "\($a.username): last_name ungültig" else empty end),
+        (($a.roles // [])[]? | select(. as $r | ($allowed | index($r)) == null) | "\($a.username): unbekannte Rolle \(.)"),
+        (if ($a.home_region_key // null) != null and ($a.home_region_key | opt_str(200)) then "\($a.username): home_region_key ungültig" else empty end),
+        (if (($a.memberships // []) | length) > 50 then "\($a.username): mehr als 50 memberships" else empty end),
+        (($a.memberships // [])[]? | . as $m
+          | (if ($m.type | IN("kommune","community")) | not then "\($a.username): membership-type ungültig" else empty end),
+            (if ($m.key | bad_str(200)) then "\($a.username): membership-key ungültig" else empty end),
+            (if ($m.role // null) != null and ($m.role | opt_str(200)) then "\($a.username): membership-role ungültig" else empty end),
+            (if ($m.wp_name // null) != null and ($m.wp_name | opt_str(200)) then "\($a.username): membership-wp_name ungültig" else empty end)),
+        (if (($a.memberships // []) | tojson | length) > 4096 then "\($a.username): memberships zu lang" else empty end)),
+    ([(.accounts // [])[]?.username | ascii_downcase] | group_by(.) | map(select(length > 1) | .[0])[] | "doppelter username \(.)"),
+    ([(.accounts // [])[]?.email | ascii_downcase] | group_by(.) | map(select(length > 1) | .[0])[] | "doppelte email \(.)")
+  ' <<<"${doc}")
+  if [[ -n "${errors}" ]]; then
+    while IFS= read -r l; do log_error "demo-accounts: ${l}"; done <<<"${errors}"
+    return 1
+  fi
+  # Warnung (kein Fehler): Rolle verwaltung ohne kommune-Membership.
+  while IFS= read -r l; do
+    log_warn "demo-accounts: ${l}"
+  done < <(jq -r '(.accounts // [])[]? | select((.roles // []) | index("verwaltung") != null) | select(((.memberships // []) | map(select(.type == "kommune")) | length) == 0) | "\(.username): Rolle verwaltung ohne kommune-Membership"' <<<"${doc}")
+  return 0
+}
+
+# Laedt die Datei; setzt ADDON_IAM_DEMO_JSON (kompaktes JSON). Rückgabe 0/1.
+_iam_demo_load() {
+  local file raw doc
+  file="$(addon_demo_accounts_file)" || return 1
+  if [[ ! -f "${file}" ]]; then
+    log "Demo-Accounts: keine (Datei fehlt: ${file})"
+    ADDON_IAM_DEMO_JSON='{"version":1,"accounts":[]}'
+    return 0
+  fi
+  if [[ ! -r "${file}" ]]; then
+    log_error "Demo-Accounts: Datei nicht lesbar: ${file}"
+    return 1
+  fi
+  raw="$(_iam_demo_extract_yaml "${file}")"
+  [[ -n "${raw}" ]] || { log_error "Demo-Accounts: kein YAML-Block in ${file}"; return 1; }
+  doc="$(printf '%s' "${raw}" | yq -o=json '.' 2>/dev/null)" \
+    || { log_error "Demo-Accounts: YAML nicht lesbar (yq -o=json fehlgeschlagen)"; return 1; }
+  printf '%s' "${doc}" | jq -e 'type == "object"' >/dev/null 2>&1 \
+    || { log_error "Demo-Accounts: YAML erzeugt kein gültiges Objekt-JSON"; return 1; }
+  _iam_demo_validate "${doc}" || return 1
+  ADDON_IAM_DEMO_JSON="${doc}"
+  return 0
+}
+
 # ── 5. Demo-Accounts ───────────────────────────────────────────────────────────
+_iam_demo_account() {
+  local token="$1" client_uid="$2" demo_pass="$3" username="$4" email="$5" first_name="$6" last_name="$7" roles="$8"
+  local email_enc user_id
+  email_enc=$(jq -rn --arg e "${email}" '$e|@uri')
+
+  # Lookup (Antwort-/Formprüfung; Fehler = Account-Fehler, nicht "fehlt").
+  _iam_call "${token}" GET "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users?email=${email_enc}&exact=true" \
+    || { log_error "Demo-User ${email}: Lookup fehlgeschlagen"; return 1; }
+  _iam_body_is 'type=="array"' || { log_error "Demo-User ${email}: Lookup unerwartete JSON-Form"; return 1; }
+  user_id=$(printf '%s' "${IAM_HTTP_BODY}" | jq -r '.[0].id // empty')
+
+  if [[ -z "${user_id}" ]]; then
+    local create_payload
+    create_payload=$(jq -nc --arg u "${username}" --arg e "${email}" --arg fn "${first_name}" --arg ln "${last_name}" \
+      '{username:$u,email:$e,enabled:true,emailVerified:true,requiredActions:[],firstName:$fn,lastName:$ln}')
+    _iam_call "${token}" POST "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users" "${create_payload}" "201 409 200" \
+      || { log_error "Demo-User ${email}: Anlegen fehlgeschlagen (HTTP ${IAM_HTTP_CODE})"; return 1; }
+    _iam_call "${token}" GET "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users?email=${email_enc}&exact=true" \
+      || { log_error "Demo-User ${email}: Re-Lookup fehlgeschlagen"; return 1; }
+    _iam_body_is 'type=="array"' || { log_error "Demo-User ${email}: Re-Lookup unerwartete JSON-Form"; return 1; }
+    user_id=$(printf '%s' "${IAM_HTTP_BODY}" | jq -r '.[0].id // empty')
+  fi
+
+  [[ -n "${user_id}" ]] || { log_error "Demo-User ${email}: konnte nicht angelegt/gefunden werden"; return 1; }
+
+  # Profil idempotent (GET->Merge->PUT, nur bei Änderung).
+  local profile_patch profile_body user_json
+  profile_patch=$(jq -nc --arg fn "${first_name}" --arg ln "${last_name}" \
+    '{emailVerified:true,requiredActions:[],firstName:$fn,lastName:$ln}')
+  _iam_call "${token}" GET "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users/${user_id}" \
+    || { log_error "Demo-User ${email}: Profil-GET fehlgeschlagen"; return 1; }
+  _iam_body_is 'type=="object"' || { log_error "Demo-User ${email}: Profil-GET unerwartete JSON-Form"; return 1; }
+  user_json="${IAM_HTTP_BODY}"
+  profile_body=$(printf '%s' "${user_json}" | jq -c --argjson p "${profile_patch}" '. * $p')
+  if [[ "${profile_body}" != "${user_json}" ]]; then
+    _iam_call "${token}" PUT "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users/${user_id}" "${profile_body}" "200 204" \
+      || { log_error "Demo-User ${email}: Profil-PUT fehlgeschlagen (HTTP ${IAM_HTTP_CODE})"; return 1; }
+  fi
+
+  # Passwort setzen (Historie ist kein Fehler).
+  local pw_payload pw_body
+  pw_payload=$(jq -nc --arg pw "${demo_pass}" '{type:"password",value:$pw,temporary:false}')
+  _iam_req "${token}" PUT "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users/${user_id}/reset-password" "${pw_payload}"
+  if [[ "${IAM_HTTP_CODE}" != "204" && "${IAM_HTTP_CODE}" != "200" ]]; then
+    pw_body=$(printf '%s' "${IAM_HTTP_BODY}" | cut -c1-120)
+    if [[ "${IAM_HTTP_BODY}" == *invalidPasswordHistoryMessage* ]]; then
+      log_ok "Demo-User ${email}: Passwort unveraendert (Historie)"
+    else
+      log_warn "Demo-User ${email}: Passwort fehlgeschlagen (HTTP ${IAM_HTTP_CODE}): ${pw_body}"
+    fi
+  fi
+
+  # Rollen additiv zuweisen + Read-back.
+  local role_payload="[]" role role_id
+  for role in ${roles}; do
+    _iam_call "${token}" GET "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/clients/${client_uid}/roles/${role}" \
+      || { log_error "Demo-User ${email}: Rolle ${role} nicht lesbar"; return 1; }
+    role_id=$(printf '%s' "${IAM_HTTP_BODY}" | jq -r '.id // empty')
+    [[ -n "${role_id}" ]] && role_payload=$(printf '%s' "${role_payload}" | jq -c --arg id "${role_id}" --arg name "${role}" '. + [{"id":$id,"name":$name}]')
+  done
+  if [[ "${role_payload}" != "[]" ]]; then
+    _iam_call "${token}" POST "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users/${user_id}/role-mappings/clients/${client_uid}" "${role_payload}" "204 200" \
+      || { log_error "Demo-User ${email}: Rollenzuweisung fehlgeschlagen"; return 1; }
+  fi
+  _iam_call "${token}" GET "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users/${user_id}/role-mappings/clients/${client_uid}" \
+    || { log_error "Demo-User ${email}: Rollen-Read-back fehlgeschlagen"; return 1; }
+  _iam_body_is 'type=="array"' || { log_error "Demo-User ${email}: Rollen-Read-back unerwartete JSON-Form"; return 1; }
+  for role in ${roles}; do
+    printf '%s' "${IAM_HTTP_BODY}" | jq -e ".[] | select(.name==\"${role}\")" >/dev/null 2>&1 \
+      || { log_error "Demo-User ${email}: Rolle ${role} fehlt nach Zuweisung"; return 1; }
+  done
+
+  log_ok "Demo-User ${username} (id ${user_id}) — Rollen: ${roles}"
+  return 0
+}
+
 ensure_p2d2_demo_accounts() {
-  log "=== AddOn 25: Demo-Accounts (6) ==="
+  log "=== AddOn 25: Demo-Accounts ==="
+  _iam_demo_load || return 1
+  local n
+  n=$(printf '%s' "${ADDON_IAM_DEMO_JSON}" | jq '(.accounts // []) | length')
+  if [[ "${n}" == "0" ]]; then
+    log "Demo-Accounts: keine"
+    return 0
+  fi
+
   local token client_uid demo_pass
   token=$(_iam_get_token) || return 1
-  client_uid=$(_iam_get_client_uid "${token}")
+  client_uid=$(_iam_get_client_uid "${token}") || { log_error "AddOn 25: OIDC-Client-Auflösung fehlgeschlagen"; return 1; }
 
   demo_pass="${P2D2_DEMO_PASSWORD:-}"
   if [[ -z "${demo_pass}" ]]; then
     log_error "P2D2_DEMO_PASSWORD nicht gesetzt — Demo-Accounts koennen kein Passwort erhalten"
     return 1
   fi
-
-  # Mindestkriterium vorab pruefen, damit ein Policy-Verstoss (z. B. fehlender
-  # Grossbuchstabe) nicht erst still beim reset-password auffaellt.
-  if [[ ${#demo_pass} -lt 8 ]] \
-     || [[ ! "${demo_pass}" =~ [A-Z] ]] \
-     || [[ ! "${demo_pass}" =~ [a-z] ]] \
-     || [[ ! "${demo_pass}" =~ [0-9] ]]; then
+  if [[ ${#demo_pass} -lt 8 ]] || [[ ! "${demo_pass}" =~ [A-Z] ]] || [[ ! "${demo_pass}" =~ [a-z] ]] || [[ ! "${demo_pass}" =~ [0-9] ]]; then
     log_error "P2D2_DEMO_PASSWORD erfuellt die Mindestanforderungen nicht (>= 8 Zeichen, Gross-/Kleinbuchstabe, Ziffer)"
     return 1
   fi
 
-  local entry username email first_name last_name roles email_enc user_id
-  for entry in "${ADDON_IAM_DEMO_USERS[@]}"; do
-    IFS='|' read -r username email first_name last_name roles <<< "${entry}"
-    # Realm erzwingt "E-Mail als Username" -> der stabile Lookup-Schluessel ist die
-    # E-Mail (nicht der Kurzname aus dem Array). @uri-codiert, damit '@' sauber bleibt.
-    email_enc=$(jq -rn --arg e "${email}" '$e|@uri')
+  local failures=0 account username email first_name last_name roles
+  while IFS= read -r account; do
+    username=$(printf '%s' "${account}" | jq -r '.username')
+    email=$(printf '%s' "${account}" | jq -r '.email')
+    first_name=$(printf '%s' "${account}" | jq -r '.first_name')
+    last_name=$(printf '%s' "${account}" | jq -r '.last_name')
+    roles=$(printf '%s' "${account}" | jq -r '(.roles // []) | join(" ")')
+    _iam_demo_account "${token}" "${client_uid}" "${demo_pass}" "${username}" "${email}" "${first_name}" "${last_name}" "${roles}" \
+      || failures=$((failures+1))
+    seed_user_metadata "${token}" "${account}" || failures=$((failures+1))
+  done < <(printf '%s' "${ADDON_IAM_DEMO_JSON}" | jq -c '(.accounts // [])[]')
 
-    user_id=$(curl -sk --max-time 15 \
-      "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users?email=${email_enc}&exact=true" \
-      -H "Authorization: Bearer ${token}" 2>/dev/null | jq -r '.[0].id // empty')
-
-    if [[ -z "${user_id}" ]]; then
-      local create_payload create_resp create_body create_code
-      # emailVerified=true + requiredActions=[] + Vor-/Nachname direkt beim Anlegen,
-      # damit der erste Login ohne E-Mail-Verifikation und ohne Profil-Ergaenzung klappt.
-      create_payload=$(jq -nc --arg u "${username}" --arg e "${email}" \
-        --arg fn "${first_name}" --arg ln "${last_name}" \
-        '{username:$u,email:$e,enabled:true,emailVerified:true,requiredActions:[],firstName:$fn,lastName:$ln}')
-      create_resp=$(curl -sk --max-time 15 -w $'\n%{http_code}' \
-        -X POST "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users" \
-        -H "Authorization: Bearer ${token}" \
-        -H "Content-Type: application/json" \
-        -d "${create_payload}" 2>/dev/null || true)
-      create_code=$(printf '%s' "${create_resp}" | tail -1)
-      create_body=$(printf '%s' "${create_resp}" | sed '$d')
-      if [[ "${create_code}" != "201" ]]; then
-        log_warn "User ${username} anlegen fehlgeschlagen (HTTP ${create_code} — $(_iam_http_hint "${create_code}")): ${create_body}"
-      fi
-      user_id=$(curl -sk --max-time 15 \
-        "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users?email=${email_enc}&exact=true" \
-        -H "Authorization: Bearer ${token}" 2>/dev/null | jq -r '.[0].id // empty')
-    fi
-
-    if [[ -z "${user_id}" ]]; then
-      log_warn "User ${username} konnte nicht angelegt/gefunden werden"
-      continue
-    fi
-
-    # Profil idempotent sicherstellen (auch fuer bereits existierende Accounts, damit
-    # frueher angelegte mit emailVerified=false auf den korrekten Zustand konvergieren).
-    # GET->Merge->PUT statt frisch gebautem Body: vorhandene Attribute (z. B.
-    # p2d2-Metadaten) muessen erhalten bleiben.
-    local profile_patch profile_body
-    profile_patch=$(jq -nc --arg fn "${first_name}" --arg ln "${last_name}" \
-      '{emailVerified:true,requiredActions:[],firstName:$fn,lastName:$ln}')
-    _iam_req "${token}" GET "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users/${user_id}"
-    if [[ "${IAM_HTTP_CODE}" != "200" ]]; then
-      log_warn "Profil (${username}) lesen fehlgeschlagen (HTTP ${IAM_HTTP_CODE})"
-    else
-      profile_body=$(printf '%s' "${IAM_HTTP_BODY}" | jq -c --argjson p "${profile_patch}" '. * $p')
-      _iam_req "${token}" PUT "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users/${user_id}" "${profile_body}"
-      if [[ "${IAM_HTTP_CODE}" != "200" && "${IAM_HTTP_CODE}" != "204" ]]; then
-        log_warn "Profil (${username}) aktualisieren fehlgeschlagen (HTTP ${IAM_HTTP_CODE})"
-      fi
-    fi
-
-    # Passwort setzen (nicht temporaer). JSON via jq, damit Sonderzeichen im Passwort
-    # korrekt escaped werden (nicht roh in -d interpolieren).
-    local pw_payload pw_resp pw_code pw_body
-    pw_payload=$(jq -nc --arg pw "${demo_pass}" '{type:"password",value:$pw,temporary:false}')
-    pw_resp=$(curl -sk --max-time 15 -w $'\n%{http_code}' \
-      -X PUT "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users/${user_id}/reset-password" \
-      -H "Authorization: Bearer ${token}" \
-      -H "Content-Type: application/json" \
-      -d "${pw_payload}" 2>/dev/null || true)
-    pw_code=$(printf '%s' "${pw_resp}" | tail -1)
-    pw_body=$(printf '%s' "${pw_resp}" | sed '$d')
-    if [[ "${pw_code}" != "204" && "${pw_code}" != "200" ]]; then
-      if [[ "${pw_body}" == *invalidPasswordHistoryMessage* ]]; then
-        log_ok "Passwort (${username}) unveraendert (bereits gesetzt, Passwort-Historie)"
-      else
-        log_warn "Passwort setzen (${username}) fehlgeschlagen (HTTP ${pw_code} — $(_iam_http_hint "${pw_code}")): ${pw_body}"
-      fi
-    fi
-
-    # Client-Rollen zuweisen (idempotent).
-    if [[ -n "${client_uid}" ]]; then
-      local role_payload role_id
-      role_payload="[]"
-      for role in ${roles}; do
-        role_id=$(curl -sk --max-time 15 \
-          "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/clients/${client_uid}/roles/${role}" \
-          -H "Authorization: Bearer ${token}" 2>/dev/null | jq -r '.id // empty')
-        if [[ -n "${role_id}" ]]; then
-          role_payload=$(printf '%s' "${role_payload}" | jq -c --arg id "${role_id}" --arg name "${role}" '. + [{"id":$id,"name":$name}]')
-        fi
-      done
-      curl -sk --max-time 15 -o /dev/null -w "%{http_code}" \
-        -X POST "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users/${user_id}/role-mappings/clients/${client_uid}" \
-        -H "Authorization: Bearer ${token}" \
-        -H "Content-Type: application/json" \
-        -d "${role_payload}" >/dev/null 2>&1 || true
-    fi
-
-    log_ok "Demo-User ${username} (id ${user_id}) — Rollen: ${roles}"
-  done
-
-  # Jule-Metadaten seeden (nachdem Jule sicher existiert); nur fehlende Werte.
-  seed_jule_metadata "${token}" || return 1
+  if (( failures > 0 )); then
+    log_error "${failures} Demo-Account(s) fehlgeschlagen"
+    return 1
+  fi
+  return 0
 }
 
-# ── 5b. Demo-Metadaten fuer Jule (nur seeden, nie überschreiben) ──────────────
+# ── 5b. Demo-Metadaten (generischer Seed, nie überschreiben) ──────────────
 # Zustand eines User-Attributs gegen den Seed-Wert: absent|same|different|invalid.
 _iam_attr_state() {
   jq -r --arg k "$2" --argjson seed "$3" '
@@ -701,63 +762,68 @@ _iam_attr_state() {
       else "invalid" end' <<<"$1"
 }
 
-seed_jule_metadata() {
-  local token="$1"
-  local jule_email="jule.kovalenko@nospam.scanea.de"
-  local email_enc
-  email_enc=$(jq -rn --arg e "${jule_email}" '$e|@uri')
+seed_user_metadata() {
+  local token="$1" account="$2"
+  local email email_enc
+  email=$(printf '%s' "${account}" | jq -r '.email')
+  email_enc=$(jq -rn --arg e "${email}" '$e|@uri')
+
+  # Kanonische Seed-Werte (jeweils Attribut = Liste mit EINEM String).
+  local memberships_json memberships_seed home_seed
+  memberships_json=$(printf '%s' "${account}" | jq -c '(.memberships // []) | map({type, key, role, wp_name} | with_entries(select(.value != null)))')
+  memberships_seed=$(printf '%s' "${memberships_json}" | jq -c 'if length > 0 then [tojson] else empty end')
+  home_seed=$(printf '%s' "${account}" | jq -c 'if (.home_region_key // "") != "" then [.home_region_key] else empty end')
+
+  # Keine definierten Werte -> nichts zu tun (keine leeren Attribute).
+  if [[ -z "${memberships_seed}" && -z "${home_seed}" ]]; then
+    return 0
+  fi
 
   # Exakt einen Benutzer aufloesen; 0/mehrere Treffer sind ein Fehler.
   _iam_call "${token}" GET "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users?email=${email_enc}&exact=true" || return 1
-  _iam_body_is 'type=="array"' || { log_error "Jule-Lookup: unerwartete JSON-Form"; return 1; }
+  _iam_body_is 'type=="array"' || { log_error "Demo-User ${email}: Lookup unerwartete JSON-Form"; return 1; }
   local user_count user_id
   user_count=$(printf '%s' "${IAM_HTTP_BODY}" | jq 'length')
   if [[ "${user_count}" != "1" ]]; then
-    log_error "Jule-Lookup erwartete genau 1 Treffer, fand ${user_count}"
+    log_error "Demo-User ${email}: Lookup erwartete genau 1 Treffer, fand ${user_count}"
     return 1
   fi
   user_id=$(printf '%s' "${IAM_HTTP_BODY}" | jq -r '.[0].id // empty')
-  if [[ -z "${user_id}" ]]; then
-    log_error "Jule-Lookup: id fehlt"
-    return 1
-  fi
+  [[ -n "${user_id}" ]] || { log_error "Demo-User ${email}: id fehlt"; return 1; }
 
   _iam_call "${token}" GET "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users/${user_id}" || return 1
-  _iam_body_is 'type=="object"' || { log_error "Jule-Benutzer: unerwartete JSON-Form"; return 1; }
+  _iam_body_is 'type=="object"' || { log_error "Demo-User ${email}: GET unerwartete JSON-Form"; return 1; }
   local user_json="${IAM_HTTP_BODY}"
 
   # Vor jedem PUT id und E-Mail des gelesenen Benutzers pruefen.
   local got_id got_email
   got_id=$(printf '%s' "${user_json}" | jq -r '.id // empty')
   got_email=$(printf '%s' "${user_json}" | jq -r '.email // empty' | tr '[:upper:]' '[:lower:]')
-  if [[ "${got_id}" != "${user_id}" || "${got_email}" != "${jule_email}" ]]; then
-    log_error "Jule-Benutzer: id/E-Mail-Abweichung vor PUT"
+  if [[ "${got_id}" != "${user_id}" || "${got_email}" != "${email}" ]]; then
+    log_error "Demo-User ${email}: id/E-Mail-Abweichung vor PUT"
     return 1
   fi
 
-  # Kanonische Seed-Werte (jeweils Attribut = Liste mit EINEM String).
-  local memberships_array memberships_seed home_seed
-  memberships_array='[{"type":"kommune","key":"koeln","role":"verwaltung","wp_name":"de-Köln"},{"type":"community","key":"osm","role":"osm"}]'
-  memberships_seed=$(jq -nc --argjson a "${memberships_array}" '[$a | tojson]')
-  home_seed=$(jq -nc '["de-Bonn"]')
-
   # Matrix absent/same/different/invalid; vorhandene Werte nie ueberschreiben.
   local delta="{}" state
-  state=$(_iam_attr_state "${user_json}" "p2d2.memberships" "${memberships_seed}")
-  case "${state}" in
-    absent)    delta=$(printf '%s' "${delta}" | jq -c --argjson m "${memberships_seed}" '. + {"p2d2.memberships": $m}') ;;
-    same)      log_ok "Jule: p2d2.memberships bereits korrekt" ;;
-    different) log_warn "Jule: p2d2.memberships weicht ab — manuelle Pruefung, nicht überschrieben" ;;
-    invalid)   log_warn "Jule: p2d2.memberships ungültig/mehrwertig — manuelle Pruefung, nicht überschrieben" ;;
-  esac
-
-  state=$(_iam_attr_state "${user_json}" "p2d2.preferences.home_region_key" "${home_seed}")
-  case "${state}" in
-    absent)    delta=$(printf '%s' "${delta}" | jq -c --argjson h "${home_seed}" '. + {"p2d2.preferences.home_region_key": $h}') ;;
-    same)      log_ok "Jule: p2d2.preferences.home_region_key bereits korrekt" ;;
-    different) log_warn "Jule: p2d2.preferences.home_region_key weicht ab — manuelle Pruefung, nicht überschrieben" ;;
-    invalid)   log_warn "Jule: p2d2.preferences.home_region_key ungültig/mehrwertig — manuelle Pruefung, nicht überschrieben" ;;
-  esac
+  if [[ -n "${memberships_seed}" ]]; then
+    state=$(_iam_attr_state "${user_json}" "p2d2.memberships" "${memberships_seed}")
+    case "${state}" in
+      absent)    delta=$(printf '%s' "${delta}" | jq -c --argjson m "${memberships_seed}" '. + {"p2d2.memberships": $m}') ;;
+      same)      log_ok "Demo-User ${email}: p2d2.memberships bereits korrekt" ;;
+      different) log_warn "Demo-User ${email}: p2d2.memberships weicht ab — manuelle Pruefung" ;;
+      invalid)   log_warn "Demo-User ${email}: p2d2.memberships ungültig/mehrwertig — manuelle Pruefung" ;;
+    esac
+  fi
+  if [[ -n "${home_seed}" ]]; then
+    state=$(_iam_attr_state "${user_json}" "p2d2.preferences.home_region_key" "${home_seed}")
+    case "${state}" in
+      absent)    delta=$(printf '%s' "${delta}" | jq -c --argjson h "${home_seed}" '. + {"p2d2.preferences.home_region_key": $h}') ;;
+      same)      log_ok "Demo-User ${email}: home_region_key bereits korrekt" ;;
+      different) log_warn "Demo-User ${email}: home_region_key weicht ab — manuelle Pruefung" ;;
+      invalid)   log_warn "Demo-User ${email}: home_region_key ungültig/mehrwertig — manuelle Pruefung" ;;
+    esac
+  fi
 
   if [[ "${delta}" == "{}" ]]; then
     return 0
@@ -770,17 +836,17 @@ seed_jule_metadata() {
   # Read-back: gesetzte Werte UND unberuehrte Attribute pruefen.
   _iam_call "${token}" GET "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users/${user_id}" || return 1
   local after="${IAM_HTTP_BODY}"
-  _iam_body_is 'type=="object"' || { log_error "Jule Read-back: unerwartete JSON-Form"; return 1; }
+  _iam_body_is 'type=="object"' || { log_error "Demo-User ${email}: Read-back unerwartete JSON-Form"; return 1; }
   if ! jq -en --argjson b "${user_json}" --argjson a "${after}" --argjson d "${delta}" '
     def attrs(x): (x.attributes // {});
     all($d | keys[]; . as $k | attrs($a)[$k] == $d[$k])
     and all(attrs($b) | keys[]; . as $k | ($d | has($k)) or (attrs($a)[$k] == attrs($b)[$k]))
   ' >/dev/null 2>&1; then
-    log_error "Jule Read-back: Attribute weichen ab"
+    log_error "Demo-User ${email}: Read-back Attribute weichen ab"
     return 1
   fi
 
-  log_ok "Jule-Metadaten gesetzt (memberships + home_region_key)"
+  log_ok "Demo-User ${email}: Metadaten gesetzt"
 }
 
 # ── Orchestrierung ─────────────────────────────────────────────────────────────
@@ -809,27 +875,33 @@ uninstall_addon_iam() {
   local token client_uid http_code
   token=$(_iam_get_token) || return 1
 
-  # 1) Demo-Accounts (6) — Lookup per E-Mail (Realm erzwingt E-Mail-als-Username).
-  local entry username email email_enc user_id
-  for entry in "${ADDON_IAM_DEMO_USERS[@]}"; do
-    IFS='|' read -r username email _ _ _ <<< "${entry}"
-    email_enc=$(jq -rn --arg e "${email}" '$e|@uri')
-    user_id=$(curl -sk --max-time 15 \
-      "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users?email=${email_enc}&exact=true" \
-      -H "Authorization: Bearer ${token}" 2>/dev/null | jq -r '.[0].id // empty')
-    if [[ -z "${user_id}" ]]; then
-      log_ok "Demo-User ${email} nicht vorhanden — übersprungen"
-      continue
-    fi
-    http_code=$(curl -sk --max-time 15 -o /dev/null -w "%{http_code}" -X DELETE \
-      "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users/${user_id}" \
-      -H "Authorization: Bearer ${token}" 2>/dev/null || true)
-    if [[ "${http_code}" == "204" || "${http_code}" == "200" ]]; then
-      log_ok "Demo-User ${email} gelöscht"
-    else
-      log_warn "Demo-User ${email} löschen fehlgeschlagen (HTTP ${http_code} — $(_iam_http_hint "${http_code}"))"
-    fi
-  done
+  # 1) Demo-Accounts (nur die der gültigen Datei); ohne Datei keine Löschung.
+  _iam_demo_load || return 1
+  local n account email email_enc user_id
+  n=$(printf '%s' "${ADDON_IAM_DEMO_JSON}" | jq '(.accounts // []) | length')
+  if [[ "${n}" == "0" ]]; then
+    log "Uninstall: keine Demo-Accounts in demo-accounts.md — manuelle Bereinigung im Realm prüfen"
+  else
+    while IFS= read -r account; do
+      email=$(printf '%s' "${account}" | jq -r '.email')
+      email_enc=$(jq -rn --arg e "${email}" '$e|@uri')
+      user_id=$(curl -sk --max-time 15 \
+        "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users?email=${email_enc}&exact=true" \
+        -H "Authorization: Bearer ${token}" 2>/dev/null | jq -r '.[0].id // empty')
+      if [[ -z "${user_id}" ]]; then
+        log_ok "Demo-User ${email} nicht vorhanden — übersprungen"
+        continue
+      fi
+      http_code=$(curl -sk --max-time 15 -o /dev/null -w "%{http_code}" -X DELETE \
+        "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users/${user_id}" \
+        -H "Authorization: Bearer ${token}" 2>/dev/null || true)
+      if [[ "${http_code}" == "204" || "${http_code}" == "200" ]]; then
+        log_ok "Demo-User ${email} gelöscht"
+      else
+        log_warn "Demo-User ${email} löschen fehlgeschlagen (HTTP ${http_code} — $(_iam_http_hint "${http_code}"))"
+      fi
+    done < <(printf '%s' "${ADDON_IAM_DEMO_JSON}" | jq -c '(.accounts // [])[]')
+  fi
 
   # 2) OSM-IdP-Broker osm (entfernt zugehörige IdP-Mapper mit).
   http_code=$(curl -sk --max-time 15 -o /dev/null -w "%{http_code}" \
@@ -849,7 +921,7 @@ uninstall_addon_iam() {
   fi
 
   # 3) OIDC-Client p2d2 (entfernt Client-Rollen + Token-Mapper mit).
-  client_uid=$(_iam_get_client_uid "${token}")
+  client_uid=$(_iam_get_client_uid "${token}") || return 1
   if [[ -n "${client_uid}" ]]; then
     http_code=$(curl -sk --max-time 15 -o /dev/null -w "%{http_code}" -X DELETE \
       "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/clients/${client_uid}" \

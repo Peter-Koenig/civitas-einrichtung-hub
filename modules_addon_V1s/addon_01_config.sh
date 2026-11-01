@@ -65,6 +65,18 @@ addon_derive_domain() {
   fi
 }
 
+# addon_demo_accounts_file
+# Einzige Quelle für den Pfad der Demo-Account-Datei (seiteneffektfrei).
+# Override ADDON_IAM_DEMO_ACCOUNTS_FILE, sonst ${ADDON_SUPPLEMENT_DIR}/demo-accounts.md.
+addon_demo_accounts_file() {
+  local f="${ADDON_IAM_DEMO_ACCOUNTS_FILE:-}"
+  if [[ -z "${f}" ]]; then
+    [[ -n "${ADDON_SUPPLEMENT_DIR:-}" ]] || { log_error "ADDON_SUPPLEMENT_DIR nicht gesetzt: Pfad zu demo-accounts.md unbestimmt"; return 1; }
+    f="${ADDON_SUPPLEMENT_DIR}/demo-accounts.md"
+  fi
+  printf '%s' "${f}"
+}
+
 # addon_validate_uninstall_keep_tls
 # Enum-Prüfung für P2D2_UNINSTALL_KEEP_TLS (auto|true|false, Default auto).
 # Läuft im Uninstall-Pfad gesondert, weil addon_validate_config dort nicht läuft.
@@ -151,10 +163,18 @@ addon_validate_config() {
   fi
 
   # 3) Schalter (bool): Default false, wenn ungesetzt.
-  if [[ ! -v P2D2_DEMO_ACCOUNTS ]]; then P2D2_DEMO_ACCOUNTS="false"; fi
   if [[ ! -v P2D2_OSM_IDP_ENABLE ]]; then P2D2_OSM_IDP_ENABLE="false"; fi
-  addon_normalize_bool P2D2_DEMO_ACCOUNTS || return 1
   addon_normalize_bool P2D2_OSM_IDP_ENABLE || return 1
+
+  # 3a) Demo-Accounts: gesteuert durch supplement/demo-accounts.md (Datei vorhanden
+  #     = Accounts, fehlt = keine). P2D2_DEMO_ACCOUNTS ist entfallen.
+  local demo_file demo_pw_allow_empty=1
+  demo_file="$(addon_demo_accounts_file)" || return 1
+  if [[ -v P2D2_DEMO_ACCOUNTS ]]; then
+    log_warn "P2D2_DEMO_ACCOUNTS ist entfallen und wird ignoriert; Demo-Accounts steuert ${demo_file}"
+  fi
+  [[ -f "${demo_file}" ]] && demo_pw_allow_empty=0
+  addon_validate_nonempty P2D2_DEMO_PASSWORD "${demo_pw_allow_empty}" || return 1
 
   # 3b) Zertifikats-Issuer und Sperre (Schritt 2c, optional mit Default).
   if [[ ! -v P2D2_CERT_ISSUER ]]; then P2D2_CERT_ISSUER="auto"; fi
@@ -212,7 +232,6 @@ addon_validate_config() {
     P2D2_BASE_ALTCHA_HMAC_KEY \
     P2D2_BASE_SMTP_PASS \
     P2D2_BASE_OIDC_ISSUER \
-    P2D2_DEMO_PASSWORD \
     P2D2_OSM_IDP_CLIENT_ID \
     P2D2_OSM_IDP_CLIENT_SECRET \
     P2D2_GITHUB_TOKEN \
