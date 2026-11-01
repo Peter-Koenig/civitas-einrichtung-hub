@@ -424,6 +424,14 @@ Ressourcen. `overlay_addon_V1s/k8s/UNINSTALL-CHECKLIST.md` enthält für jedes
 Modul manuelle Prüf- und Löschbefehle für den Fall, dass der automatisierte
 Uninstall abbricht.
 
+**IAM-Metadaten (`addon_25_iam.sh`):**
+
+Die Keycloak-Provisionierung bildet die Zitadel-kompatible Nutzer-Metadaten ab:
+`p2d2.memberships` = berufliche Zuordnung (z. B. Koeln/verwaltung), `p2d2.preferences.home_region_key`
+= persoenliche Startregion (z. B. de-Bonn). Rollen, Memberships und persoenliche Praeferenzen sind
+getrennte Konzepte — eine berufliche Kommune widerspricht keiner persoenlichen Startregion. Der
+OIDC-Claim liefert langfristig nur einen uebersteuerbaren Startwert, keine feste Start-BBox.
+
 **Bekannte Einschränkungen (Entwicklungsstand):**
 
 - `install_addon_postgresql`: Legt Rollen und Schemata an. DDL, Grants und
