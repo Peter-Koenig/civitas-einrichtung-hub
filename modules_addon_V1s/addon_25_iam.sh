@@ -121,6 +121,27 @@ _iam_req() {
   IAM_HTTP_BODY="$(printf '%s' "${resp}" | sed '$d')"
 }
 
+# Antwortpruefung: Statuscode in der erlaubten Menge; Transportfehler unterscheiden.
+# $1=Token, $2=Method, $3=URL, $4=optionaler Body, $5=erlaubte Codes (Default "200").
+_iam_call() {
+  local ok="${5:-200}"
+  _iam_req "$1" "$2" "$3" "${4:-}"
+  if ! [[ "${IAM_HTTP_CODE}" =~ ^[0-9]{3}$ ]]; then
+    log_error "${2}: Transportfehler (kein HTTP-Status)"
+    return 1
+  fi
+  case " ${ok} " in
+    *" ${IAM_HTTP_CODE} "*) return 0 ;;
+  esac
+  log_error "${2}: unerwarteter HTTP-Status ${IAM_HTTP_CODE}"
+  return 1
+}
+
+# Formpruefung der letzten Antwort per jq-Ausdruck; ungueltiges JSON = nicht erfuellt.
+_iam_body_is() {
+  printf '%s' "${IAM_HTTP_BODY}" | jq -e "$1" >/dev/null 2>&1
+}
+
 # ── 1. OIDC-Client ─────────────────────────────────────────────────────────────
 ensure_p2d2_oidc_client() {
   log "=== AddOn 25: Keycloak OIDC-Client ${ADDON_IAM_CLIENT_ID} (Realm ${ADDON_IAM_REALM}) ==="
@@ -275,6 +296,20 @@ ensure_p2d2_role_token_mapper() {
 # ── 3b. User-Profile-Definitionen (p2d2-Metadaten, Zitadel-kompatibel) ────────
 # Ergänzt die zwei verwalteten Attribute im Realm-User-Profile, ohne bestehende
 # Definitionen zu überschreiben oder unmanaged attributes global freizuschalten.
+# Prueft eine vorhandene Profil-Definition gegen den Sollwert (Mengenvergleich fuer Rechte,
+# multivalued und validations.length.max). Genau eine Definition pro Name.
+_iam_profile_def_conforms() {
+  jq -e --argjson want "$2" '
+    def same_set(a; b): ((a // []) | sort) == ((b // []) | sort);
+    [.attributes[] | select(.name == $want.name)] as $m
+    | ($m | length) == 1
+      and ($m[0] | same_set(.permissions.view; $want.permissions.view)
+                and same_set(.permissions.edit; $want.permissions.edit)
+                and ((.multivalued // false) == $want.multivalued)
+                and (.validations.length.max == $want.validations.length.max))
+  ' <<<"$1" >/dev/null 2>&1
+}
+
 ensure_metadata_profile() {
   log "=== AddOn 25: User-Profile-Definitionen (p2d2-Metadaten) ==="
   local token
@@ -285,59 +320,88 @@ ensure_metadata_profile() {
   def_memberships=$(jq -nc '{name:"p2d2.memberships",displayName:"p2d2 memberships (JSON)",permissions:{view:["admin"],edit:["admin"]},multivalued:false,validations:{length:{max:4096}}}')
   def_home=$(jq -nc '{name:"p2d2.preferences.home_region_key",displayName:"Bevorzugte p2d2-Startregion",permissions:{view:["admin","user"],edit:["admin","user"]},multivalued:false,validations:{length:{max:200}}}')
 
-  _iam_req "${token}" GET "${profile_url}"
-  if [[ "${IAM_HTTP_CODE}" != "200" ]]; then
-    log_error "User-Profile-Konfiguration nicht lesbar (HTTP ${IAM_HTTP_CODE})"
-    return 1
-  fi
-  local profile_json="${IAM_HTTP_BODY}"
+  _iam_call "${token}" GET "${profile_url}" || return 1
+  _iam_body_is 'type=="object" and (.attributes|type)=="array"' \
+    || { log_error "User-Profile: unerwartete JSON-Form"; return 1; }
+  local before="${IAM_HTTP_BODY}"
 
-  local changed=false def name
+  local to_add="[]" def name count
   for def in "${def_memberships}" "${def_home}"; do
     name="$(printf '%s' "${def}" | jq -r '.name')"
-    if ! printf '%s' "${profile_json}" | jq -e ".attributes[] | select(.name==\"${name}\")" >/dev/null 2>&1; then
-      profile_json="$(printf '%s' "${profile_json}" | jq -c --argjson d "${def}" '.attributes += [$d]')"
-      changed=true
+    count=$(printf '%s' "${before}" | jq '[.attributes[] | select(.name == $name)] | length' --arg name "${name}")
+    if (( count > 1 )); then
+      log_error "User-Profile '${name}' ist doppelt definiert"
+      return 1
+    fi
+    if (( count == 0 )); then
+      to_add="$(printf '%s' "${to_add}" | jq -c --argjson d "${def}" '. + [$d]')"
       continue
     fi
-    # Vorhanden: sicherheitsrelevante Abweichung fail-closed. p2d2.memberships darf
-    # NICHT user-editierbar sein; sonst koennte ein Endnutzer seine Zuordnungen fälschen.
+    # Vorhanden: unsichere Membership-Edits fail-closed (User darf memberships nicht editieren).
     if [[ "${name}" == "p2d2.memberships" ]] \
-       && printf '%s' "${profile_json}" | jq -e ".attributes[] | select(.name==\"${name}\") | .permissions.edit | index(\"user\")" >/dev/null 2>&1; then
+       && printf '%s' "${before}" | jq -e ".attributes[] | select(.name==\"${name}\") | .permissions.edit | index(\"user\")" >/dev/null 2>&1; then
       log_error "User-Profile '${name}' erlaubt User-Edits (Sicherheitsabweichung) — nicht automatisch überschreiben"
       return 1
     fi
-    log_ok "User-Profile '${name}' existiert bereits"
+    if _iam_profile_def_conforms "${before}" "${def}"; then
+      log_ok "User-Profile '${name}' existiert bereits korrekt"
+    else
+      log_error "User-Profile '${name}' weicht ab (multivalued/validations.length.max/Rechte) — nicht automatisch überschreiben"
+      return 1
+    fi
   done
 
-  if [[ "${changed}" == "true" ]]; then
-    _iam_req "${token}" PUT "${profile_url}" "${profile_json}"
-    if [[ "${IAM_HTTP_CODE}" != "200" && "${IAM_HTTP_CODE}" != "204" ]]; then
-      log_error "User-Profile-Konfiguration aktualisieren fehlgeschlagen (HTTP ${IAM_HTTP_CODE})"
-      return 1
-    fi
-    # Read-back: beide verwalteten Namen muessen vorhanden sein.
-    _iam_req "${token}" GET "${profile_url}"
-    if [[ "${IAM_HTTP_CODE}" != "200" ]]; then
-      log_error "User-Profile Read-back fehlgeschlagen (HTTP ${IAM_HTTP_CODE})"
-      return 1
-    fi
+  if [[ "$(printf '%s' "${to_add}" | jq 'length')" == "0" ]]; then
+    log_ok "User-Profile-Definitionen sichergestellt"
+    return 0
   fi
+
+  local updated
+  updated=$(printf '%s' "${before}" | jq -c --argjson add "${to_add}" '.attributes += $add')
+  _iam_call "${token}" PUT "${profile_url}" "${updated}" "200 204" || return 1
+
+  _iam_call "${token}" GET "${profile_url}" || return 1
+  _iam_body_is 'type=="object" and (.attributes|type)=="array"' \
+    || { log_error "User-Profile Read-back: unerwartete JSON-Form"; return 1; }
+  local after="${IAM_HTTP_BODY}"
+
+  # Read-back (1): beide Definitionen konform.
+  for def in "${def_memberships}" "${def_home}"; do
+    _iam_profile_def_conforms "${after}" "${def}" \
+      || { log_error "User-Profile Read-back: Definition nicht konform"; return 1; }
+  done
+  # Read-back (2)+(3): kein Attributname verloren, Top-Level-Einstellungen unveraendert.
+  if ! jq -e --argjson b "${before}" --argjson a "${after}" '
+    ((($b.attributes | map(.name)) - ($a.attributes | map(.name))) | length) == 0
+    and (($a | del(.attributes)) == ($b | del(.attributes)))
+  ' >/dev/null 2>&1; then
+    log_error "User-Profile Read-back: Bestand verloren oder Top-Level-Einstellungen verändert"
+    return 1
+  fi
+
   log_ok "User-Profile-Definitionen sichergestellt"
 }
 
 # ── 3c. Metadaten-Protocol-Mapper am Client ───────────────────────────────────
 # Zwei oidc-usermodel-attribute-mapper, die die Attribute in das verschachtelte
 # Claim user_metadata.p2d2.* schreiben (ausschliesslich ins ID-Token).
+# Prueft einen vorhandenen Mapper gegen alle Sollfelder; zusaetzliche Server-Schluessel sind keine Drift.
+_iam_mapper_conforms() {
+  jq -e --argjson p "$2" '
+    . as $m
+    | ($m.protocol == $p.protocol)
+      and ($m.protocolMapper == $p.protocolMapper)
+      and (($m.consentRequired // false) == $p.consentRequired)
+      and all(($p.config | to_entries[]); $m.config[.key] == .value)
+  ' <<<"$1" >/dev/null 2>&1
+}
+
 _iam_ensure_client_mapper() {
   local token="$1" client_uid="$2" name="$3" attr="$4" claim="$5"
   local base_url="${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/clients/${client_uid}/protocol-mappers/models"
 
-  _iam_req "${token}" GET "${base_url}"
-  if [[ "${IAM_HTTP_CODE}" != "200" ]]; then
-    log_error "Protocol-Mapper nicht lesbar (HTTP ${IAM_HTTP_CODE})"
-    return 1
-  fi
+  _iam_call "${token}" GET "${base_url}" || return 1
+  _iam_body_is 'type=="array"' || { log_error "Mapper-Liste: unerwartete JSON-Form"; return 1; }
   local mappers_json="${IAM_HTTP_BODY}"
 
   local payload
@@ -345,59 +409,54 @@ _iam_ensure_client_mapper() {
     --arg name "${name}" --arg attr "${attr}" --arg claim "${claim}" \
     '{name:$name,protocol:"openid-connect",protocolMapper:"oidc-usermodel-attribute-mapper",consentRequired:false,config:{"jsonType.label":"String",multivalued:"false","aggregate.attrs":"false","id.token.claim":"true","access.token.claim":"false","userinfo.token.claim":"false","user.attribute":$attr,"claim.name":$claim}}')
 
-  # Konflikte: fremder Typ bei gleichem Namen, Duplikat, konkurrierendes Claim-Ziel.
-  if printf '%s' "${mappers_json}" | jq -e ".[] | select(.name==\"${name}\" and .protocolMapper!=\"oidc-usermodel-attribute-mapper\")" >/dev/null 2>&1; then
-    log_error "Mapper '${name}' existiert mit anderem Typ — nicht überschreiben"
-    return 1
-  fi
-  if printf '%s' "${mappers_json}" | jq -e ".[] | select(.name!=\"${name}\" and .config[\"claim.name\"]==\"${claim}\")" >/dev/null 2>&1; then
-    log_error "Claim '${claim}' wird bereits von einem anderen Mapper belegt"
-    return 1
-  fi
-  if (( $(printf '%s' "${mappers_json}" | jq '[.[] | select(.name=="'"${name}"'")] | length') > 1 )); then
+  local same_name_count other_claim_count
+  same_name_count=$(printf '%s' "${mappers_json}" | jq '[.[] | select(.name == $name)] | length' --arg name "${name}")
+  other_claim_count=$(printf '%s' "${mappers_json}" | jq '[.[] | select(.name != $name and .config["claim.name"] == $claim)] | length' --arg name "${name}" --arg claim "${claim}")
+
+  if (( same_name_count > 1 )); then
     log_error "Mehrere Mapper mit Name '${name}' — bitte manuell bereinigen"
     return 1
   fi
+  if (( other_claim_count > 0 )); then
+    log_error "Claim '${claim}' wird bereits von einem anderen Mapper belegt"
+    return 1
+  fi
 
-  local existing
+  local existing existing_type
   existing=$(printf '%s' "${mappers_json}" | jq -c ".[] | select(.name==\"${name}\")" 2>/dev/null || true)
 
   if [[ -n "${existing}" ]]; then
-    local managed_ok
-    managed_ok=$(printf '%s' "${existing}" | jq -r \
-      --arg attr "${attr}" --arg claim "${claim}" \
-      'if (.protocolMapper=="oidc-usermodel-attribute-mapper" and .config["user.attribute"]==$attr and .config["claim.name"]==$claim and .config["id.token.claim"]=="true") then "ok" else "drift" end')
-    if [[ "${managed_ok}" == "ok" ]]; then
+    existing_type=$(printf '%s' "${existing}" | jq -r '.protocolMapper // empty')
+    if [[ "${existing_type}" != "oidc-usermodel-attribute-mapper" ]]; then
+      log_error "Mapper '${name}' existiert mit anderem Typ (${existing_type}) — nicht überschreiben"
+      return 1
+    fi
+    if _iam_mapper_conforms "${existing}" "${payload}"; then
       log_ok "Mapper '${name}' existiert bereits korrekt"
       return 0
     fi
-    # Drift: nur die verwalteten Felder angleichen, fremde Felder erhalten.
+    # Drift: nur verwaltete Felder angleichen, fremde Config-Schluessel erhalten.
     local mapper_id merged
     mapper_id=$(printf '%s' "${existing}" | jq -r '.id')
-    merged=$(printf '%s' "${existing}" | jq -c --argjson p "${payload}" '.protocolMapper = $p.protocolMapper | .consentRequired = $p.consentRequired | .config = (.config * $p.config)')
-    _iam_req "${token}" PUT "${base_url}/${mapper_id}" "${merged}"
-    if [[ "${IAM_HTTP_CODE}" != "200" && "${IAM_HTTP_CODE}" != "204" ]]; then
-      log_error "Mapper '${name}' aktualisieren fehlgeschlagen (HTTP ${IAM_HTTP_CODE})"
-      return 1
-    fi
+    merged=$(printf '%s' "${existing}" | jq -c --argjson p "${payload}" '.protocol = $p.protocol | .protocolMapper = $p.protocolMapper | .consentRequired = $p.consentRequired | .config = (.config * $p.config)')
+    _iam_call "${token}" PUT "${base_url}/${mapper_id}" "${merged}" "200 204" || return 1
   else
-    _iam_req "${token}" POST "${base_url}" "${payload}"
-    if [[ "${IAM_HTTP_CODE}" != "201" && "${IAM_HTTP_CODE}" != "200" ]]; then
-      log_error "Mapper '${name}' anlegen fehlgeschlagen (HTTP ${IAM_HTTP_CODE})"
-      return 1
-    fi
+    _iam_call "${token}" POST "${base_url}" "${payload}" "201 200" || return 1
   fi
 
-  # Read-back der verwalteten Felder.
-  _iam_req "${token}" GET "${base_url}"
-  if [[ "${IAM_HTTP_CODE}" != "200" ]]; then
-    log_error "Mapper Read-back fehlgeschlagen (HTTP ${IAM_HTTP_CODE})"
+  # Read-back: genau ein Mapper mit dem Namen und alle Sollfelder konform.
+  _iam_call "${token}" GET "${base_url}" || return 1
+  _iam_body_is 'type=="array"' || { log_error "Mapper Read-back: unerwartete JSON-Form"; return 1; }
+  local rb_count rb_mapper
+  rb_count=$(printf '%s' "${IAM_HTTP_BODY}" | jq '[.[] | select(.name == $name)] | length' --arg name "${name}")
+  if (( rb_count != 1 )); then
+    log_error "Mapper Read-back '${name}': ${rb_count} Treffer (erwartet 1)"
     return 1
   fi
-  if ! printf '%s' "${IAM_HTTP_BODY}" | jq -e ".[] | select(.name==\"${name}\" and .config[\"user.attribute\"]==\"${attr}\" and .config[\"claim.name\"]==\"${claim}\" and .config[\"id.token.claim\"]==\"true\")" >/dev/null 2>&1; then
-    log_error "Mapper Read-back '${name}' entspricht nicht den verwalteten Feldern"
-    return 1
-  fi
+  rb_mapper=$(printf '%s' "${IAM_HTTP_BODY}" | jq -c ".[] | select(.name==\"${name}\")")
+  _iam_mapper_conforms "${rb_mapper}" "${payload}" \
+    || { log_error "Mapper Read-back '${name}' entspricht nicht den Sollfeldern"; return 1; }
+
   log_ok "Mapper '${name}' sichergestellt"
 }
 
@@ -559,16 +618,20 @@ ensure_p2d2_demo_accounts() {
 
     # Profil idempotent sicherstellen (auch fuer bereits existierende Accounts, damit
     # frueher angelegte mit emailVerified=false auf den korrekten Zustand konvergieren).
-    local profile_payload profile_code
-    profile_payload=$(jq -nc --arg fn "${first_name}" --arg ln "${last_name}" \
+    # GET->Merge->PUT statt frisch gebautem Body: vorhandene Attribute (z. B.
+    # p2d2-Metadaten) muessen erhalten bleiben.
+    local profile_patch profile_body
+    profile_patch=$(jq -nc --arg fn "${first_name}" --arg ln "${last_name}" \
       '{emailVerified:true,requiredActions:[],firstName:$fn,lastName:$ln}')
-    profile_code=$(curl -sk --max-time 15 -o /dev/null -w "%{http_code}" \
-      -X PUT "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users/${user_id}" \
-      -H "Authorization: Bearer ${token}" \
-      -H "Content-Type: application/json" \
-      -d "${profile_payload}" 2>/dev/null || true)
-    if [[ "${profile_code}" != "204" && "${profile_code}" != "200" ]]; then
-      log_warn "Profil (${username}) aktualisieren fehlgeschlagen (HTTP ${profile_code})"
+    _iam_req "${token}" GET "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users/${user_id}"
+    if [[ "${IAM_HTTP_CODE}" != "200" ]]; then
+      log_warn "Profil (${username}) lesen fehlgeschlagen (HTTP ${IAM_HTTP_CODE})"
+    else
+      profile_body=$(printf '%s' "${IAM_HTTP_BODY}" | jq -c --argjson p "${profile_patch}" '. * $p')
+      _iam_req "${token}" PUT "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users/${user_id}" "${profile_body}"
+      if [[ "${IAM_HTTP_CODE}" != "200" && "${IAM_HTTP_CODE}" != "204" ]]; then
+        log_warn "Profil (${username}) aktualisieren fehlgeschlagen (HTTP ${IAM_HTTP_CODE})"
+      fi
     fi
 
     # Passwort setzen (nicht temporaer). JSON via jq, damit Sonderzeichen im Passwort
@@ -613,10 +676,21 @@ ensure_p2d2_demo_accounts() {
   done
 
   # Jule-Metadaten seeden (nachdem Jule sicher existiert); nur fehlende Werte.
-  seed_jule_metadata "${token}"
+  seed_jule_metadata "${token}" || return 1
 }
 
 # ── 5b. Demo-Metadaten fuer Jule (nur seeden, nie überschreiben) ──────────────
+# Zustand eines User-Attributs gegen den Seed-Wert: absent|same|different|invalid.
+_iam_attr_state() {
+  jq -r --arg k "$2" --argjson seed "$3" '
+    (.attributes // {}) as $a
+    | if ($a | has($k) | not) then "absent"
+      elif $a[$k] == $seed then "same"
+      elif (($a[$k] | type) == "array" and ($a[$k] | length) == 1
+            and ($a[$k][0] | type) == "string" and ($a[$k][0] | length) > 0) then "different"
+      else "invalid" end' <<<"$1"
+}
+
 seed_jule_metadata() {
   local token="$1"
   local jule_email="jule.kovalenko@nospam.scanea.de"
@@ -624,61 +698,56 @@ seed_jule_metadata() {
   email_enc=$(jq -rn --arg e "${jule_email}" '$e|@uri')
 
   # Exakt einen Benutzer aufloesen; 0/mehrere Treffer sind ein Fehler.
-  _iam_req "${token}" GET "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users?email=${email_enc}&exact=true"
-  if [[ "${IAM_HTTP_CODE}" != "200" ]]; then
-    log_error "Jule-Lookup fehlgeschlagen (HTTP ${IAM_HTTP_CODE})"
-    return 1
-  fi
+  _iam_call "${token}" GET "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users?email=${email_enc}&exact=true" || return 1
+  _iam_body_is 'type=="array"' || { log_error "Jule-Lookup: unerwartete JSON-Form"; return 1; }
   local user_count user_id
   user_count=$(printf '%s' "${IAM_HTTP_BODY}" | jq 'length')
   if [[ "${user_count}" != "1" ]]; then
     log_error "Jule-Lookup erwartete genau 1 Treffer, fand ${user_count}"
     return 1
   fi
-  user_id=$(printf '%s' "${IAM_HTTP_BODY}" | jq -r '.[0].id')
-
-  _iam_req "${token}" GET "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users/${user_id}"
-  if [[ "${IAM_HTTP_CODE}" != "200" ]]; then
-    log_error "Jule-Benutzer nicht lesbar (HTTP ${IAM_HTTP_CODE})"
+  user_id=$(printf '%s' "${IAM_HTTP_BODY}" | jq -r '.[0].id // empty')
+  if [[ -z "${user_id}" ]]; then
+    log_error "Jule-Lookup: id fehlt"
     return 1
   fi
+
+  _iam_call "${token}" GET "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users/${user_id}" || return 1
+  _iam_body_is 'type=="object"' || { log_error "Jule-Benutzer: unerwartete JSON-Form"; return 1; }
   local user_json="${IAM_HTTP_BODY}"
+
+  # Vor jedem PUT id und E-Mail des gelesenen Benutzers pruefen.
+  local got_id got_email
+  got_id=$(printf '%s' "${user_json}" | jq -r '.id // empty')
+  got_email=$(printf '%s' "${user_json}" | jq -r '.email // empty' | tr '[:upper:]' '[:lower:]')
+  if [[ "${got_id}" != "${user_id}" || "${got_email}" != "${jule_email}" ]]; then
+    log_error "Jule-Benutzer: id/E-Mail-Abweichung vor PUT"
+    return 1
+  fi
 
   # Kanonische Seed-Werte (jeweils Attribut = Liste mit EINEM String).
   local memberships_array memberships_seed home_seed
   memberships_array='[{"type":"kommune","key":"koeln","role":"verwaltung","wp_name":"de-Köln"},{"type":"community","key":"osm","role":"osm"}]'
-  memberships_seed=$(jq -nc --argjson arr "${memberships_array}" '[$arr|tojson]')
+  memberships_seed=$(jq -nc --argjson a "${memberships_array}" '[$a | tojson]')
   home_seed=$(jq -nc '["de-Bonn"]')
 
-  local memberships_present home_present
-  memberships_present=$(printf '%s' "${user_json}" | jq -r 'if (.attributes // {}) | has("p2d2.memberships") then "yes" else "no" end')
-  home_present=$(printf '%s' "${user_json}" | jq -r 'if (.attributes // {}) | has("p2d2.preferences.home_region_key") then "yes" else "no" end')
+  # Matrix absent/same/different/invalid; vorhandene Werte nie ueberschreiben.
+  local delta="{}" state
+  state=$(_iam_attr_state "${user_json}" "p2d2.memberships" "${memberships_seed}")
+  case "${state}" in
+    absent)    delta=$(printf '%s' "${delta}" | jq -c --argjson m "${memberships_seed}" '. + {"p2d2.memberships": $m}') ;;
+    same)      log_ok "Jule: p2d2.memberships bereits korrekt" ;;
+    different) log_warn "Jule: p2d2.memberships weicht ab — manuelle Pruefung, nicht überschrieben" ;;
+    invalid)   log_warn "Jule: p2d2.memberships ungültig/mehrwertig — manuelle Pruefung, nicht überschrieben" ;;
+  esac
 
-  # Vorhandene Werte nie ueberschreiben (insbesondere die vom Benutzer geaenderte
-  # Startregion). Nur wirklich fehlende Schluessel initialisieren.
-  local delta="{}"
-  if [[ "${memberships_present}" == "no" ]]; then
-    delta=$(printf '%s' "${delta}" | jq -c --argjson m "${memberships_seed}" '. + {"p2d2.memberships": $m}')
-  else
-    local cur
-    cur=$(printf '%s' "${user_json}" | jq -c '.attributes["p2d2.memberships"]')
-    if [[ "${cur}" == "${memberships_seed}" ]]; then
-      log_ok "Jule: p2d2.memberships bereits korrekt"
-    else
-      log_warn "Jule: p2d2.memberships vorhanden (abweichend/leer) — nicht automatisch überschrieben"
-    fi
-  fi
-  if [[ "${home_present}" == "no" ]]; then
-    delta=$(printf '%s' "${delta}" | jq -c --argjson h "${home_seed}" '. + {"p2d2.preferences.home_region_key": $h}')
-  else
-    local cur
-    cur=$(printf '%s' "${user_json}" | jq -c '.attributes["p2d2.preferences.home_region_key"]')
-    if [[ "${cur}" == "${home_seed}" ]]; then
-      log_ok "Jule: p2d2.preferences.home_region_key bereits korrekt"
-    else
-      log_warn "Jule: p2d2.preferences.home_region_key vorhanden (abweichend) — nicht automatisch überschrieben"
-    fi
-  fi
+  state=$(_iam_attr_state "${user_json}" "p2d2.preferences.home_region_key" "${home_seed}")
+  case "${state}" in
+    absent)    delta=$(printf '%s' "${delta}" | jq -c --argjson h "${home_seed}" '. + {"p2d2.preferences.home_region_key": $h}') ;;
+    same)      log_ok "Jule: p2d2.preferences.home_region_key bereits korrekt" ;;
+    different) log_warn "Jule: p2d2.preferences.home_region_key weicht ab — manuelle Pruefung, nicht überschrieben" ;;
+    invalid)   log_warn "Jule: p2d2.preferences.home_region_key ungültig/mehrwertig — manuelle Pruefung, nicht überschrieben" ;;
+  esac
 
   if [[ "${delta}" == "{}" ]]; then
     return 0
@@ -686,18 +755,21 @@ seed_jule_metadata() {
 
   local merged
   merged=$(printf '%s' "${user_json}" | jq -c --argjson d "${delta}" '.attributes = ((.attributes // {}) + $d)')
-  _iam_req "${token}" PUT "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users/${user_id}" "${merged}"
-  if [[ "${IAM_HTTP_CODE}" != "200" && "${IAM_HTTP_CODE}" != "204" ]]; then
-    log_error "Jule-Metadaten schreiben fehlgeschlagen (HTTP ${IAM_HTTP_CODE})"
+  _iam_call "${token}" PUT "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users/${user_id}" "${merged}" "200 204" || return 1
+
+  # Read-back: gesetzte Werte UND unberuehrte Attribute pruefen.
+  _iam_call "${token}" GET "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users/${user_id}" || return 1
+  local after="${IAM_HTTP_BODY}"
+  _iam_body_is 'type=="object"' || { log_error "Jule Read-back: unerwartete JSON-Form"; return 1; }
+  if ! jq -e --argjson b "${user_json}" --argjson a "${after}" --argjson d "${delta}" '
+    def attrs(x): (x.attributes // {});
+    all($d | keys[]; . as $k | attrs($a)[$k] == $d[$k])
+    and all(attrs($b) | keys[]; . as $k | ($d | has($k)) or (attrs($a)[$k] == attrs($b)[$k]))
+  ' >/dev/null 2>&1; then
+    log_error "Jule Read-back: Attribute weichen ab"
     return 1
   fi
 
-  # Read-back.
-  _iam_req "${token}" GET "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users/${user_id}"
-  if [[ "${IAM_HTTP_CODE}" != "200" ]]; then
-    log_error "Jule-Metadaten Read-back fehlgeschlagen (HTTP ${IAM_HTTP_CODE})"
-    return 1
-  fi
   log_ok "Jule-Metadaten gesetzt (memberships + home_region_key)"
 }
 
@@ -707,10 +779,10 @@ install_addon_iam() {
   ensure_p2d2_oidc_client
   ensure_p2d2_client_roles
   ensure_p2d2_role_token_mapper
-  ensure_metadata_profile
-  ensure_metadata_mappers
+  ensure_metadata_profile || { log_error "AddOn 25: Metadaten-Profil fehlgeschlagen"; return 1; }
+  ensure_metadata_mappers || { log_error "AddOn 25: Metadaten-Mapper fehlgeschlagen"; return 1; }
   ensure_osm_identity_provider
-  ensure_p2d2_demo_accounts
+  ensure_p2d2_demo_accounts || return 1
   log_ok "AddOn 25 IAM abgeschlossen"
 }
 
