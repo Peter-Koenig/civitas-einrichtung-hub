@@ -87,12 +87,22 @@ _iam_get_token() {
 
 # Client-UID zuverlässig ermitteln. Der clientId-Query-Filter filtert je nach
 # Keycloak-Version nicht zuverlässig, daher volle Liste + clientseitig filtern.
+# 0 Treffer -> leer (Aufrufer meldet "nicht gefunden"); mehr als 1 -> Fehler.
 _iam_get_client_uid() {
   local token="$1"
-  curl -sk --max-time 15 \
+  local clients count
+  clients=$(curl -sk --max-time 15 \
     "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/clients" \
-    -H "Authorization: Bearer ${token}" 2>/dev/null \
-    | jq -r ".[] | select(.clientId==\"${ADDON_IAM_CLIENT_ID}\") | .id" 2>/dev/null | head -1 || true
+    -H "Authorization: Bearer ${token}" 2>/dev/null || true)
+  count=$(printf '%s' "${clients}" | jq "[.[] | select(.clientId==\"${ADDON_IAM_CLIENT_ID}\")] | length" 2>/dev/null || echo 0)
+  if [[ "${count}" == "0" ]]; then
+    return 0
+  fi
+  if [[ "${count}" != "1" ]]; then
+    log_error "OIDC-Client ${ADDON_IAM_CLIENT_ID} mehrdeutig (${count} Treffer)"
+    return 1
+  fi
+  printf '%s' "${clients}" | jq -r ".[] | select(.clientId==\"${ADDON_IAM_CLIENT_ID}\") | .id" 2>/dev/null
 }
 
 # Keycloak-HTTP-Fehlercode in Klartext uebersetzen (fuer klare Log-Meldungen).
@@ -371,7 +381,7 @@ ensure_metadata_profile() {
       || { log_error "User-Profile Read-back: Definition nicht konform"; return 1; }
   done
   # Read-back (2)+(3): kein Attributname verloren, Top-Level-Einstellungen unveraendert.
-  if ! jq -e --argjson b "${before}" --argjson a "${after}" '
+  if ! jq -en --argjson b "${before}" --argjson a "${after}" '
     ((($b.attributes | map(.name)) - ($a.attributes | map(.name))) | length) == 0
     and (($a | del(.attributes)) == ($b | del(.attributes)))
   ' >/dev/null 2>&1; then
@@ -761,7 +771,7 @@ seed_jule_metadata() {
   _iam_call "${token}" GET "${ADDON_IAM_IDM_BASE}/admin/realms/${ADDON_IAM_REALM}/users/${user_id}" || return 1
   local after="${IAM_HTTP_BODY}"
   _iam_body_is 'type=="object"' || { log_error "Jule Read-back: unerwartete JSON-Form"; return 1; }
-  if ! jq -e --argjson b "${user_json}" --argjson a "${after}" --argjson d "${delta}" '
+  if ! jq -en --argjson b "${user_json}" --argjson a "${after}" --argjson d "${delta}" '
     def attrs(x): (x.attributes // {});
     all($d | keys[]; . as $k | attrs($a)[$k] == $d[$k])
     and all(attrs($b) | keys[]; . as $k | ($d | has($k)) or (attrs($a)[$k] == attrs($b)[$k]))
