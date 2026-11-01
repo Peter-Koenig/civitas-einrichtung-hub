@@ -115,9 +115,9 @@ done
 
 - OIDC-Client `p2d2` (entfernt Client-Rollen + Token-Mapper mit).
 - OSM-IdP-Broker `osm` (entfernt IdP-Mapper mit).
-- 6 Demo-User (per E-Mail-Lookup): `hans.muster@`, `jule.kovalenko@`,
-  `chisom.eze@`, `arman.ekov@`, `meera.pillai@`, `valentina.cruz@`
-  (alle `@nospam.scanea.de`).
+- 6 Demo-User (per E-Mail-Lookup): die Accounts stammen aus
+  `supplement/demo-accounts.md`; gelöscht wird genau die dort definierte Menge.
+  Fehlt die Datei, werden **keine** Demo-Benutzer gelöscht (bewusste Einschränkung).
 - Generierte Datei `/root/civitas-install/p2d2-addon-credentials.env`.
 - Es existieren **keine** Realm-Groups (das AddOn legt keine an).
 

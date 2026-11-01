@@ -432,6 +432,17 @@ Die Keycloak-Provisionierung bildet die Zitadel-kompatible Nutzer-Metadaten ab:
 getrennte Konzepte — eine berufliche Kommune widerspricht keiner persoenlichen Startregion. Der
 OIDC-Claim liefert langfristig nur einen uebersteuerbaren Startwert, keine feste Start-BBox.
 
+**Demo-Accounts (`supplement/demo-accounts.md`):**
+
+Die Demo-Accounts werden nicht mehr im Skript geführt, sondern in `supplement/demo-accounts.md`
+(YAML-Block; Text außerhalb ist Kommentar). Datei vorhanden = die Accounts werden angelegt/ergänzt;
+Datei fehlt (gelöscht oder umbenannt) = keine Demo-Accounts und kein Kennwort nötig; vorhandene
+Accounts werden dadurch nicht gelöscht. Das zentrale Kennwort kommt aus `P2D2_DEMO_PASSWORD`
+(steht nie in der Datei) und ist nur erforderlich, wenn die Datei existiert und mindestens einen
+Account enthält. Ohne Datei löscht `uninstall_addon_iam` keine Demo-Benutzer (bewusste Einschränkung,
+manuelle Bereinigung im Realm ist dann zu prüfen). Der frühere Schalter `P2D2_DEMO_ACCOUNTS` ist
+entfallen und wird nur noch mit einer Warnung ignoriert.
+
 **Bekannte Einschränkungen (Entwicklungsstand):**
 
 - `install_addon_postgresql`: Legt Rollen und Schemata an. DDL, Grants und
