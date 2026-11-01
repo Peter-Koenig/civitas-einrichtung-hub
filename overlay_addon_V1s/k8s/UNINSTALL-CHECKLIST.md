@@ -171,6 +171,10 @@ rm -f /root/civitas-install/p2d2-addon-credentials.env
 
 - Realm `cc-prd` selbst, `master`-Realm, Keycloak-Admin-User.
 - Andere Clients/IdPs (z. B. `admin-cli`, andere Masterportal-Clients).
+- Realmweite User-Profile-Definitionen `p2d2.memberships` und
+  `p2d2.preferences.home_region_key` (bewusst belassen — andere Nutzer/Clients
+  im Realm können sie verwenden; der Client-/User-Rückbau entfernt nur die
+  beiden direkten Mapper bzw. Jules Attribute).
 
 ---
 

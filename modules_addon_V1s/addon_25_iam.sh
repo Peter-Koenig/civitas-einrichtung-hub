@@ -718,6 +718,9 @@ install_addon_iam() {
 # Keycloak-Realm-Objekte. Umgekehrte Reihenfolge zur Install-Seite:
 #   Demo-User (Rollen-Grants hängen an den Usern) → OSM-IdP-Broker (inkl. IdP-Mapper)
 #   → OIDC-Client p2d2 (entfernt Client-Rollen + Token-Mapper mit).
+# Die realmweiten User-Profile-Definitionen (p2d2.memberships,
+# p2d2.preferences.home_region_key) werden bewusst NICHT gelöscht — andere
+# Nutzer/Clients im Realm können sie verwenden.
 # Es existieren KEINE Realm-Groups (das AddOn legt keine an) — nichts zu entfernen.
 uninstall_addon_iam() {
   log "=== Uninstall AddOn 25: IAM/Keycloak-Rückbau ==="
